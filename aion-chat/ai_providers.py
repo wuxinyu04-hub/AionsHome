@@ -1900,6 +1900,36 @@ async def simple_ai_call(
 
 # ── 哨兵代看：为不支持视觉的模型描述图片 ─────────────
 _IMAGE_MIME_PREFIXES = ("image/",)
+_VISION_MAX_EDGE = 1024  # 视觉模型输入长边上限；超过先压缩，避免大图（手机原图 3-8MB）传 Gemini 免费层 30s 超时
+
+
+def _compress_image_for_vision(fpath) -> tuple[str, str]:
+    """读取图片并压缩到长边 1024、JPEG quality 85，返回 (base64, mime)。
+    大图直传 Gemini 免费层会触发 ReadTimeout（见 _call_sentinel_vision 的 30s 超时），
+    压缩后 5.8MB 原图 -> ~150KB，几秒内能处理完。PIL 失败时回退原图原样。"""
+    raw = fpath.read_bytes()
+    try:
+        from PIL import Image
+        import io as _io
+        img = Image.open(_io.BytesIO(raw))
+        # 先转 RGB（去 alpha 通道，JPEG 不支持透明）
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        w, h = img.size
+        edge = max(w, h)
+        if edge > _VISION_MAX_EDGE:
+            scale = _VISION_MAX_EDGE / edge
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+    except Exception as e:
+        # PIL 处理失败（极少见）就回退原样，mime 从扩展名猜
+        mime = mimetypes.guess_type(str(fpath))[0] or "image/jpeg"
+        return base64.b64encode(raw).decode(), mime
+
 
 def _messages_have_images(messages: list) -> bool:
     """检查消息列表中是否存在图片附件"""
@@ -1948,12 +1978,12 @@ async def _sentinel_describe_images(messages: list) -> list:
             if not mime.startswith("image/"):
                 non_img_atts.append(att)
                 continue
-            # 识图
-            img_b64 = base64.b64encode(fpath.read_bytes()).decode()
+            # 识图：先压缩到长边 1024，避免大图 30s 超时（根因见 _compress_image_for_vision）
+            img_b64, mime = _compress_image_for_vision(fpath)
             prompt = "请详细描述这张图片的内容，包括画面中的人物、物体、文字、场景、颜色、构图等关键信息。用中文回答，尽量简洁但不遗漏重要细节。"
             desc = None
             try:
-                desc = await _call_sentinel_vision(scfg, prompt, img_b64, mime, timeout=30)
+                desc = await _call_sentinel_vision(scfg, prompt, img_b64, mime, timeout=60)
             except Exception as e:
                 print(f"[Vision Fallback] 哨兵模型识图失败: {e}，尝试回退 gemini-3.1-flash-lite")
                 # 回退到 Gemini flash-lite
@@ -1964,7 +1994,7 @@ async def _sentinel_describe_images(messages: list) -> list:
                     "use_openai": False,
                 }
                 try:
-                    desc = await _call_sentinel_vision(fallback_cfg, prompt, img_b64, mime, timeout=30)
+                    desc = await _call_sentinel_vision(fallback_cfg, prompt, img_b64, mime, timeout=60)
                 except Exception as e2:
                     print(f"[Vision Fallback] 回退模型也失败: {e2}")
             if desc:

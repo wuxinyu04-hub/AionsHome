@@ -573,7 +573,10 @@ async def _call_sentinel_text(scfg: dict, prompt: str, timeout: int = 60) -> str
         ]
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json={"contents": contents, "safetySettings": safety_settings})
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                # 哨兵真因排查：把 Google 返回的真实错误体打出来（英文，不会被 GBK 截断）
+                print(f"[Sentinel] {model} HTTP {resp.status_code}: {resp.text[:400]}")
+                raise Exception(f"Sentinel {resp.status_code}: {resp.text[:200]}")
             data = resp.json()
             return _extract_gemini_final_text(data)
 
@@ -615,7 +618,10 @@ async def _call_sentinel_vision(scfg: dict, prompt: str, img_b64: str, mime_type
         ]
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json={"contents": contents, "safetySettings": safety_settings})
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                # 哨兵真因排查：把 Google 返回的真实错误体打出来（英文，不会被 GBK 截断）
+                print(f"[Sentinel] {model} HTTP {resp.status_code}: {resp.text[:400]}")
+                raise Exception(f"Sentinel {resp.status_code}: {resp.text[:200]}")
             data = resp.json()
             return _extract_gemini_final_text(data)
 
