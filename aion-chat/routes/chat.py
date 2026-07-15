@@ -784,6 +784,27 @@ async def list_conversations():
         rows = await cur.fetchall()
         return [_conversation_dict(r) for r in rows]
 
+
+@router.get("/api/chat/unread")
+async def check_chat_unread():
+    """统计未读 AI 消息数（role=assistant 且 created_at > 锚点）。"""
+    async with get_db() as db:
+        db.row_factory = __import__('aiosqlite').Row
+        row = await (await db.execute("SELECT last_read_at FROM chat_read_anchor WHERE id=1")).fetchone()
+        last_read = row["last_read_at"] if row else 0
+        cur = await db.execute("SELECT COUNT(*) as cnt FROM messages WHERE role='assistant' AND created_at > ?", (last_read,))
+        cnt = (await cur.fetchone())["cnt"]
+    return {"unread": cnt}
+
+
+@router.post("/api/chat/mark-read")
+async def mark_chat_read():
+    now = time.time()
+    async with get_db() as db:
+        await db.execute("INSERT OR REPLACE INTO chat_read_anchor (id, last_read_at) VALUES (1, ?)", (now,))
+        await db.commit()
+    return {"ok": True}
+
 @router.post("/api/conversations")
 async def create_conversation(body: ConvCreate):
     now = time.time()

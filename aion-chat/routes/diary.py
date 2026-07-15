@@ -105,6 +105,27 @@ async def list_diaries(
     return {"items": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
 
 
+@router.get("/unread")
+async def check_diary_unread():
+    """统计未读日记条目数（created_at > 最后已读锚点）。"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute("SELECT last_read_at FROM diary_read_anchor WHERE id=1")).fetchone()
+        last_read = row["last_read_at"] if row else 0
+        cur = await db.execute("SELECT COUNT(*) as cnt FROM diary_entries WHERE created_at > ?", (last_read,))
+        cnt = (await cur.fetchone())["cnt"]
+    return {"unread": cnt}
+
+
+@router.post("/mark-read")
+async def mark_diary_read():
+    now = time.time()
+    async with get_db() as db:
+        await db.execute("INSERT OR REPLACE INTO diary_read_anchor (id, last_read_at) VALUES (1, ?)", (now,))
+        await db.commit()
+    return {"ok": True}
+
+
 @router.post("/{entry_id}/tts")
 async def synthesize_diary_tts(entry_id: str):
     """按需为 AI 日记生成独立缓存的 TTS 音频。"""

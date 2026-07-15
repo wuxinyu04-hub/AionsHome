@@ -1006,6 +1006,7 @@ document.addEventListener('visibilitychange', () => {
   else bumpTTSPlaybackState();
 });
 window.addEventListener('pagehide', refreshTTSPlaybackState);
+window.addEventListener('pagehide', () => { try { navigator.sendBeacon('/api/chat/mark-read'); } catch(e) {} });
 window.addEventListener('pageshow', bumpTTSPlaybackState);
 document.addEventListener('freeze', refreshTTSPlaybackState);
 window.addEventListener('focus', bumpTTSPlaybackState);
@@ -5887,6 +5888,8 @@ async function fmSave() {
 }
 
 init().then(() => {
+  // 进入聊天页即标记已读（清未读角标）
+  fetch('/api/chat/mark-read', { method: 'POST' }).catch(() => {});
   // 初始化完成后自动打开 Home 作为默认页面
   // 用 requestIdleCallback 等聊天页渲染空闲后再开主页，避免主页大资源抢占聊天首屏带宽
   const openHome = () => openSubPage('/');

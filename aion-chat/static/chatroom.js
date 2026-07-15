@@ -491,6 +491,7 @@ document.addEventListener('visibilitychange', () => {
   else crBumpTTSPlaybackState();
 });
 window.addEventListener('pagehide', crRefreshTTSPlaybackState);
+window.addEventListener('pagehide', () => { try { navigator.sendBeacon('/api/chatroom/mark-read'); } catch(e) {} });
 window.addEventListener('pageshow', crBumpTTSPlaybackState);
 document.addEventListener('freeze', crRefreshTTSPlaybackState);
 window.addEventListener('focus', crBumpTTSPlaybackState);
@@ -6627,6 +6628,8 @@ function crToyCloseEditor() { document.getElementById('crToyEditorOverlay').clas
 // ══════════════════════════════════════════════════
 
 (async function init() {
+  // 进入聊天室页即标记已读（清未读角标）
+  fetch('/api/chatroom/mark-read', { method: 'POST' }).catch(() => {});
   // Start independent Cloudflare requests together. Only the message request
   // must wait for the room list, reducing startup from many round trips to two.
   const configPromise = api('/config');

@@ -216,6 +216,25 @@ async def init_db():
                 last_read_at REAL NOT NULL DEFAULT 0
             )
         """)
+        # ── 未读锚点（私聊/群聊/日记，仿 moment_read_anchor）──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS chat_read_anchor (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_read_at REAL NOT NULL DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS chatroom_read_anchor (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_read_at REAL NOT NULL DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS diary_read_anchor (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_read_at REAL NOT NULL DEFAULT 0
+            )
+        """)
         # ── AI 日记本 ──
         await db.execute("""
             CREATE TABLE IF NOT EXISTS diary_entries (

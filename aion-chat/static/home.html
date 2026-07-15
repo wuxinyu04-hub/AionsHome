@@ -295,6 +295,24 @@ body[data-theme="dark"] .dock::before {
   display: none;
 }
 .badge-dot.show { display: block; }
+/* 数字角标（私聊/群聊/日记未读数） */
+.badge-dot.count {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  border: 0;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  top: 0;
+  right: -2px;
+}
 
 /* ── Toast 提示 ── */
 .global-search-trigger {
@@ -538,7 +556,8 @@ body[data-theme="dark"] .gsi-title { color: rgba(244,246,255,0.70); }
 const APPS = [
   { id: 'chat',     name: '聊天',     icon: '/public/funIcon_0005_聊天.png',   url: '/chat',  dock: true },
   { id: 'chatroom', name: '聊天室', icon: '/public/funIcon_0020_聊天室.png', url: '/chatroom' ,  dock: true  },
-  { id: 'memory',   name: '记忆库',   icon: '/public/funIcon_0006_日记本.png',  url: '/memory' ,  dock: true },
+  { id: 'memory',   name: '记忆库',   icon: '/public/funIcon_0004_记忆库.png',  url: '/memory' ,  dock: true },
+  { id: 'diary',    name: '日记',     icon: '/public/funIcon_0006_日记本.png',  url: '/diary'  ,  dock: true },
   { id: 'moments',  name: '朋友圈',   icon: '/public/funIcon_0010_朋友圈.png',  url: '/moments' ,  dock: true },
   { id: 'xhs-lite', name: '小红书',   icon: '/public/funIcon_0024_小红书.png',  url: '/xhs-lite' },
   { id: 'wishes',   name: '许愿池',   icon: '/public/funIcon_0023_许愿池.png',  url: '/wishes' },
@@ -867,7 +886,7 @@ function appCellHTML(cell, cellIndex) {
 
 function appHTML(app, options = {}) {
   const disabled = !app.url;
-  const badgeId = app.id === 'moments' ? 'id="momentsBadge"' : '';
+  const badgeId = ['moments','chat','chatroom','diary'].includes(app.id) ? 'id="' + app.id + 'Badge"' : '';
   return `
     <button class="app-icon ${disabled ? 'disabled' : ''}"
        type="button"
@@ -1346,6 +1365,39 @@ async function checkMomentsUnread() {
 }
 checkMomentsUnread();
 setInterval(checkMomentsUnread, 60000);
+
+/* ── 私聊/群聊/日记 未读角标检查 ── */
+async function fetchUnread(url, badgeId) {
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const badge = document.getElementById(badgeId);
+    if (!badge) return;
+    const n = data.unread || 0;
+    if (n > 0) {
+      badge.textContent = n > 99 ? '99+' : String(n);
+      badge.className = 'badge-dot count';
+    } else {
+      badge.textContent = '';
+      badge.className = 'badge-dot';
+    }
+  } catch(e) {}
+}
+function clearAppBadge(badgeId) {
+  const badge = document.getElementById(badgeId);
+  if (badge) { badge.textContent = ''; badge.className = 'badge-dot'; }
+}
+function checkAppBadges() {
+  // 在某 app 页内嵌(iframe)时，隐藏该 app 自身红点（用户正在看，避免误报）
+  let topPath = '';
+  try { topPath = (window.top === window) ? location.pathname : (window.top.location.pathname || ''); } catch(e) {}
+  if (topPath.endsWith('/chat')) clearAppBadge('chatBadge'); else fetchUnread('/api/chat/unread', 'chatBadge');
+  if (topPath.endsWith('/chatroom')) clearAppBadge('chatroomBadge'); else fetchUnread('/api/chatroom/unread', 'chatroomBadge');
+  if (topPath.endsWith('/diary')) clearAppBadge('diaryBadge'); else fetchUnread('/api/diaries/unread', 'diaryBadge');
+}
+checkAppBadges();
+setInterval(checkAppBadges, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAppBadges(); });
 </script>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
 </body>

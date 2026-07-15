@@ -2032,6 +2032,30 @@ async def list_rooms():
         return result
 
 
+@router.get("/unread")
+async def check_chatroom_unread():
+    """统计未读群聊 AI 消息数（sender in aion/connor 且 created_at > 锚点）。"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute("SELECT last_read_at FROM chatroom_read_anchor WHERE id=1")).fetchone()
+        last_read = row["last_read_at"] if row else 0
+        cur = await db.execute(
+            "SELECT COUNT(*) as cnt FROM chatroom_messages WHERE sender IN ('aion','connor') AND created_at > ?",
+            (last_read,),
+        )
+        cnt = (await cur.fetchone())["cnt"]
+    return {"unread": cnt}
+
+
+@router.post("/mark-read")
+async def mark_chatroom_read():
+    now = time.time()
+    async with get_db() as db:
+        await db.execute("INSERT OR REPLACE INTO chatroom_read_anchor (id, last_read_at) VALUES (1, ?)", (now,))
+        await db.commit()
+    return {"ok": True}
+
+
 @router.post("/rooms")
 async def create_room(body: RoomCreate):
     now = time.time()

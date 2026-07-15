@@ -647,7 +647,11 @@ function connectDiaryWS() {
   await initNames();
   await loadDiaries();
   connectDiaryWS();
+  // 进入日记页即标记已读（清未读角标）
+  fetch('/api/diaries/mark-read', { method: 'POST' }).catch(() => {});
 })();
+// 离开日记页标记已读（清期间看的消息，避免误报）
+window.addEventListener('pagehide', () => { try { navigator.sendBeacon('/api/diaries/mark-read'); } catch(e) {} });
 </script>
 </body>
 </html>
