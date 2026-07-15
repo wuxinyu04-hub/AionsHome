@@ -1200,6 +1200,7 @@ async function playNextTTSChunk() {
     ttsPlaying = true;
     ttsManualStop = false;
     clearTTSResumeTimer();
+    if (document.querySelector('.tts-replay-btn.playing')) stopReplay(); // 直播语音抢回播放权，停掉重听避免重叠
 	    try {
 	      ttsAudio.src = url;
 	      _notifyVoiceCallPrivateTTSStart(msgId, q.nextPlay, chunk);
@@ -1288,23 +1289,32 @@ let replayChunks = []; // 当前重听的分段URL列表
 let replayIdx = 0;
 let replayToken = 0;
 let replayDiscoverPromise = null;
+// 停止重听：暂停音频 + 作废挂起的分段回调 + 清掉 playing 态
+function stopReplay() {
+  replayToken++; // 作废所有挂起的 _playReplayChunk 回调
+  replayDiscoverPromise = null;
+  replayChunks = [];
+  replayIdx = 0;
+  replayAudio.onended = null;
+  replayAudio.onerror = null;
+  if (replayAudio.src) {
+    replayAudio.pause();
+    replayAudio.src = '';
+  }
+  document.querySelectorAll('.tts-replay-btn.playing').forEach(b => b.classList.remove('playing'));
+}
 async function replayTTS(msgId) {
   try {
     const btn = document.querySelector(`#m_${msgId} .tts-replay-btn`);
-    // 如果正在播放同一条，停止
+    // 如果正在播放同一条，停止（toggle off）
     if (btn && btn.classList.contains('playing')) {
-      replayAudio.pause();
-      replayAudio.src = '';
-      replayChunks = [];
-      btn.classList.remove('playing');
-      replayToken++;
-      replayDiscoverPromise = null;
+      stopReplay();
       return;
     }
-    // 停止之前的播放
-    replayAudio.pause();
-    replayChunks = [];
-    document.querySelectorAll('.tts-replay-btn.playing').forEach(b => b.classList.remove('playing'));
+    // 停掉其他重听 / 直播 TTS，避免两路语音重叠
+    stopReplay();
+    if (ttsPlaying) stopLiveTTSQueue();
+    suppressTTSMsg(msgId); // 该消息后续直播分段不再抢占，专心放重听
 
     const token = ++replayToken;
     replayChunks = [`/api/tts/audio/${msgId}_s0`];
