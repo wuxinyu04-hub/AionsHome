@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from config import SETTINGS, save_settings, get_key, get_sentinel_config, load_worldbook, save_worldbook, load_chat_status, TTS_CACHE_DIR, TTS_CACHE_MAX_BYTES, THEATER_TTS_CACHE_DIR, normalize_custom_model_routes, refresh_custom_models, iter_visible_models
+from config import SETTINGS, save_settings, get_key, get_sentinel_config, load_worldbook, save_worldbook, load_chat_status, TTS_CACHE_DIR, TTS_CACHE_MAX_BYTES, THEATER_TTS_CACHE_DIR, normalize_custom_model_routes, refresh_custom_models, iter_visible_models, DATA_DIR
 from tts import cleanup_tts_cache_dir
 from ws import manager
 
@@ -637,27 +637,63 @@ async def _list_minimax_voices(key: str) -> dict:
 _FISHAUDIO_DEFAULT_VOICE = {"uri": "", "customName": "⭐ Fish Audio 默认声（无 reference_id）"}
 
 
-# Fish Audio 男友陪伴向精选中文男声（社区公共声，按男友相关度人工筛过）
-# 筛选标准（与 [[ai-voice-design-boyfriend-young]] 偏好一致）：
-#   - 必须男 + young + Mandarin/Chinese
-#   - 描述里不含 middle-aged/old/elderly（tag 不可信，靠 description 兜底）
-#   - 排除明星克隆声（用户明确不要明星）
-#   - 排除游戏/说教向（energetic/gaming/authoritative/firm）
-#   - 优先 gentle/soft/warm/calm/relaxed/smooth/sincere
-#   - 沉稳低音炮 OK，但不要中年大叔/老年
-# 注：Fish Audio 公共库 350 条样本里非明星 + 男友向只有这 3 条能打；
-# 想要更多/更定制化，用 fish.audio 平台的 Voice Design（prompt 生成）或上传参考音频克隆。
+# Fish Audio 精选男友向中文男声（社区公共声）。
+# 用户偏好（2026-07-15 确认）：磁性 + 性感 + 男友向（deep/sexy/intimate/seductive/breathy）。
+# 乙游男主（恋与深空秦彻/黎深、未定事件簿莫弈、光与夜之恋齐司礼等）可用；明星真人克隆声仍排除。
+# 当前 18 条：5 磁性性感 + 8 乙游男主 + 5 温柔亲密向。用户说「都加上」；良莠后续可在设置页 UI 删（json）或改这里。
+# 后续临时加声走设置页「粘贴 fish.audio 链接」（存 data/fishaudio_user_voices.json，免改代码/重启）。
 _FISHAUDIO_CURATED_VOICES = [
-    {"uri": "4ddfa1f451f04d85b809dcad9d76e91f", "customName": "⭐ 舒服的男声（温柔温暖·平稳磁性，男友首选）"},
-    {"uri": "12abd39fe3c04610ae842815513c03b0", "customName": "男1（温暖沉稳·vlog 日常感）"},
-    {"uri": "04f85f222e044a928eea79f5655f1d54", "customName": "熊猫2号（自然清爽·放松友好）"},
+    # ── 磁性性感男友向 ──
+    {"uri": "a56e22a0ec34498da51cdb396f5fcb18", "customName": "该隐（柔软亲密·浪漫气声·ASMR，热门）"},
+    {"uri": "073ff47193eb4f179da0d62e250bfd82", "customName": "该隐·深沉版（低沉平滑·气声戏剧·诱惑）"},
+    {"uri": "1244770105124a68abcfb9d028db2185", "customName": "⭐ 男1·磁性ASMR（低沉沙哑·贴麦呢喃·诱惑，用户首推）"},
+    {"uri": "05349c9fdee04de981fb5c09b0e0379a", "customName": "柔情男声（温柔磁性·深情亲密·戏剧感）"},
+    {"uri": "ee0a2c89d5c04288a695e741a748b8a9", "customName": "⭐ 磁性轻语男声（沉稳磁性·亲密玩味·轻语）"},
+    # ── 乙游男主 ──
+    {"uri": "7cb18d1a283247f9a2c3771384690f98", "customName": "秦彻（恋与深空·深沉成熟·冷静沉稳）"},
+    {"uri": "e9327e13d3d54983934894283651c6a9", "customName": "黎深（恋与深空·深沉戏剧·角色向）"},
+    {"uri": "8da2976486f1435f9aa5b6b07c1708c6", "customName": "莫弈（未定事件簿·冷静理性·沉稳）"},
+    {"uri": "ca5f2f7d465e4c658f846da77daf718d", "customName": "齐司礼（光与夜之恋·温润亲密·优雅）"},
+    {"uri": "da8d001ca1424649bce8b945b460d81b", "customName": "易遇5（世界之外·深沉平滑·亲密）"},
+    {"uri": "f98b76e7bad04f078366c05d56307eb8", "customName": "沈星回（恋与深空·深沉温暖·亲密）"},
+    {"uri": "38548717ab4340a79db111cca6bbba6a", "customName": "易遇（世界之外·温柔气声·亲密治愈）"},
+    {"uri": "92eda74224f34a81912f0e0e36ff5c13", "customName": "夏以昼（恋与深空·温柔温暖·亲密·微撩）"},
+    # ── 温柔亲密向 ──
+    {"uri": "530a14adc5bf4189a86ca6af52e234b5", "customName": "男主配音（温柔温暖·浪漫·亲密）"},
+    {"uri": "204900525e1243cc9a616c82c8c02636", "customName": "男4·温柔（温柔诗意·亲密·沉稳）"},
+    {"uri": "cce8c195deca474ab5796c1afda9a509", "customName": "温柔轻语（温柔气声·抚慰·亲密）"},
+    {"uri": "97ee352e8f864eebba97ba4dffa642ee", "customName": "深情男声（深情·戏剧·亲密）"},
+    {"uri": "952757cbdedc4dcf90d727e5eef4e7dc", "customName": "温言（深沉共振·温柔·亲密）"},
 ]
+
+
+# 用户自加的 Fish Audio 音色（在设置页粘贴 fish.audio/m/<id> 链接加入，存 json，免改代码/重启）
+_FISHAUDIO_USER_VOICES_PATH = DATA_DIR / "fishaudio_user_voices.json"
+
+
+def _load_fishaudio_user_voices() -> list[dict]:
+    """读用户自加音色列表；文件不存在/损坏返回 []。"""
+    try:
+        if not _FISHAUDIO_USER_VOICES_PATH.exists():
+            return []
+        data = json.loads(_FISHAUDIO_USER_VOICES_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [v for v in data if isinstance(v, dict) and v.get("uri") and v.get("customName")]
+    except Exception:
+        log.exception("读 fishaudio_user_voices.json 失败")
+    return []
+
+
+def _save_fishaudio_user_voices(voices: list[dict]) -> None:
+    _FISHAUDIO_USER_VOICES_PATH.write_text(
+        json.dumps(voices, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 async def _list_fishaudio_voices(key: str) -> dict:
     """返回 Fish Audio 精选男友向中文男声 + 用户自己的克隆声。
 
-    精选列表是硬编码的 6 条社区公共声（按男友陪伴向人工筛过，见 _FISHAUDIO_CURATED_VOICES），
+    精选列表是硬编码的社区公共声（用户确认 18 条，见 _FISHAUDIO_CURATED_VOICES），
     不再去拉热门榜--热门榜里充斥游戏向/说教向/中年声，不符合项目男友陪伴定位。
     用户在 fish.audio 平台创建的克隆声会追加在后面（self=true 拉取）。
     """
@@ -672,6 +708,12 @@ async def _list_fishaudio_voices_impl(key: str) -> dict:
     # 1. 默认声 + 精选男友向中文男声（硬编码，不依赖网络）
     voices: list[dict] = [_FISHAUDIO_DEFAULT_VOICE] + list(_FISHAUDIO_CURATED_VOICES)
     notes: list[str] = []
+
+    # 1.5 用户自加音色（粘贴 fish.audio 链接加入，存 json，免改代码/重启）
+    for v in _load_fishaudio_user_voices():
+        uri = v.get("uri") or ""
+        if uri and not any(x["uri"] == uri for x in voices):
+            voices.append(v)
 
     # 2. 用户自己的克隆声（self=true 拉取，失败静默跳过）
     seen_ids: set[str] = {v["uri"] for v in voices}
@@ -768,3 +810,66 @@ async def tts_voice_list():
         return {"voices": voices, "provider": provider}
     except Exception as e:
         return {"voices": [], "error": str(e), "provider": provider}
+
+
+# ── Fish Audio 用户自加音色（在设置页粘贴 fish.audio/m/<id> 链接加入，存 json，免改代码/重启）──
+def _parse_fishaudio_id(s: str) -> str:
+    """从 URL 或纯 ID 提取 reference_id。支持 https://fish.audio/m/<id> / 纯 id / 带尾部路径。"""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    if "/m/" in s:
+        s = s.split("/m/", 1)[1]
+    s = s.split("?", 1)[0].split("#", 1)[0].strip("/")
+    return s.split("/", 1)[0]
+
+
+@router.get("/api/tts/fishaudio/voice")
+async def fishaudio_user_voice_list():
+    from config import get_tts_provider
+    return {"voices": _load_fishaudio_user_voices(), "enabled": get_tts_provider() == "fishaudio"}
+
+
+class FishAudioVoiceIn(BaseModel):
+    link: str  # fish.audio/m/<id> 链接 或 纯 id
+    name: Optional[str] = None  # 可选自定义显示名；不传则拉 fish.audio 的 title
+
+
+@router.post("/api/tts/fishaudio/voice")
+async def fishaudio_user_voice_add(body: FishAudioVoiceIn):
+    ref_id = _parse_fishaudio_id(body.link)
+    if not ref_id or len(ref_id) < 8:
+        raise HTTPException(400, "无法解析链接，请粘完整 https://fish.audio/m/<id>")
+    voices = _load_fishaudio_user_voices()
+    exists = any(v["uri"] == ref_id for v in voices) or any(v["uri"] == ref_id for v in _FISHAUDIO_CURATED_VOICES)
+    if exists:
+        raise HTTPException(409, "这个音色已经在列表里了")
+    title = body.name or ref_id
+    if not body.name:
+        try:
+            async with httpx.AsyncClient(timeout=15, trust_env=True) as client:
+                resp = await client.get(
+                    f"https://api.fish.audio/model/{ref_id}",
+                    headers={"model": "s2.1-pro-free"},
+                )
+            if resp.status_code == 200:
+                t = (resp.json() or {}).get("title") or ""
+                if t:
+                    title = t
+        except Exception as e:
+            log.warning("拉 fishaudio 模型 title 失败 %s: %s", ref_id, e)
+    entry = {"uri": ref_id, "customName": title}
+    voices.append(entry)
+    _save_fishaudio_user_voices(voices)
+    log.info("fishaudio 加用户音色: %s (%s)", ref_id, title)
+    return {"ok": True, "voice": entry, "voices": voices}
+
+
+@router.delete("/api/tts/fishaudio/voice/{ref_id}")
+async def fishaudio_user_voice_delete(ref_id: str):
+    voices = _load_fishaudio_user_voices()
+    new = [v for v in voices if v.get("uri") != ref_id]
+    if len(new) == len(voices):
+        raise HTTPException(404, "没找到（可能是精选默认，不能从这里删）")
+    _save_fishaudio_user_voices(new)
+    return {"ok": True, "voices": new}

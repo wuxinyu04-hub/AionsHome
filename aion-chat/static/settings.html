@@ -575,6 +575,15 @@ body[data-theme="light"] .avatar-preview {
           <label class="form-label">Fish Audio API Key（选 Fish Audio 时必填）</label>
           <input class="form-input mono-input" type="text" id="fishaudioKeyInput" placeholder="fish.audio/app/api-keys 获取，免费档到 2026-07 底" autocomplete="off">
         </div>
+        <div class="field full">
+          <label class="form-label">Fish Audio 音色（粘贴链接加入，免改代码/重启）</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input class="form-input mono-input" type="text" id="fishaudioVoiceLinkInput" placeholder="粘贴 https://fish.audio/m/<id> 链接，加入后出现在音色下拉" autocomplete="off" style="flex:1;min-width:240px;">
+            <button class="btn-save" type="button" onclick="addFishaudioVoice()">加入</button>
+          </div>
+          <div id="fishaudioUserVoiceList" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;"></div>
+          <small style="opacity:.7;">在 fish.audio 搜/试听后把链接粘这里；会出现在音色下拉最后。精选默认(该隐/男1/秦彻等)不在此删。</small>
+        </div>
         <div class="field">
           <label class="form-label">Tavily API Key（联网搜索）</label>
           <input class="form-input mono-input" type="text" id="tavilyApiKeyInput" placeholder="输入 Tavily API Key..." autocomplete="off">
@@ -1160,6 +1169,47 @@ function collectAntigravityModels() {
   return out;
 }
 
+async function loadFishaudioUserVoices() {
+  var box = $("fishaudioUserVoiceList");
+  if (!box) return;
+  box.innerHTML = '<small style="opacity:.6;">加载中…</small>';
+  try {
+    var r = await api("GET", "/api/tts/fishaudio/voice");
+    var list = (r && r.voices) || [];
+    if (!list.length) { box.innerHTML = '<small style="opacity:.5;">还没有自加音色，粘链接加入。</small>'; return; }
+    box.innerHTML = list.map(function (v) {
+      return '<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;background:rgba(255,255,255,.04);border-radius:6px;">' +
+        '<span style="flex:1;word-break:break-all;">' + escHtml(v.customName || v.uri) +
+        ' <small style="opacity:.5;">' + String(v.uri).slice(0, 8) + '…</small></span>' +
+        '<a href="https://fish.audio/m/' + encodeURIComponent(v.uri) + '" target="_blank" style="opacity:.7;font-size:12px;">试听</a>' +
+        '<button class="btn-cancel" type="button" onclick="removeFishaudioVoice(\'' + v.uri + '\')" style="padding:2px 10px;">删</button>' +
+        '</div>';
+    }).join("");
+  } catch (e) {
+    box.innerHTML = '<small style="opacity:.6;">加载失败</small>';
+  }
+}
+
+async function addFishaudioVoice() {
+  var link = $("fishaudioVoiceLinkInput").value.trim();
+  if (!link) { showToast("粘个 fish.audio/m/ 链接"); return; }
+  var r = await api("POST", "/api/tts/fishaudio/voice", { link: link });
+  if (r && r.ok) {
+    $("fishaudioVoiceLinkInput").value = "";
+    showToast("已加入：" + (r.voice.customName || r.voice.uri));
+    loadFishaudioUserVoices();
+  } else {
+    showToast((r && r.detail) || "加入失败");
+  }
+}
+
+async function removeFishaudioVoice(uri) {
+  if (!confirm("删除这个音色？")) return;
+  var r = await api("DELETE", "/api/tts/fishaudio/voice/" + encodeURIComponent(uri));
+  if (r && r.ok) loadFishaudioUserVoices();
+  else showToast((r && r.detail) || "删除失败");
+}
+
 (async function init() {
   var s = await api("GET", "/api/settings");
   $("geminiKeyInput").value = s.gemini_key || "";
@@ -1190,6 +1240,7 @@ function collectAntigravityModels() {
   refreshPhoneScreenStatus();
   refreshMediaCacheStatus();
   _loadAvatarVersions();
+  loadFishaudioUserVoices();
 })();
 
 async function saveSettings() {
