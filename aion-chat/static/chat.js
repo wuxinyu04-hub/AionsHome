@@ -1006,7 +1006,6 @@ document.addEventListener('visibilitychange', () => {
   else bumpTTSPlaybackState();
 });
 window.addEventListener('pagehide', refreshTTSPlaybackState);
-window.addEventListener('pagehide', () => { try { navigator.sendBeacon('/api/chat/mark-read'); } catch(e) {} });
 window.addEventListener('pageshow', bumpTTSPlaybackState);
 document.addEventListener('freeze', refreshTTSPlaybackState);
 window.addEventListener('focus', bumpTTSPlaybackState);
@@ -1569,6 +1568,7 @@ function handleSync(msg) {
       else if (!currentMessages.find(m => m.id === data.id)) {
         upsertCurrentMessage(data);
         playRecv();
+        if (data.role === 'assistant' && currentConvId) fetch(`/api/chat/mark-read?conv_id=${encodeURIComponent(currentConvId)}`, { method: 'POST' }).catch(() => {});
         // CAM_CHECK 响应到达：收到 assistant 消息时关闭「正在查看监控」提示
         if (data.role === 'assistant' && camCheckMsgId) dismissCamCheckIndicator();
         if (data.role === 'assistant' && poiSearchMsgId) dismissPoiSearchIndicator();
@@ -3426,6 +3426,7 @@ async function newConversation() {
 async function selectConv(id) {
   currentConvId = id;
   localStorage.setItem('aion_last_conv', id);
+  fetch(`/api/chat/mark-read?conv_id=${encodeURIComponent(id)}`, { method: 'POST' }).catch(() => {});
   msgDebugData = {};
   _heartWhisperMsgIds.clear();
   Object.keys(_heartWhisperContent).forEach(k => delete _heartWhisperContent[k]);
@@ -3900,6 +3901,7 @@ async function _processSSEStream(res) {
         } catch {}
       }
     }
+    if (aiMsgId && currentConvId) fetch(`/api/chat/mark-read?conv_id=${encodeURIComponent(currentConvId)}`, { method: 'POST' }).catch(() => {});
     if (aiMsgId) finishTTSForMsg(aiMsgId);
     if (aiMsgId && !aiFinalAlreadyReceived) playRecv();
     if ((voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) && !ttsEnabled) {
@@ -5888,8 +5890,6 @@ async function fmSave() {
 }
 
 init().then(() => {
-  // 进入聊天页即标记已读（清未读角标）
-  fetch('/api/chat/mark-read', { method: 'POST' }).catch(() => {});
   // 初始化完成后自动打开 Home 作为默认页面
   // 用 requestIdleCallback 等聊天页渲染空闲后再开主页，避免主页大资源抢占聊天首屏带宽
   const openHome = () => openSubPage('/');

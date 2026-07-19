@@ -1391,7 +1391,6 @@ function checkAppBadges() {
   // 在某 app 页内嵌(iframe)时，隐藏该 app 自身红点（用户正在看，避免误报）
   let topPath = '';
   try { topPath = (window.top === window) ? location.pathname : (window.top.location.pathname || ''); } catch(e) {}
-  if (topPath.endsWith('/chat')) clearAppBadge('chatBadge'); else fetchUnread('/api/chat/unread', 'chatBadge');
   if (topPath.endsWith('/chatroom')) clearAppBadge('chatroomBadge'); else fetchUnread('/api/chatroom/unread', 'chatroomBadge');
   if (topPath.endsWith('/diary')) clearAppBadge('diaryBadge'); else fetchUnread('/api/diaries/unread', 'diaryBadge');
 }

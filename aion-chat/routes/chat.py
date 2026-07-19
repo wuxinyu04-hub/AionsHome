@@ -787,21 +787,29 @@ async def list_conversations():
 
 @router.get("/api/chat/unread")
 async def check_chat_unread():
-    """统计未读 AI 消息数（role=assistant 且 created_at > 锚点）。"""
+    """统计各会话中 AI 在用户最后查看后发的消息总数（per-conv 锚点）。"""
     async with get_db() as db:
         db.row_factory = __import__('aiosqlite').Row
-        row = await (await db.execute("SELECT last_read_at FROM chat_read_anchor WHERE id=1")).fetchone()
-        last_read = row["last_read_at"] if row else 0
-        cur = await db.execute("SELECT COUNT(*) as cnt FROM messages WHERE role='assistant' AND created_at > ?", (last_read,))
+        cur = await db.execute(
+            "SELECT COUNT(*) as cnt FROM messages m "
+            "WHERE m.role='assistant' AND m.created_at > "
+            "COALESCE((SELECT a.last_read_at FROM chat_conv_read_anchor a WHERE a.conv_id = m.conv_id), 0)"
+        )
         cnt = (await cur.fetchone())["cnt"]
     return {"unread": cnt}
 
 
 @router.post("/api/chat/mark-read")
-async def mark_chat_read():
+async def mark_chat_read(conv_id: str = ""):
+    """标记某会话已读（更新该会话锚点为当前时间）。"""
+    if not conv_id:
+        return {"ok": False}
     now = time.time()
     async with get_db() as db:
-        await db.execute("INSERT OR REPLACE INTO chat_read_anchor (id, last_read_at) VALUES (1, ?)", (now,))
+        await db.execute(
+            "INSERT OR REPLACE INTO chat_conv_read_anchor (conv_id, last_read_at) VALUES (?, ?)",
+            (conv_id, now),
+        )
         await db.commit()
     return {"ok": True}
 
