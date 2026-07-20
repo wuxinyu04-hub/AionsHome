@@ -230,7 +230,7 @@ async def build_ability_block(
                 if qc:
                     line += f"（播放队列还有 {qc} 首）"
                 parts.append(line)
-            shared = playback.get_shared(limit=5)
+            shared = playback.get_shared(limit=5, exclude_within_seconds=7200)
             if shared:
                 names = " / ".join(f"《{s.get('name','')}》- {s.get('artist','')}" for s in shared if s.get("name"))
                 if names:

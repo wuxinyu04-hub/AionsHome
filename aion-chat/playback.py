@@ -135,8 +135,13 @@ def log_shared(song: dict):
         _save_shared(songs)
 
 
-def get_shared(limit: int = 20) -> list:
+def get_shared(limit: int = 20, exclude_within_seconds: float | None = None) -> list:
+    """取最近共享曲目。exclude_within_seconds：排除最近 N 秒内播过的，
+    给 AI 注入时做冷却，避免「最近一起听过的歌」变成自我加强的选歌池、反复点同样几首。"""
     with _lock:
         songs = _load_shared()
+    if exclude_within_seconds is not None:
+        now = time.time()
+        songs = [s for s in songs if now - s.get("last_played_at", 0) > exclude_within_seconds]
     songs.sort(key=lambda s: s.get("last_played_at", 0), reverse=True)
     return songs[:limit]
