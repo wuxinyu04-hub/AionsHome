@@ -564,6 +564,7 @@ const APPS = [
   { id: 'worldbook',name: '世界书',   icon: '/public/funIcon_0007_世界书.png',  url: '/worldbook' },
   { id: 'theater',  name: '小剧场',   icon: '/public/funIcon_0009_小剧场.png',  url: '/theater' },
   { id: 'dateTheater', name: '去约会', icon: '/public/funIcon_0026_去约会.png', url: '/date-theater' },
+  { id: 'sleep', name: '哄睡', icon: '/public/funIcon_0009_小剧场.png', url: '/sleep' },
   { id: 'whisper',  name: '密语时刻', icon: '/public/funIcon_0011_密语时刻.png', url: '/chat?whisper=1' },
   { id: 'alarm',    name: '闹钟',     icon: '/public/funIcon_0012_闹钟.png',    url: '/schedule' },
   { id: 'todo',     name: '待办清单', icon: '/static/todo-icon.svg',            url: '/todos' },
@@ -1388,7 +1389,9 @@ function clearAppBadge(badgeId) {
   if (badge) { badge.textContent = ''; badge.className = 'badge-dot'; }
 }
 function checkAppBadges() {
-  // 在某 app 页内嵌(iframe)时，隐藏该 app 自身红点（用户正在看，避免误报）
+  // chat 是 per-conv 锚点，无论 home 在哪都正常查（用户在 chat 页看会话 A 时会话 B 未读照常显示）
+  fetchUnread('/api/chat/unread', 'chatBadge');
+  // chatroom/diary 是全局锚点，home 内嵌在它们自己页时清空避免误报
   let topPath = '';
   try { topPath = (window.top === window) ? location.pathname : (window.top.location.pathname || ''); } catch(e) {}
   if (topPath.endsWith('/chatroom')) clearAppBadge('chatroomBadge'); else fetchUnread('/api/chatroom/unread', 'chatroomBadge');

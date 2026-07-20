@@ -790,6 +790,13 @@ async def check_chat_unread():
     """统计各会话中 AI 在用户最后查看后发的消息总数（per-conv 锚点）。"""
     async with get_db() as db:
         db.row_factory = __import__('aiosqlite').Row
+        # 没锚点的会话视为已读（锚点=now），避免历史消息全算未读显示 99+
+        now = time.time()
+        await db.execute(
+            "INSERT OR IGNORE INTO chat_conv_read_anchor (conv_id, last_read_at) SELECT id, ? FROM conversations",
+            (now,),
+        )
+        await db.commit()
         cur = await db.execute(
             "SELECT COUNT(*) as cnt FROM messages m "
             "WHERE m.role='assistant' AND m.created_at > "
