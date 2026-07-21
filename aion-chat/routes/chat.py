@@ -1117,8 +1117,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     user_name = wb.get("user_name") or "用户"
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": wb['ai_persona']})
     if wb.get("user_persona"):
         prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
         prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
@@ -1183,7 +1182,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     health_text = await build_health_summary()
     if health_text:
         bg_block += health_text
-    if surfaced:
+    if surfaced and is_search_needed:
         unresolved_lines = [f"📌 {_memory_line_with_evidence(m)[2:]}（还没做/还没去）" for m in surfaced if m.get("unresolved")]
         normal_lines = [_memory_line_with_evidence(m) for m in surfaced if not m.get("unresolved")]
         mem_text = "\n".join(unresolved_lines + normal_lines)
@@ -1203,7 +1202,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     debug_top6_data = [{"content": m["content"], "score": m["score"],
                         "vec_sim": m.get("vec_sim"), "kw_score": m.get("kw_score"),
                         "importance": m.get("importance")} for m in debug_top6] if debug_top6 else []
-    if recalled:
+    if recalled and is_search_needed:
         mem_lines = "\n".join([_memory_line_with_evidence(m) for m in recalled])
         mem_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
         if detail_text:
@@ -1654,8 +1653,7 @@ async def send_message(conv_id: str, body: MsgCreate):
     user_name = wb.get("user_name") or "用户"
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": wb['ai_persona']})
     if wb.get("user_persona"):
         prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
         prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
@@ -1779,7 +1777,7 @@ async def send_message(conv_id: str, body: MsgCreate):
         health_text = await build_health_summary()
         if health_text:
             bg_block += health_text
-        if surfaced:
+        if surfaced and is_search_needed:
             unresolved_lines = [f"📌 {_memory_line_with_evidence(m)[2:]}（还没做/还没去）" for m in surfaced if m.get("unresolved")]
             normal_lines = [_memory_line_with_evidence(m) for m in surfaced if not m.get("unresolved")]
             mem_text = "\n".join(unresolved_lines + normal_lines)
@@ -1802,7 +1800,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                             "vec_sim": m.get("vec_sim"), "kw_score": m.get("kw_score"),
                             "importance": m.get("importance")} for m in debug_top6] if debug_top6 else []
         # 5. 注入向量匹配到的相关记忆（在背景记忆之后，每次请求都可能不同）
-        if recalled:
+        if recalled and is_search_needed:
             mem_lines = "\n".join([_memory_line_with_evidence(m) for m in recalled])
             mem_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
             if detail_text:
@@ -2424,8 +2422,7 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
 
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": wb['ai_persona']})
     if wb.get("user_persona"):
         prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
         prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
@@ -2597,8 +2594,7 @@ async def perform_poi_check(conv_id: str, model_key: str, categories: list[str])
 
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": wb['ai_persona']})
     if wb.get("user_persona"):
         prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
         prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
@@ -2738,8 +2734,7 @@ async def perform_activity_check(conv_id: str, model_key: str, n: int = 6):
 
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": wb['ai_persona']})
     if wb.get("user_persona"):
         prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
         prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
@@ -2877,8 +2872,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
     user_name = wb.get("user_name") or "用户"
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
-        prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
+        prefix.append({"role": "system", "content": wb['ai_persona']})
     if wb.get("user_persona"):
         prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
         prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
@@ -2937,7 +2931,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         health_text = await build_health_summary()
         if health_text:
             bg_block += health_text
-        if surfaced:
+        if surfaced and is_search_needed:
             unresolved_lines = [f"📌 {_memory_line_with_evidence(m)[2:]}（还没做/还没去）" for m in surfaced if m.get("unresolved")]
             normal_lines = [_memory_line_with_evidence(m) for m in surfaced if not m.get("unresolved")]
             mem_text = "\n".join(unresolved_lines + normal_lines)
@@ -2972,7 +2966,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                             "vec_sim": m.get("vec_sim"), "kw_score": m.get("kw_score"),
                             "importance": m.get("importance")} for m in debug_top6] if debug_top6 else []
         # 5. 注入相关记忆（在背景记忆之后）
-        if recalled:
+        if recalled and is_search_needed:
             mem_lines = "\n".join([_memory_line_with_evidence(m) for m in recalled])
             mem_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
             if detail_text:
