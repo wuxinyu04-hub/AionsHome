@@ -2954,7 +2954,7 @@ function musicReportNowPlaying(force) {
   if (!force && now - musicLastReportTs < 4000) return;
   musicLastReportTs = now;
   api('POST', '/api/music/now_playing', {
-    song_id: cur.id, name: cur.name, artist: cur.artist,
+    song_id: cur.id, name: cur.name, artist: cur.artist, cover: cur.cover || '',
     state: (musicAudio && !musicAudio.paused) ? 'playing' : 'paused',
     position: (musicAudio && musicAudio.currentTime) || 0,
     queue_count: musicQueue.length

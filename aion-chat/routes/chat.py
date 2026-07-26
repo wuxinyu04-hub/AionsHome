@@ -22,7 +22,7 @@ from camera import cam, CAM_CHECK_CMD, perform_cam_check
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from routes.files import export_conversation
-from routes.music import MUSIC_CMD_PATTERN, LIKE_CMD_PATTERN, PLAYLIST_NEW_PATTERN, PLAYLIST_ADD_PATTERN
+from routes.music import MUSIC_CMD_PATTERN, LIKE_CMD_PATTERN, PLAYLIST_NEW_PATTERN, PLAYLIST_ADD_PATTERN, _lib_drop as _music_cache_drop
 import playback
 from song_gen import SONG_CMD_PATTERN, clean_song_visible_reply
 from tts import TTSStreamer
@@ -608,13 +608,9 @@ async def _video_call_sys_msg(conv_id: str, duration: int):
     await manager.broadcast({"type": "msg_created", "data": msg})
 
 async def _music_sys_msg(conv_id: str, music_cards: list):
-    """为点歌操作插入系统消息，使后续上下文能看到点歌信息"""
-    # 记录到"一起听过的歌"共享记忆（去重 + play_count）
-    for s in music_cards:
-        try:
-            playback.log_shared(s)
-        except Exception as e:
-            log.warning("记录共享听歌历史失败: %s", e)
+    """为点歌操作插入系统消息，使后续上下文能看到点歌信息。
+    注：不再在点歌时记「一起听」——现在只要真实播放就会经 now_playing 自动记录，
+    点了没听不算，听了才算。"""
     wb = load_worldbook()
     ai_name = wb.get("ai_name", "AI")
     parts = [f"《{s['name']}》- {s['artist']}" for s in music_cards]
@@ -648,41 +644,57 @@ def _exec_like_cmd(arg: str) -> dict:
                 return {"ok": False, "action": "like", "msg": "当前没有在播放的歌"}
             song = {"id": np["song_id"], "name": np.get("name", ""), "artist": np.get("artist", "")}
         ok = like_track(song["id"], True)
+        if ok:
+            _music_cache_drop("favorites")
         return {"ok": ok, "action": "like", "name": song.get("name", ""), "artist": song.get("artist", ""), "id": song["id"]}
     except Exception as e:
         return {"ok": False, "action": "like", "msg": f"红心失败：{e}"}
 
 
-def _exec_playlist_new_cmd(name: str) -> dict:
+def _exec_playlist_new_cmd(arg: str) -> dict:
+    """[PLAYLIST_NEW:歌单名] 或 [PLAYLIST_NEW:歌单名|留言]，创建后登记为"他建的歌单"（留言保留展示）"""
     try:
+        name, _, note = arg.partition("|")
+        name, note = name.strip(), note.strip()
         p = create_playlist(name)
+        _music_cache_drop("playlists")
+        playback.log_ai_playlist(p.get("id"), name, note)
         return {"ok": True, "action": "playlist_new", "name": name, "id": p.get("id")}
     except Exception as e:
         return {"ok": False, "action": "playlist_new", "msg": f"建歌单失败：{e}"}
 
 
 def _exec_playlist_add_cmd(arg: str) -> dict:
-    """[PLAYLIST_ADD:歌单名] 加当前在放的歌；[PLAYLIST_ADD:歌单名|歌曲名] 搜并加。歌单不存在自动建。"""
+    """[PLAYLIST_ADD:歌单名] 加当前在放的歌；[PLAYLIST_ADD:歌单名|歌曲名] 搜并加；
+    第三段可附留言：[PLAYLIST_ADD:歌单名|歌曲名|留言]（歌曲名留空则加当前在放的）。歌单不存在自动建。"""
     try:
         uid = (SETTINGS.get("netease_uid") or "").strip()
         if not uid:
             return {"ok": False, "action": "playlist_add", "msg": "未配置 netease_uid"}
-        if "|" in arg:
-            pname, song_kw = arg.split("|", 1)
-            pname, song_kw = pname.strip(), song_kw.strip()
+        parts = [s.strip() for s in arg.split("|")]
+        pname = parts[0]
+        song_kw = parts[1] if len(parts) > 1 else ""
+        note = parts[2] if len(parts) > 2 else ""
+        if song_kw:
             results = search_songs(song_kw, limit=1)
             if not results:
                 return {"ok": False, "action": "playlist_add", "msg": f"没搜到《{song_kw}》"}
             song = results[0]
         else:
-            pname = arg.strip()
             np = playback.get_now_playing()
             if not np or not np.get("song_id"):
                 return {"ok": False, "action": "playlist_add", "msg": "当前没有在播放的歌"}
             song = {"id": np["song_id"], "name": np.get("name", ""), "artist": np.get("artist", "")}
         pl = find_playlist_by_name(int(uid), pname)
-        pid = pl["id"] if pl else create_playlist(pname).get("id")
+        if pl:
+            pid = pl["id"]
+        else:
+            pid = create_playlist(pname).get("id")
+            playback.log_ai_playlist(pid, pname)  # 自动建的也算他建的
         add_to_playlist(pid, [song["id"]])
+        _music_cache_drop(f"pl:{pid}", "playlists")
+        if playback.is_ai_playlist(pid):
+            playback.log_ai_playlist_song(pid, song, note)
         return {"ok": True, "action": "playlist_add", "playlist": pname, "name": song.get("name", ""), "artist": song.get("artist", ""), "playlist_id": pid}
     except Exception as e:
         return {"ok": False, "action": "playlist_add", "msg": f"加歌失败：{e}"}

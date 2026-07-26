@@ -224,9 +224,11 @@ async def build_ability_block(
             import playback
             np = playback.get_now_playing()
             if np and np.get("name"):
-                st = "播放中" if np.get("state") != "paused" else "已暂停"
                 qc = int(np.get("queue_count", 0) or 0)
-                line = f"【当前音乐】\n正在{st}：《{np.get('name','')}》- {np.get('artist','')}"
+                if np.get("state") != "paused":
+                    line = f"【当前音乐】\n你们正在一起听：《{np.get('name','')}》- {np.get('artist','')}"
+                else:
+                    line = f"【当前音乐】\n一起听到一半暂停了：《{np.get('name','')}》- {np.get('artist','')}"
                 if qc:
                     line += f"（播放队列还有 {qc} 首）"
                 if np.get("state") != "paused":

@@ -19,6 +19,23 @@ _last_login_time = 0.0
 _SESSION_TTL = 2 * 3600  # 会话有效期：2小时
 
 
+def _apply_session_timeout(seconds: float = 15.0):
+    """pyncm 的 requests session 默认无超时，网络一抖调用线程会无限挂死——打上默认超时补丁"""
+    try:
+        from pyncm import GetCurrentSession
+        sess = GetCurrentSession()
+        if getattr(sess, "_aion_timeout_patched", False):
+            return
+        orig = sess.request
+        def _req(*a, **kw):
+            kw.setdefault("timeout", seconds)
+            return orig(*a, **kw)
+        sess.request = _req
+        sess._aion_timeout_patched = True
+    except Exception:
+        pass
+
+
 def _ensure_login():
     """确保已登录且会话未过期（优先 MUSIC_U Cookie，否则匿名）"""
     global _inited, _last_login_time
@@ -31,6 +48,7 @@ def _ensure_login():
             return
         try:
             from config import SETTINGS
+            _apply_session_timeout()
             music_u = SETTINGS.get("netease_music_u", "").strip()
             if music_u:
                 LoginViaCookie(MUSIC_U=music_u)
@@ -42,6 +60,7 @@ def _ensure_login():
                 _inited = True
                 _last_login_time = now
                 log.info("pyncm 匿名登录成功（未配置 MUSIC_U）")
+            _apply_session_timeout()
         except Exception as e:
             log.error("pyncm 登录失败: %s", e)
             raise
