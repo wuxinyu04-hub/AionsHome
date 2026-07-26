@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>方案 B · 插画房间</title>
+<style>
+:root{
+  --bg:#0b0e18;
+  --bg-2:#12172a;
+  --fg:#efe9db;
+  --fg-soft:rgba(239,233,219,.65);
+  --muted:rgba(239,233,219,.36);
+  --amber:#e0b478;
+  --amber-dim:rgba(224,180,120,.15);
+  --line:rgba(239,233,219,.09);
+  --serif:'Noto Serif SC','Songti SC',Georgia,serif;
+  --sans:-apple-system,'PingFang SC','Noto Sans SC',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:#14161f;font-family:var(--sans);display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
+.frame{width:390px;height:800px;background:var(--bg);border-radius:38px;overflow:hidden;position:relative;box-shadow:0 30px 80px rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.06)}
+@media (max-width:430px){body{padding:0}.frame{width:100vw;height:100vh;height:100dvh;border-radius:0;border:none}}
+
+.screen{position:absolute;inset:0;display:none;flex-direction:column;color:var(--fg)}
+.screen.on{display:flex;animation:fadeIn .5s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+/* ══ 房间插画（SVG 场景，首页 hero / 播放屏背景 共用）══ */
+.scene{position:relative;overflow:hidden;flex:0 0 auto}
+.scene svg{display:block;width:100%;height:100%}
+.rain-layer{animation:none}
+@keyframes rainfall{from{transform:translateY(-40px)}to{transform:translateY(0)}}
+.lamp-glow{animation:lampbreathe 8s ease-in-out infinite;transform-origin:center}
+@keyframes lampbreathe{0%,100%{opacity:.75}50%{opacity:1}}
+.cat-tail{transform-origin:left bottom;animation:tail 6s ease-in-out infinite}
+@keyframes tail{0%,100%{transform:rotate(0deg)}50%{transform:rotate(-8deg)}}
+.steam{animation:steamup 4s ease-in-out infinite;opacity:.5}
+@keyframes steamup{0%{transform:translateY(0);opacity:.5}80%{opacity:0}100%{transform:translateY(-10px);opacity:0}}
+.scene .vignette{position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(180deg,transparent 55%,var(--bg) 98%)}
+
+/* ══ ① 入口屏 ══ */
+#home .scene{height:46%}
+.home-body{flex:1;padding:0 28px;position:relative;z-index:2;margin-top:-38px;display:flex;flex-direction:column}
+.h-greet{font-family:var(--serif);font-size:27px;font-weight:500;letter-spacing:.04em}
+.h-sub{font-size:13px;color:var(--fg-soft);margin-top:8px;font-weight:300}
+
+.resume{margin-top:24px;cursor:pointer;border-radius:18px;padding:18px 20px;position:relative;overflow:hidden;
+  background:linear-gradient(160deg,rgba(224,180,120,.1),rgba(224,180,120,.02));
+  border:1px solid rgba(224,180,120,.2)}
+.resume .r-label{font-size:10px;letter-spacing:.2em;color:var(--amber)}
+.resume .r-title{font-family:var(--serif);font-size:18px;margin-top:6px;font-weight:500}
+.resume .r-meta{font-size:11px;color:var(--muted);margin-top:5px;display:flex;gap:8px}
+.resume .r-meta .dl{color:#82b391}
+.resume .r-play{position:absolute;right:18px;top:50%;transform:translateY(-50%);
+  width:42px;height:42px;border-radius:50%;background:var(--amber);color:#171106;
+  display:grid;place-items:center;font-size:14px;box-shadow:0 6px 20px rgba(224,180,120,.35)}
+.r-bar{position:absolute;left:0;bottom:0;height:2px;background:var(--amber);opacity:.6;width:38%}
+
+.ask{margin-top:22px}
+.ask .a-label{font-size:11px;color:var(--muted);letter-spacing:.14em;margin-bottom:10px}
+.ask-input{display:flex;align-items:center;gap:12px;background:var(--bg-2);border:1px solid var(--line);border-radius:16px;padding:13px 16px;transition:border-color .3s}
+.ask-input:focus-within{border-color:rgba(224,180,120,.4)}
+.ask-input input{flex:1;background:none;border:none;outline:none;color:var(--fg);font-family:var(--serif);font-size:15px}
+.ask-input input::placeholder{color:var(--muted);font-weight:300}
+.ask-input .go{width:32px;height:32px;border-radius:50%;border:none;background:var(--amber);color:#171106;font-size:13px;cursor:pointer;flex:0 0 auto}
+.ask-hint{font-size:11px;color:var(--muted);margin-top:10px}
+.ask-hint b{color:var(--fg-soft);font-weight:400;border-bottom:1px dotted var(--muted);cursor:pointer}
+.moods{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+.mood{padding:6px 14px;border-radius:18px;border:1px solid var(--line);background:var(--bg-2);font-size:11px;color:var(--fg-soft);cursor:pointer;font-weight:300}
+.home-foot{padding:14px 28px 40px;display:flex;justify-content:space-between;align-items:center;margin-top:auto}
+.f-lib{font-size:13px;color:var(--fg-soft);cursor:pointer;background:none;border:none;font-family:var(--sans)}
+.f-lib .n{font-size:11px;color:var(--muted);margin-left:6px}
+.f-set{font-size:13px;color:var(--muted);cursor:pointer;background:none;border:none}
+
+/* ══ ② 播放屏（房间放大成全屏背景）══ */
+#player .scene{position:absolute;inset:0;height:100%}
+#player .scene .vignette{background:linear-gradient(180deg,rgba(11,14,24,.35) 0%,rgba(11,14,24,.15) 35%,rgba(11,14,24,.88) 72%,var(--bg) 100%)}
+.p-ui{position:relative;z-index:2;display:flex;flex-direction:column;height:100%}
+.p-top{display:flex;justify-content:space-between;align-items:center;padding:60px 24px 0}
+.p-top button{background:none;border:none;color:var(--fg-soft);font-size:18px;cursor:pointer;padding:6px}
+.p-title{font-family:var(--serif);font-size:14px;color:var(--fg-soft);letter-spacing:.12em}
+.p-mid{flex:1;display:flex;flex-direction:column;justify-content:flex-end;padding:0 32px 24px;text-align:center}
+.cap{font-family:var(--serif);font-size:18px;line-height:1.9;letter-spacing:.04em;transition:opacity 1.4s;
+  text-shadow:0 2px 16px rgba(0,0,0,.7)}
+.cap.past{opacity:.25;font-size:14px;margin-bottom:14px}
+.p-foot{padding:0 30px 44px}
+.p-prog{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+.p-prog .t{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.p-bar{flex:1;height:2px;background:rgba(239,233,219,.15);border-radius:1px;cursor:pointer;position:relative}
+.p-fill{position:absolute;left:0;top:0;height:100%;width:34%;background:var(--amber)}
+.p-fill::after{content:"";position:absolute;right:-4px;top:50%;transform:translateY(-50%);width:8px;height:8px;border-radius:50%;background:var(--amber);box-shadow:0 0 10px rgba(224,180,120,.8)}
+.p-ctrl{display:flex;justify-content:center;align-items:center;gap:42px}
+.pc{background:none;border:none;color:var(--fg-soft);font-size:18px;cursor:pointer}
+.pc.main{width:60px;height:60px;border-radius:50%;background:var(--amber);color:#171106;font-size:21px;display:grid;place-items:center;box-shadow:0 8px 28px rgba(224,180,120,.3)}
+.p-timer{display:flex;justify-content:center;gap:10px;margin-top:26px}
+.tm{padding:6px 15px;border-radius:16px;border:1px solid rgba(239,233,219,.14);background:rgba(11,14,24,.5);color:var(--muted);font-size:11px;cursor:pointer;font-family:var(--sans)}
+.tm.on{border-color:rgba(224,180,120,.5);color:var(--amber);background:var(--amber-dim)}
+
+/* ══ ③ 故事库（插画小封面）══ */
+#library{background:var(--bg)}
+.l-top{padding:60px 26px 6px}
+.l-back{background:none;border:none;color:var(--muted);font-size:17px;cursor:pointer}
+.l-h{font-family:var(--serif);font-size:24px;font-weight:500;margin-top:16px}
+.l-sub{font-size:12px;color:var(--muted);margin-top:6px}
+.l-sub b{color:#82b391;font-weight:400}
+.l-body{flex:1;overflow-y:auto;padding:16px 26px 40px}
+.lg-name{font-size:11px;letter-spacing:.22em;color:var(--muted);margin:22px 0 12px}
+.lg-name:first-child{margin-top:4px}
+.l-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.lc{border-radius:16px;overflow:hidden;background:var(--bg-2);border:1px solid var(--line);cursor:pointer}
+.lc .cov{aspect-ratio:4/3;position:relative;overflow:hidden}
+.lc .cov svg{position:absolute;inset:0;width:100%;height:100%}
+.lc .inf{padding:10px 12px 12px}
+.lc .t{font-family:var(--serif);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lc .d{font-size:10px;color:var(--muted);margin-top:4px;display:flex;gap:6px}
+.lc .d .dl{color:#82b391}
+.preload{margin-top:28px;width:100%;padding:14px;border-radius:14px;background:none;border:1px solid rgba(224,180,120,.28);color:var(--amber);font-size:13px;cursor:pointer;font-family:var(--sans)}
+.preload small{display:block;font-size:10px;color:var(--muted);margin-top:4px}
+</style>
+</head>
+<body>
+<div class="frame">
+
+<!-- ═══ 房间场景 SVG 模板 ═══ -->
+<svg width="0" height="0" style="position:absolute">
+<defs>
+  <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#131a30"/><stop offset="1" stop-color="#0b0e18"/>
+  </linearGradient>
+  <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#0a1226"/><stop offset="1" stop-color="#111f3e"/>
+  </linearGradient>
+  <radialGradient id="lampg" cx=".5" cy=".5" r=".5">
+    <stop offset="0" stop-color="#e8bd80" stop-opacity=".85"/>
+    <stop offset=".45" stop-color="#d9a55f" stop-opacity=".3"/>
+    <stop offset="1" stop-color="#d9a55f" stop-opacity="0"/>
+  </radialGradient>
+  <radialGradient id="moong" cx=".5" cy=".5" r=".5">
+    <stop offset="0" stop-color="#cfd8ef" stop-opacity=".9"/>
+    <stop offset=".4" stop-color="#cfd8ef" stop-opacity=".15"/>
+    <stop offset="1" stop-color="#cfd8ef" stop-opacity="0"/>
+  </radialGradient>
+  <g id="room">
+    <!-- 墙 -->
+    <rect width="390" height="370" fill="url(#wall)"/>
+    <!-- 窗 -->
+    <g>
+      <rect x="52" y="38" width="200" height="212" rx="10" fill="url(#sky)" stroke="#2a3352" stroke-width="5"/>
+      <circle cx="205" cy="86" r="34" fill="url(#moong)"/>
+      <circle cx="205" cy="86" r="13" fill="#dfe6f5" opacity=".9"/>
+      <!-- 雨（分层动画） -->
+      <g clip-path="url(#winclip)">
+        <g class="rain-layer" style="animation:rainfall 1.1s linear infinite">
+          <g stroke="#8fa4d8" stroke-opacity=".35" stroke-width="1.4" stroke-linecap="round">
+            <line x1="70" y1="30" x2="66" y2="46"/><line x1="102" y1="70" x2="98" y2="86"/>
+            <line x1="140" y1="40" x2="136" y2="56"/><line x1="175" y1="95" x2="171" y2="111"/>
+            <line x1="215" y1="55" x2="211" y2="71"/><line x1="235" y1="120" x2="231" y2="136"/>
+            <line x1="88" y1="140" x2="84" y2="156"/><line x1="128" y1="170" x2="124" y2="186"/>
+            <line x1="190" y1="160" x2="186" y2="176"/><line x1="225" y1="195" x2="221" y2="211"/>
+            <line x1="70" y1="200" x2="66" y2="216"/><line x1="155" y1="215" x2="151" y2="231"/>
+          </g>
+        </g>
+      </g>
+      <clipPath id="winclip"><rect x="55" y="41" width="194" height="206" rx="8"/></clipPath>
+      <!-- 窗格 -->
+      <line x1="152" y1="40" x2="152" y2="248" stroke="#2a3352" stroke-width="4"/>
+      <line x1="54" y1="144" x2="250" y2="144" stroke="#2a3352" stroke-width="4"/>
+      <!-- 窗台 -->
+      <rect x="42" y="248" width="220" height="10" rx="4" fill="#232b47"/>
+    </g>
+    <!-- 窗帘 -->
+    <path d="M 30 20 Q 46 130 34 300 L 12 300 L 12 20 Z" fill="#1a2140" opacity=".9"/>
+    <path d="M 274 20 Q 258 130 270 300 L 292 300 L 292 20 Z" fill="#1a2140" opacity=".9"/>
+    <!-- 书架 -->
+    <g>
+      <rect x="306" y="60" width="72" height="200" rx="6" fill="#171e38"/>
+      <rect x="313" y="76" width="10" height="34" rx="2" fill="#3d4a75"/><rect x="326" y="72" width="9" height="38" rx="2" fill="#8a6d4a"/>
+      <rect x="338" y="80" width="11" height="30" rx="2" fill="#4a5580"/><rect x="352" y="74" width="9" height="36" rx="2" fill="#68507a"/>
+      <rect x="313" y="132" width="9" height="34" rx="2" fill="#7a5a45"/><rect x="325" y="128" width="11" height="38" rx="2" fill="#3d4a75"/>
+      <rect x="339" y="136" width="9" height="30" rx="2" fill="#556040"/><rect x="351" y="130" width="10" height="36" rx="2" fill="#4a5580"/>
+      <rect x="313" y="192" width="46" height="10" rx="2" fill="#3a4468" transform="rotate(-4 336 197)"/>
+      <rect x="306" y="112" width="72" height="5" fill="#101528"/><rect x="306" y="170" width="72" height="5" fill="#101528"/>
+    </g>
+    <!-- 台灯 + 光晕 -->
+    <g>
+      <circle class="lamp-glow" cx="86" cy="272" r="86" fill="url(#lampg)"/>
+      <path d="M 66 246 L 106 246 L 96 226 L 76 226 Z" fill="#c99a5c"/>
+      <rect x="84" y="246" width="4" height="38" fill="#3a4160"/>
+      <rect x="70" y="284" width="32" height="6" rx="3" fill="#3a4160"/>
+      <ellipse cx="86" cy="246" rx="20" ry="4" fill="#e8bd80" opacity=".9"/>
+    </g>
+    <!-- 桌与热饮 -->
+    <rect x="40" y="290" width="310" height="12" rx="5" fill="#1c2340"/>
+    <rect x="52" y="302" width="10" height="60" fill="#171d36"/><rect x="330" y="302" width="10" height="60" fill="#171d36"/>
+    <g>
+      <rect x="150" y="270" width="22" height="20" rx="4" fill="#7a5a45"/>
+      <path d="M 172 275 q 10 4 0 10" stroke="#7a5a45" stroke-width="3.5" fill="none"/>
+      <path class="steam" d="M 157 264 q 3 -5 0 -9 q -3 -4 0 -8" stroke="#efe9db" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+      <path class="steam" style="animation-delay:1.6s" d="M 165 264 q 3 -5 0 -9" stroke="#efe9db" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+    </g>
+    <!-- 猫（窗台上，卷尾）-->
+    <g fill="#1e2438">
+      <ellipse cx="216" cy="240" rx="26" ry="13"/>
+      <circle cx="238" cy="228" r="11"/>
+      <path d="M 231 220 l 3 -8 l 5 6 Z"/><path d="M 241 219 l 4 -7 l 4 7 Z"/>
+      <path class="cat-tail" d="M 192 240 q -16 -4 -12 -20" stroke="#1e2438" stroke-width="6" fill="none" stroke-linecap="round"/>
+      <circle cx="242" cy="227" r="1.4" fill="#e0b478" opacity=".8"/>
+    </g>
+  </g>
+</defs>
+</svg>
+
+  <!-- ═══ ① 入口屏 ═══ -->
+  <div class="screen on" id="home">
+    <div class="scene">
+      <svg viewBox="0 0 390 370" preserveAspectRatio="xMidYMax slice"><use href="#room"/></svg>
+      <div class="vignette"></div>
+    </div>
+    <div class="home-body">
+      <h1 class="h-greet">晚安，小语</h1>
+      <p class="h-sub">灯给你留着，猫也在。今天辛苦了。</p>
+      <div class="resume" onclick="go('player')">
+        <div class="r-label">继 续 听</div>
+        <div class="r-title">雨夜的书房</div>
+        <div class="r-meta"><span>上次到 12:34</span><span>·</span><span class="dl">✓ 已离线</span></div>
+        <div class="r-play">▶</div>
+        <div class="r-bar"></div>
+      </div>
+      <div class="ask">
+        <div class="a-label">或者，讲个新的 ——</div>
+        <div class="ask-input">
+          <input placeholder="今天加班到十点，好累…" onkeydown="if(event.key==='Enter')go('player')" />
+          <button class="go" onclick="go('player')">↑</button>
+        </div>
+        <p class="ask-hint">温叙远 · 20 分钟 · 上次的声音 —— <b>换一换</b></p>
+      </div>
+      <div class="moods">
+        <button class="mood" onclick="go('player')">失眠翻来覆去</button>
+        <button class="mood" onclick="go('player')">有点想哭</button>
+        <button class="mood" onclick="go('player')">就想听你说话</button>
+      </div>
+    </div>
+    <div class="home-foot">
+      <button class="f-lib" onclick="go('library')">故事库<span class="n">24 篇 · 6 篇已离线</span></button>
+      <button class="f-set">⚙</button>
+    </div>
+  </div>
+
+  <!-- ═══ ② 播放屏 ═══ -->
+  <div class="screen" id="player">
+    <div class="scene">
+      <svg viewBox="0 0 390 370" preserveAspectRatio="xMidYMid slice" style="height:62%"><use href="#room"/></svg>
+      <div class="vignette"></div>
+    </div>
+    <div class="p-ui">
+      <div class="p-top">
+        <button onclick="go('home')">↓</button>
+        <span class="p-title">雨夜的书房</span>
+        <button>♡</button>
+      </div>
+      <div class="p-mid">
+        <div class="cap past">窗外的雨还在下，你听……</div>
+        <div class="cap now" id="capNow">别想工作的事了，那些明天我陪你一起收拾。</div>
+      </div>
+      <div class="p-foot">
+        <div class="p-prog">
+          <span class="t">12:34</span>
+          <div class="p-bar"><div class="p-fill"></div></div>
+          <span class="t">19:20</span>
+        </div>
+        <div class="p-ctrl">
+          <button class="pc">↺15</button>
+          <button class="pc main" id="playBtn" onclick="togglePlay()">⏸</button>
+          <button class="pc">15↻</button>
+        </div>
+        <div class="p-timer">
+          <button class="tm" onclick="pickTimer(this)">不定时</button>
+          <button class="tm on" onclick="pickTimer(this)">15 分</button>
+          <button class="tm" onclick="pickTimer(this)">30 分</button>
+          <button class="tm" onclick="pickTimer(this)">播完</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ ③ 故事库 ═══ -->
+  <div class="screen" id="library">
+    <div class="l-top">
+      <button class="l-back" onclick="go('home')">←</button>
+      <h2 class="l-h">故事库</h2>
+      <p class="l-sub">24 篇 · <b>6 篇已离线，断网也能听</b></p>
+    </div>
+    <div class="l-body">
+      <div class="lg-name">最 近</div>
+      <div class="l-grid">
+        <div class="lc" onclick="go('player')">
+          <div class="cov"><svg viewBox="40 30 260 210" preserveAspectRatio="xMidYMid slice"><use href="#room"/></svg></div>
+          <div class="inf"><div class="t">雨夜的书房</div><div class="d"><span>19:20</span><span class="dl">✓ 已离线</span></div></div>
+        </div>
+        <div class="lc" onclick="go('player')">
+          <div class="cov" style="background:linear-gradient(160deg,#101a33,#0b0e18)">
+            <svg viewBox="140 30 260 210" preserveAspectRatio="xMidYMid slice"><use href="#room"/></svg></div>
+          <div class="inf"><div class="t">加班回家的路上</div><div class="d"><span>21:05</span><span class="dl">✓ 已离线</span></div></div>
+        </div>
+      </div>
+      <div class="lg-name">睡 不 着 的 晚 上</div>
+      <div class="l-grid">
+        <div class="lc" onclick="go('player')">
+          <div class="cov"><svg viewBox="0 60 280 200" preserveAspectRatio="xMidYMid slice"><use href="#room"/></svg></div>
+          <div class="inf"><div class="t">数不清的绵羊</div><div class="d"><span>18:40</span><span class="dl">✓ 已离线</span></div></div>
+        </div>
+        <div class="lc">
+          <div class="cov" style="background:linear-gradient(160deg,#141225,#0b0e18)">
+            <svg viewBox="90 120 260 200" preserveAspectRatio="xMidYMid slice"><use href="#room"/></svg></div>
+          <div class="inf"><div class="t">午夜电台</div><div class="d"><span>未合成</span></div></div>
+        </div>
+      </div>
+      <button class="preload">⇣ 睡前预载最近 3 篇<small>下载到手机 · 关电脑断网都能播</small></button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function go(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('on'));
+  document.getElementById(id).classList.add('on');
+}
+function togglePlay(){
+  const b=document.getElementById('playBtn');
+  b.textContent = b.textContent==='⏸' ? '▶' : '⏸';
+}
+function pickTimer(el){
+  el.parentElement.querySelectorAll('.tm').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on');
+}
+const lines=['别想工作的事了，那些明天我陪你一起收拾。','现在，眼睛闭上。','对，就这样，慢慢呼吸……','我在这儿，哪儿也不去。'];
+let li=0;
+setInterval(()=>{
+  if(!document.getElementById('player').classList.contains('on'))return;
+  li=(li+1)%lines.length;
+  const now=document.getElementById('capNow');
+  now.style.opacity=0;
+  setTimeout(()=>{now.textContent=lines[li];now.style.opacity=1},1400);
+},5200);
+</script>
+</body>
+</html>

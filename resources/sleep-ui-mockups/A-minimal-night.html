@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>方案 A · 极简黑夜</title>
+<style>
+/* ── 桌面预览外框 ── */
+:root{
+  --bg:#050609;
+  --bg-2:#0a0c12;
+  --fg:#ece7da;
+  --fg-soft:rgba(236,231,218,.62);
+  --muted:rgba(236,231,218,.34);
+  --amber:#d9b27a;
+  --amber-dim:rgba(217,178,122,.14);
+  --line:rgba(236,231,218,.08);
+  --serif:'Noto Serif SC','Songti SC',Georgia,serif;
+  --sans:-apple-system,'PingFang SC','Noto Sans SC',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:#111319;font-family:var(--sans);display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
+.frame{width:390px;height:800px;background:var(--bg);border-radius:38px;overflow:hidden;position:relative;box-shadow:0 30px 80px rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.06)}
+@media (max-width:430px){body{padding:0}.frame{width:100vw;height:100vh;height:100dvh;border-radius:0;border:none}}
+
+.screen{position:absolute;inset:0;display:none;flex-direction:column;color:var(--fg)}
+.screen.on{display:flex;animation:fadeIn .5s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+/* ── 呼吸光晕（全局唯一视觉焦点）── */
+.glow{position:absolute;left:50%;width:520px;height:520px;transform:translateX(-50%);border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,rgba(217,178,122,.13),rgba(217,178,122,.04) 40%,transparent 68%);
+  animation:breathe 9s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.55;transform:translateX(-50%) scale(.94)}50%{opacity:1;transform:translateX(-50%) scale(1.06)}}
+
+/* ════════ ① 入口屏 ════════ */
+#home .glow{top:-220px}
+.home-body{flex:1;display:flex;flex-direction:column;padding:0 30px;position:relative;z-index:2}
+.home-top{padding-top:76px}
+.h-date{font-size:12px;letter-spacing:.28em;color:var(--muted);text-transform:uppercase}
+.h-greet{font-family:var(--serif);font-size:32px;font-weight:500;letter-spacing:.04em;margin-top:14px;line-height:1.4}
+.h-sub{font-size:13px;color:var(--fg-soft);margin-top:10px;font-weight:300;letter-spacing:.05em}
+
+/* 继续听 —— 首要动作 */
+.resume{margin-top:56px;cursor:pointer;border-radius:20px;padding:22px 22px;position:relative;overflow:hidden;
+  background:linear-gradient(160deg,rgba(217,178,122,.09),rgba(217,178,122,.02));
+  border:1px solid rgba(217,178,122,.18);transition:border-color .3s}
+.resume:hover{border-color:rgba(217,178,122,.4)}
+.resume .r-label{font-size:11px;letter-spacing:.2em;color:var(--amber);opacity:.85}
+.resume .r-title{font-family:var(--serif);font-size:19px;margin-top:8px;font-weight:500}
+.resume .r-meta{font-size:12px;color:var(--muted);margin-top:6px;display:flex;align-items:center;gap:8px}
+.resume .r-meta .dl{color:#7fae8e;font-size:11px}
+.resume .r-play{position:absolute;right:20px;top:50%;transform:translateY(-50%);
+  width:46px;height:46px;border-radius:50%;background:var(--amber);color:#141008;
+  display:grid;place-items:center;font-size:15px;box-shadow:0 6px 24px rgba(217,178,122,.35)}
+.r-bar{position:absolute;left:0;bottom:0;height:2px;background:var(--amber);opacity:.6;width:38%}
+
+/* 新故事 —— 一个输入框，仅此而已 */
+.ask{margin-top:34px}
+.ask .a-label{font-size:12px;color:var(--muted);letter-spacing:.15em;margin-bottom:14px}
+.ask-input{display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line);padding-bottom:12px;transition:border-color .3s}
+.ask-input:focus-within{border-color:rgba(217,178,122,.4)}
+.ask-input input{flex:1;background:none;border:none;outline:none;color:var(--fg);
+  font-family:var(--serif);font-size:17px;font-weight:400;letter-spacing:.02em}
+.ask-input input::placeholder{color:var(--muted);font-weight:300}
+.ask-input .go{width:34px;height:34px;border-radius:50%;border:1px solid rgba(217,178,122,.4);
+  background:none;color:var(--amber);font-size:14px;cursor:pointer;flex:0 0 auto;transition:all .3s}
+.ask-input .go:hover{background:var(--amber);color:#141008}
+.ask-hint{font-size:11px;color:var(--muted);margin-top:12px;letter-spacing:.03em}
+.ask-hint b{color:var(--fg-soft);font-weight:400;border-bottom:1px dotted var(--muted);cursor:pointer}
+
+/* 快捷心情 */
+.moods{display:flex;gap:8px;margin-top:22px;flex-wrap:wrap}
+.mood{padding:7px 15px;border-radius:20px;border:1px solid var(--line);font-size:12px;color:var(--fg-soft);cursor:pointer;font-weight:300;transition:all .3s;background:none}
+.mood:hover{border-color:rgba(217,178,122,.4);color:var(--amber)}
+
+.home-foot{padding:0 30px 44px;position:relative;z-index:2;display:flex;justify-content:space-between;align-items:center}
+.f-lib{font-size:13px;color:var(--fg-soft);cursor:pointer;display:flex;align-items:center;gap:8px;background:none;border:none;font-family:var(--sans)}
+.f-lib .n{font-size:11px;color:var(--muted)}
+.f-set{font-size:13px;color:var(--muted);cursor:pointer;background:none;border:none;font-family:var(--sans)}
+
+/* ════════ ② 播放屏 ════════ */
+#player{background:#030407}
+#player .glow{top:50%;margin-top:-410px;animation-duration:11s}
+.p-top{display:flex;justify-content:space-between;align-items:center;padding:64px 26px 0;position:relative;z-index:2}
+.p-top button{background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:6px}
+.p-body{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:0 34px;position:relative;z-index:2;text-align:center}
+.p-title{font-family:var(--serif);font-size:15px;color:var(--fg-soft);letter-spacing:.1em;font-weight:400}
+.p-caption{margin-top:64px;min-height:150px;display:flex;flex-direction:column;justify-content:center;gap:18px}
+.cap{font-family:var(--serif);font-size:19px;line-height:1.9;font-weight:400;letter-spacing:.05em;transition:all 1.4s ease}
+.cap.past{opacity:.18;font-size:15px}
+.cap.now{opacity:1;color:var(--fg)}
+.cap.next{opacity:.08;font-size:15px}
+
+.p-foot{padding:0 34px 46px;position:relative;z-index:2}
+.p-prog{display:flex;align-items:center;gap:14px;margin-bottom:26px}
+.p-prog .t{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.p-bar{flex:1;height:2px;background:var(--line);border-radius:1px;cursor:pointer;position:relative}
+.p-fill{position:absolute;left:0;top:0;height:100%;width:34%;background:var(--amber);border-radius:1px}
+.p-fill::after{content:"";position:absolute;right:-4px;top:50%;transform:translateY(-50%);width:8px;height:8px;border-radius:50%;background:var(--amber);box-shadow:0 0 10px rgba(217,178,122,.8)}
+.p-ctrl{display:flex;justify-content:center;align-items:center;gap:44px}
+.pc{background:none;border:none;color:var(--fg-soft);font-size:19px;cursor:pointer;opacity:.75}
+.pc.main{width:64px;height:64px;border-radius:50%;background:var(--amber);color:#141008;font-size:22px;display:grid;place-items:center;opacity:1;box-shadow:0 8px 32px rgba(217,178,122,.28)}
+/* 睡眠定时器 */
+.p-timer{display:flex;justify-content:center;gap:10px;margin-top:30px}
+.tm{padding:6px 16px;border-radius:18px;border:1px solid var(--line);background:none;color:var(--muted);font-size:11px;cursor:pointer;font-family:var(--sans);letter-spacing:.05em;transition:all .3s}
+.tm.on{border-color:rgba(217,178,122,.5);color:var(--amber);background:var(--amber-dim)}
+.p-timer-hint{text-align:center;font-size:10px;color:var(--muted);margin-top:12px;letter-spacing:.05em}
+
+/* ════════ ③ 故事库 ════════ */
+#library{background:var(--bg)}
+.l-top{padding:64px 30px 8px}
+.l-back{background:none;border:none;color:var(--muted);font-size:17px;cursor:pointer;padding:0}
+.l-h{font-family:var(--serif);font-size:25px;font-weight:500;margin-top:20px;letter-spacing:.04em}
+.l-sub{font-size:12px;color:var(--muted);margin-top:8px}
+.l-sub b{color:#7fae8e;font-weight:400}
+.l-body{flex:1;overflow-y:auto;padding:14px 30px 40px}
+.l-group{margin-top:26px}
+.l-group:first-child{margin-top:10px}
+.lg-name{font-size:11px;letter-spacing:.24em;color:var(--muted);margin-bottom:14px}
+.li{display:flex;align-items:center;gap:16px;padding:15px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.li:last-child{border-bottom:none}
+.li .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.li .dot.ready{background:var(--amber);box-shadow:0 0 8px rgba(217,178,122,.5)}
+.li .dot.raw{background:none;border:1px solid var(--muted)}
+.li .meta{flex:1;min-width:0}
+.li .t{font-family:var(--serif);font-size:15px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li .d{font-size:11px;color:var(--muted);margin-top:5px;display:flex;gap:10px;align-items:center}
+.li .d .dl{color:#7fae8e}
+.li .dur{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.preload{margin-top:34px;width:100%;padding:14px;border-radius:14px;background:none;border:1px solid rgba(217,178,122,.25);color:var(--amber);font-size:13px;cursor:pointer;font-family:var(--sans);letter-spacing:.05em}
+.preload small{display:block;font-size:10px;color:var(--muted);margin-top:5px;letter-spacing:.03em}
+
+/* 生成中态（入口屏内联，不打断） */
+.gen-note{margin-top:22px;padding:16px 20px;border-radius:16px;background:var(--bg-2);border:1px solid var(--line);display:none;align-items:center;gap:14px}
+.gen-note.on{display:flex}
+.gen-note .pulse{width:10px;height:10px;border-radius:50%;background:var(--amber);animation:pulse 1.8s ease-in-out infinite;flex:0 0 auto}
+@keyframes pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.1)}}
+.gen-note .gt{flex:1;font-size:13px;color:var(--fg-soft)}
+.gen-note .gt small{display:block;font-size:11px;color:var(--muted);margin-top:3px}
+</style>
+</head>
+<body>
+<div class="frame">
+
+  <!-- ═══ ① 入口屏 ═══ -->
+  <div class="screen on" id="home">
+    <div class="glow"></div>
+    <div class="home-body">
+      <div class="home-top">
+        <div class="h-date">七月二十六 · 周日</div>
+        <h1 class="h-greet">晚安，小语</h1>
+        <p class="h-sub">今天也辛苦了，剩下的交给我。</p>
+      </div>
+
+      <div class="resume" onclick="go('player')">
+        <div class="r-label">继 续 听</div>
+        <div class="r-title">雨夜的书房</div>
+        <div class="r-meta"><span>上次到 12:34</span><span>·</span><span>还剩 7 分钟</span><span class="dl">✓ 已离线</span></div>
+        <div class="r-play">▶</div>
+        <div class="r-bar"></div>
+      </div>
+
+      <div class="ask">
+        <div class="a-label">或者，讲个新的 ——</div>
+        <div class="ask-input">
+          <input placeholder="今天加班到十点，好累…" onkeydown="if(event.key==='Enter')startGen()" />
+          <button class="go" onclick="startGen()">↑</button>
+        </div>
+        <p class="ask-hint">温叙远 · 20 分钟 · 上次的声音 —— <b>换一换</b></p>
+      </div>
+
+      <div class="moods">
+        <button class="mood" onclick="startGen()">失眠翻来覆去</button>
+        <button class="mood" onclick="startGen()">有点想哭</button>
+        <button class="mood" onclick="startGen()">就想听你说话</button>
+      </div>
+
+      <div class="gen-note" id="genNote">
+        <div class="pulse"></div>
+        <div class="gt">在写今晚的故事了，先躺好<small>大概 2 分钟 · 写完自动开始念</small></div>
+      </div>
+    </div>
+    <div class="home-foot">
+      <button class="f-lib" onclick="go('library')">故事库 <span class="n">24 篇 · 6 篇已离线</span></button>
+      <button class="f-set">⚙</button>
+    </div>
+  </div>
+
+  <!-- ═══ ② 播放屏 ═══ -->
+  <div class="screen" id="player">
+    <div class="glow"></div>
+    <div class="p-top">
+      <button onclick="go('home')">↓</button>
+      <span class="p-title">雨夜的书房</span>
+      <button>♡</button>
+    </div>
+    <div class="p-body">
+      <div class="p-caption">
+        <div class="cap past">窗外的雨还在下，你听……</div>
+        <div class="cap now">别想工作的事了，那些明天我陪你一起收拾。</div>
+        <div class="cap next">现在，眼睛闭上。</div>
+      </div>
+    </div>
+    <div class="p-foot">
+      <div class="p-prog">
+        <span class="t">12:34</span>
+        <div class="p-bar"><div class="p-fill"></div></div>
+        <span class="t">19:20</span>
+      </div>
+      <div class="p-ctrl">
+        <button class="pc">↺15</button>
+        <button class="pc main" id="playBtn" onclick="togglePlay()">⏸</button>
+        <button class="pc">15↻</button>
+      </div>
+      <div class="p-timer">
+        <button class="tm" onclick="pickTimer(this)">不定时</button>
+        <button class="tm on" onclick="pickTimer(this)">15 分</button>
+        <button class="tm" onclick="pickTimer(this)">30 分</button>
+        <button class="tm" onclick="pickTimer(this)">播完</button>
+      </div>
+      <p class="p-timer-hint">15 分钟后声音慢慢变小，然后安静</p>
+    </div>
+  </div>
+
+  <!-- ═══ ③ 故事库 ═══ -->
+  <div class="screen" id="library">
+    <div class="l-top">
+      <button class="l-back" onclick="go('home')">←</button>
+      <h2 class="l-h">故事库</h2>
+      <p class="l-sub">24 篇 · <b>6 篇已离线，断网也能听</b></p>
+    </div>
+    <div class="l-body">
+      <div class="l-group">
+        <div class="lg-name">最 近</div>
+        <div class="li" onclick="go('player')">
+          <span class="dot ready"></span>
+          <div class="meta"><div class="t">雨夜的书房</div><div class="d"><span>昨天</span><span class="dl">✓ 已离线</span></div></div>
+          <span class="dur">19:20</span>
+        </div>
+        <div class="li" onclick="go('player')">
+          <span class="dot ready"></span>
+          <div class="meta"><div class="t">加班回家的路上</div><div class="d"><span>周五</span><span class="dl">✓ 已离线</span></div></div>
+          <span class="dur">21:05</span>
+        </div>
+      </div>
+      <div class="l-group">
+        <div class="lg-name">睡 不 着 的 晚 上</div>
+        <div class="li" onclick="go('player')">
+          <span class="dot ready"></span>
+          <div class="meta"><div class="t">数不清的绵羊</div><div class="d"><span class="dl">✓ 已离线</span></div></div>
+          <span class="dur">18:40</span>
+        </div>
+        <div class="li">
+          <span class="dot raw"></span>
+          <div class="meta"><div class="t">午夜电台</div><div class="d"><span>未合成 · 点击生成语音</span></div></div>
+          <span class="dur">—</span>
+        </div>
+      </div>
+      <div class="l-group">
+        <div class="lg-name">难 过 的 时 候</div>
+        <div class="li" onclick="go('player')">
+          <span class="dot ready"></span>
+          <div class="meta"><div class="t">你已经做得很好了</div><div class="d"><span class="dl">✓ 已离线</span></div></div>
+          <span class="dur">20:12</span>
+        </div>
+        <div class="li">
+          <span class="dot raw"></span>
+          <div class="meta"><div class="t">抱一下就好</div><div class="d"><span>未合成</span></div></div>
+          <span class="dur">—</span>
+        </div>
+      </div>
+      <button class="preload">⇣ 睡前预载最近 3 篇<small>下载到手机 · 关电脑断网都能播</small></button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function go(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('on'));
+  document.getElementById(id).classList.add('on');
+}
+function startGen(){
+  document.getElementById('genNote').classList.add('on');
+  setTimeout(()=>go('player'), 2200); // 演示：2秒后直接进播放屏（真实版=垫场白噪音等生成）
+}
+function togglePlay(){
+  const b=document.getElementById('playBtn');
+  b.textContent = b.textContent==='⏸' ? '▶' : '⏸';
+}
+function pickTimer(el){
+  el.parentElement.querySelectorAll('.tm').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on');
+}
+// 字幕轮播演示
+const lines=['窗外的雨还在下，你听……','别想工作的事了，那些明天我陪你一起收拾。','现在，眼睛闭上。','对，就这样，慢慢呼吸……','我在这儿，哪儿也不去。'];
+let li=1;
+setInterval(()=>{
+  const caps=document.querySelectorAll('#player .cap');
+  if(!document.getElementById('player').classList.contains('on'))return;
+  li=(li+1)%lines.length;
+  caps[0].textContent=lines[(li+lines.length-1)%lines.length];
+  caps[1].textContent=lines[li];
+  caps[2].textContent=lines[(li+1)%lines.length];
+},5000);
+</script>
+</body>
+</html>
