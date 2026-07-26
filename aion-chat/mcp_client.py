@@ -136,7 +136,8 @@ class MCPManager:
             url=url,
             headers=headers,
             httpx_client_factory=lambda **kw: httpx.AsyncClient(
-                verify=False, proxy=None, **kw
+                # 默认校验 TLS 证书；个别自签名服务可在 mcp_servers.json 里加 "verify": false
+                verify=cfg.get("verify", True), proxy=None, **kw
             ),
         )
         streams = await transport_cm.__aenter__()

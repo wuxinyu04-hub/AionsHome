@@ -264,11 +264,13 @@ class VoiceWakeup:
                 if tts_enabled:
                     tts_voice = self._ws_manager.get_tts_voice() or ""
 
+            from auth import get_secret
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     "http://127.0.0.1:8080/api/conversations/" + conv_id + "/send",
                     json={"content": text, "context_limit": 20, "fast_mode": True,
                           "tts_enabled": tts_enabled, "tts_voice": tts_voice},
+                    headers={"X-Aion-Token": get_secret()},
                     timeout=60,
                 )
                 # SSE 流 — 读取完毕即表示 AI 文本已生成

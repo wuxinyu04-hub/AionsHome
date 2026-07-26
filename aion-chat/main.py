@@ -115,21 +115,30 @@ async def _auto_digest_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    loop = asyncio.get_event_loop()
+    print(f"[Auth] 登录密码: {auth.get_secret()}（存于 data/auth_secret.txt，改成 off 可关闭鉴权）")
+    loop = asyncio.get_running_loop()
+    # 各子系统启动互相独立：任何一个失败（摄像头被占、HA 离线、配置缺字段…）
+    # 都不应拖死整个应用，聊天主链路必须先活着
     cam.set_event_loop(loop)
-    cam_cfg = load_cam_config()
-    if cam_cfg.get("monitor_enabled"):
-        if cam_cfg.get("active_source") == "esp32":
-            cam.open_esp32()
-        else:
-            cam.open_camera(cam_cfg["camera_index"])
-        cam.start_monitoring()
+    try:
+        cam_cfg = load_cam_config()
+        if cam_cfg.get("monitor_enabled"):
+            if cam_cfg.get("active_source") == "esp32":
+                cam.open_esp32()
+            else:
+                cam.open_camera(cam_cfg.get("camera_index", 0))
+            cam.start_monitoring()
+    except Exception as e:
+        print(f"[Camera] ❌ 启动异常: {e}")
     # 语音模块初始化
     voice.set_event_loop(loop)
     voice.set_ws_manager(manager)
     # 日程/闹铃模块初始化
     schedule_mgr.set_event_loop(loop)
-    schedule_mgr.start()
+    try:
+        schedule_mgr.start()
+    except Exception as e:
+        print(f"[Schedule] ❌ 启动异常: {e}")
     # PC 活动采集
     pc_tracker.set_event_loop(loop)
     try:
@@ -142,15 +151,27 @@ async def lifespan(app: FastAPI):
         print(f"[PCDisplay] ❌ 启动异常: {e}")
     # 基金监控定时任务
     fund_scheduler.set_event_loop(loop)
-    fund_scheduler.start()
+    try:
+        fund_scheduler.start()
+    except Exception as e:
+        print(f"[Fund] ❌ 启动异常: {e}")
     # 自动记忆总结定时任务
     digest_task = asyncio.create_task(_auto_digest_loop())
     cr_digest_task = asyncio.create_task(_connor_1v1_auto_digest_loop())
     persona_evolution_task = asyncio.create_task(main_ai_persona_evolution_loop())
     connor_persona_evolution_task = asyncio.create_task(connor_persona_evolution_loop())
-    idle_autonomy_mgr.start()
-    ha_event_listener.start()
-    openclaw_weixin_runtime.start()
+    try:
+        idle_autonomy_mgr.start()
+    except Exception as e:
+        print(f"[Autonomy] ❌ 启动异常: {e}")
+    try:
+        ha_event_listener.start()
+    except Exception as e:
+        print(f"[HA] ❌ 启动异常: {e}")
+    try:
+        openclaw_weixin_runtime.start()
+    except Exception as e:
+        print(f"[Weixin] ❌ 启动异常: {e}")
     yield
     await openclaw_weixin_runtime.stop()
     await ha_event_listener.stop()
@@ -174,7 +195,42 @@ app = FastAPI(lifespan=lifespan)
 # between LAN, Tailscale, and Cloudflare origins.
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import RedirectResponse, Response
+
+import auth
+
+# 无需登录即可访问的路径（登录流程本身 + PWA 安装所需资源）
+_AUTH_EXEMPT_PATHS = {"/login", "/api/login", "/sw.js", "/manifest.json", "/favicon.ico", "/api/client-assets"}
+# AionApp 安卓端原生 OkHttp 请求（AionPushService/AionAccessibilityService）还不会带
+# X-Aion-Token，这些端点暂时豁免；等 App 侧加上 token 头后应逐步收紧
+_AUTH_EXEMPT_PREFIXES = (
+    "/public/",
+    "/api/location/",
+    "/api/health/ring/",
+    "/api/phone-screen/",
+    "/api/activity/report",
+    "/api/cam/esp32/frame",
+    "/api/music/stream/",
+    "/api/tts/audio/",
+    "/api/theater/tts/audio/",
+    "/api/gift/thumbnail/",
+    "/api/diaries/",
+)
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not auth.auth_enabled():
+            return await call_next(request)
+        path = request.url.path
+        if path in _AUTH_EXEMPT_PATHS or path.startswith(_AUTH_EXEMPT_PREFIXES):
+            return await call_next(request)
+        if auth.check_request(request):
+            return await call_next(request)
+        client_ip = request.client.host if request.client else "?"
+        print(f"[Auth] 401 {request.method} {path} from {client_ip}")
+        if path.startswith("/api/"):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return RedirectResponse("/login", status_code=302)
 
 _LOCAL_PREFIXES = ("127.", "192.168.", "::1", "localhost")
 
@@ -191,6 +247,28 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(NoCacheStaticMiddleware)
+app.add_middleware(AuthMiddleware)
+
+
+# ── 登录 ──────────────────────────────────────────
+@app.get("/login")
+async def login_page():
+    return FileResponse(BASE_DIR / "static" / "login.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.post("/api/login")
+async def login(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if str(body.get("password", "")).strip() == auth.get_secret():
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie(
+            auth.COOKIE_NAME, auth.cookie_value(),
+            max_age=auth.COOKIE_MAX_AGE, httponly=True, samesite="lax",
+        )
+        return resp
+    return JSONResponse({"ok": False, "error": "wrong password"}, status_code=401)
 
 # 静态文件
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -380,6 +458,8 @@ async def manifest():
 # WebSocket
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    # BaseHTTPMiddleware 不拦 WebSocket。AionApp 推送长连接（AionPushService）
+    # 不带 cookie/token，暂不强制鉴权；等 App 侧带上 ?token= 后这里应改为强制校验
     await manager.connect(ws)
     try:
         while True:

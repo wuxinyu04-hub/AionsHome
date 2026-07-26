@@ -10,44 +10,12 @@ venv/
 .vscode/
 .idea/
 
-# ── 用户数据（含隐私信息，不应上传） ──
-aion-chat/data/chat.db
-aion-chat/data/settings.json
-aion-chat/data/worldbook.json
-aion-chat/data/chat_status.json
-aion-chat/data/digest_anchor.json
-aion-chat/data/cam_config.json
-aion-chat/data/location_config.json
-aion-chat/data/location_status.json
-aion-chat/data/chats/*.md
-aion-chat/data/chats/_index.json
-aion-chat/data/monitor_logs/*.jsonl
-aion-chat/data/activity_logs/*.jsonl
-aion-chat/data/screenshots/*
-aion-chat/data/uploads/*
-aion-chat/data/tts_cache/*
-aion-chat/data/aion.db
-aion-chat/data/theater_personas.json
-aion-chat/data/fund_config.json
-aion-chat/data/fund_cache.json
-aion-chat/data/chatroom_config.json
-aion-chat/data/chatroom_images/
-aion-chat/data/mcp_servers.json
-aion-chat/data/home_assistant_mcp.json
-aion-chat/data/home_assistant_aliases.json
-aion-chat/data/homeassistant-config/
-aion-chat/data/wallpaper_config.json
-aion-chat/data/ghost_forest/*.json
-aion-chat/data/books/
-aion-chat/data/cert.pem
-aion-chat/data/key.pem
-aion-chat/data/tmp/
-aion-chat/data/cli_debug/
-aion-chat/data/model_raw_responses/
-aion-chat/data/date_theater_config.json
-aion-chat/data/xhs_lite_config.json
-aion-chat/data/doudizhu_state.json
-aion-chat/data/digest_runs.jsonl
+# ── 用户数据（含隐私信息，整目录默认忽略；需要入库的用 ! 显式白名单） ──
+# 之前是逐文件黑名单，每加一个新数据文件都可能被漏掉误提交，改为默认全忽略
+aion-chat/data/**
+!aion-chat/data/**/
+!aion-chat/data/**/.gitkeep
+!aion-chat/data/sleep_library.json
 
 # ── Connor-Codex 用户数据 ──
 Connor-Codex/messages.jsonl
@@ -57,14 +25,6 @@ Connor-Codex/uploads/
 Connor-Codex/node_modules/
 Connor-Codex/package-lock.json
 Connor-Codex/*.log
-
-# ── 保留空文件夹的 .gitkeep ──
-!aion-chat/data/chats/.gitkeep
-!aion-chat/data/monitor_logs/.gitkeep
-!aion-chat/data/activity_logs/.gitkeep
-!aion-chat/data/screenshots/.gitkeep
-!aion-chat/data/uploads/.gitkeep
-!aion-chat/data/tts_cache/.gitkeep
 
 # ── 独立 Demo / 测试项目（不属于主程序） ──
 Active/

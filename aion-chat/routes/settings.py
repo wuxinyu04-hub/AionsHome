@@ -23,6 +23,20 @@ log = logging.getLogger("settings.fishaudio")
 
 RELAY_MODEL_PROVIDERS = {"aipro", "custom_openai"}
 
+# ── 密钥打码 ──────────────────────────────────────
+# GET /api/settings 不再外发明文密钥：明文字段返回打码值，前端原样回传时
+# PUT 端识别"打码回显"并保留原值，只有真正输入新密钥才会覆盖。
+
+def _mask(k):
+    if not k or len(k) < 8:
+        return k
+    return k[:4] + "*" * (len(k) - 8) + k[-4:]
+
+def _is_masked_echo(field: str, value: str) -> bool:
+    """回传值等于当前存储值的打码形式（且不等于存储值本身）→ 视为未修改"""
+    cur = SETTINGS.get(field, "") or ""
+    return bool(value) and value == _mask(cur) and value != cur
+
 # ── 模型列表 ──────────────────────────────────────
 @router.get("/api/models")
 async def list_models():
@@ -95,33 +109,34 @@ async def update_home_layout(body: HomeLayoutUpdate):
 
 @router.get("/api/settings")
 async def get_settings():
-    def mask(k):
-        if not k or len(k) < 8:
-            return k
-        return k[:4] + "*" * (len(k) - 8) + k[-4:]
+    mask = _mask
+    routes_masked = [
+        dict(r, api_key=mask(r.get("api_key", "")))
+        for r in normalize_custom_model_routes(SETTINGS.get("custom_model_routes"))
+    ]
     return {
-        "gemini_key": SETTINGS.get("gemini_key", ""),
-        "siliconflow_key": SETTINGS.get("siliconflow_key", ""),
-        "gemini_free_key": SETTINGS.get("gemini_free_key", ""),
-        "aipro_key": SETTINGS.get("aipro_key", ""),
-        "senseaudio_key": SETTINGS.get("senseaudio_key", ""),
-        "minimax_key": SETTINGS.get("minimax_key", ""),
-        "fishaudio_key": SETTINGS.get("fishaudio_key", ""),
+        "gemini_key": mask(SETTINGS.get("gemini_key", "")),
+        "siliconflow_key": mask(SETTINGS.get("siliconflow_key", "")),
+        "gemini_free_key": mask(SETTINGS.get("gemini_free_key", "")),
+        "aipro_key": mask(SETTINGS.get("aipro_key", "")),
+        "senseaudio_key": mask(SETTINGS.get("senseaudio_key", "")),
+        "minimax_key": mask(SETTINGS.get("minimax_key", "")),
+        "fishaudio_key": mask(SETTINGS.get("fishaudio_key", "")),
         "tts_provider": SETTINGS.get("tts_provider", "siliconflow"),
-        "tavily_api_key": SETTINGS.get("tavily_api_key", ""),
-        "netease_music_u": SETTINGS.get("netease_music_u", ""),
+        "tavily_api_key": mask(SETTINGS.get("tavily_api_key", "")),
+        "netease_music_u": mask(SETTINGS.get("netease_music_u", "")),
         "sentinel_base_url": SETTINGS.get("sentinel_base_url", ""),
-        "sentinel_api_key": SETTINGS.get("sentinel_api_key", ""),
+        "sentinel_api_key": mask(SETTINGS.get("sentinel_api_key", "")),
         "sentinel_model": SETTINGS.get("sentinel_model", ""),
         "embedding_base_url": SETTINGS.get("embedding_base_url", ""),
-        "embedding_api_key": SETTINGS.get("embedding_api_key", ""),
+        "embedding_api_key": mask(SETTINGS.get("embedding_api_key", "")),
         "embedding_model": SETTINGS.get("embedding_model", ""),
         "luckin_mcp_enabled": SETTINGS.get("luckin_mcp_enabled", False),
-        "luckin_mcp_token": SETTINGS.get("luckin_mcp_token", ""),
+        "luckin_mcp_token": mask(SETTINGS.get("luckin_mcp_token", "")),
         "luckin_default_longitude": SETTINGS.get("luckin_default_longitude", ""),
         "luckin_default_latitude": SETTINGS.get("luckin_default_latitude", ""),
         "luckin_default_shop_keyword": SETTINGS.get("luckin_default_shop_keyword", ""),
-        "custom_model_routes": normalize_custom_model_routes(SETTINGS.get("custom_model_routes")),
+        "custom_model_routes": routes_masked,
         "gemini_key_masked": mask(SETTINGS.get("gemini_key", "")),
         "siliconflow_key_masked": mask(SETTINGS.get("siliconflow_key", "")),
         "gemini_free_key_masked": mask(SETTINGS.get("gemini_free_key", "")),
@@ -138,40 +153,33 @@ async def get_settings():
 @router.put("/api/settings")
 async def update_settings(body: SettingsUpdate):
     luckin_changed = False
-    if body.gemini_key is not None:
-        SETTINGS["gemini_key"] = body.gemini_key
-    if body.siliconflow_key is not None:
-        SETTINGS["siliconflow_key"] = body.siliconflow_key
-    if body.gemini_free_key is not None:
-        SETTINGS["gemini_free_key"] = body.gemini_free_key
-    if body.aipro_key is not None:
-        SETTINGS["aipro_key"] = body.aipro_key
-    if body.senseaudio_key is not None:
-        SETTINGS["senseaudio_key"] = body.senseaudio_key
-    if body.minimax_key is not None:
-        SETTINGS["minimax_key"] = body.minimax_key
-    if body.fishaudio_key is not None:
-        SETTINGS["fishaudio_key"] = body.fishaudio_key
+    def set_secret(field, value):
+        if value is not None and not _is_masked_echo(field, value):
+            SETTINGS[field] = value
+    set_secret("gemini_key", body.gemini_key)
+    set_secret("siliconflow_key", body.siliconflow_key)
+    set_secret("gemini_free_key", body.gemini_free_key)
+    set_secret("aipro_key", body.aipro_key)
+    set_secret("senseaudio_key", body.senseaudio_key)
+    set_secret("minimax_key", body.minimax_key)
+    set_secret("fishaudio_key", body.fishaudio_key)
     if body.tts_provider is not None:
         SETTINGS["tts_provider"] = body.tts_provider
-    if body.tavily_api_key is not None:
-        SETTINGS["tavily_api_key"] = body.tavily_api_key
+    set_secret("tavily_api_key", body.tavily_api_key)
     if body.sentinel_base_url is not None:
         SETTINGS["sentinel_base_url"] = body.sentinel_base_url
-    if body.sentinel_api_key is not None:
-        SETTINGS["sentinel_api_key"] = body.sentinel_api_key
+    set_secret("sentinel_api_key", body.sentinel_api_key)
     if body.sentinel_model is not None:
         SETTINGS["sentinel_model"] = body.sentinel_model
     if body.embedding_base_url is not None:
         SETTINGS["embedding_base_url"] = body.embedding_base_url
-    if body.embedding_api_key is not None:
-        SETTINGS["embedding_api_key"] = body.embedding_api_key
+    set_secret("embedding_api_key", body.embedding_api_key)
     if body.embedding_model is not None:
         SETTINGS["embedding_model"] = body.embedding_model
     if body.luckin_mcp_enabled is not None:
         luckin_changed = luckin_changed or SETTINGS.get("luckin_mcp_enabled") != body.luckin_mcp_enabled
         SETTINGS["luckin_mcp_enabled"] = body.luckin_mcp_enabled
-    if body.luckin_mcp_token is not None:
+    if body.luckin_mcp_token is not None and not _is_masked_echo("luckin_mcp_token", body.luckin_mcp_token):
         luckin_changed = luckin_changed or SETTINGS.get("luckin_mcp_token", "") != body.luckin_mcp_token
         SETTINGS["luckin_mcp_token"] = body.luckin_mcp_token
     if body.luckin_default_longitude is not None:
@@ -181,9 +189,20 @@ async def update_settings(body: SettingsUpdate):
     if body.luckin_default_shop_keyword is not None:
         SETTINGS["luckin_default_shop_keyword"] = body.luckin_default_shop_keyword
     if body.custom_model_routes is not None:
-        SETTINGS["custom_model_routes"] = normalize_custom_model_routes(body.custom_model_routes)
+        new_routes = normalize_custom_model_routes(body.custom_model_routes)
+        old_by_id = {
+            r.get("id"): r
+            for r in normalize_custom_model_routes(SETTINGS.get("custom_model_routes"))
+        }
+        for r in new_routes:
+            old = old_by_id.get(r.get("id"))
+            if old:
+                old_key = old.get("api_key", "")
+                if r.get("api_key") and r["api_key"] == _mask(old_key) and r["api_key"] != old_key:
+                    r["api_key"] = old_key
+        SETTINGS["custom_model_routes"] = new_routes
         refresh_custom_models()
-    if body.netease_music_u is not None:
+    if body.netease_music_u is not None and not _is_masked_echo("netease_music_u", body.netease_music_u):
         old_mu = SETTINGS.get("netease_music_u", "")
         SETTINGS["netease_music_u"] = body.netease_music_u
         if body.netease_music_u != old_mu:
