@@ -5,7 +5,7 @@
 - 所有日程持久化在 SQLite schedules 表，重启后自动恢复
 """
 
-import asyncio, json, time, threading, logging, re
+import asyncio, concurrent.futures, json, time, threading, logging, re
 from datetime import datetime
 
 import aiosqlite
@@ -167,12 +167,23 @@ class ScheduleManager:
 
     def stop(self):
         self._running = False
+        t = self._thread
+        if t and t.is_alive():
+            t.join(timeout=5)
 
     # ── 后台轮询 ──────────────────────────────────
     def _check_loop(self):
         while self._running:
             try:
-                asyncio.run_coroutine_threadsafe(self._tick(), self._loop).result(timeout=60)
+                if self._loop is None or self._loop.is_closed():
+                    return
+                fut = asyncio.run_coroutine_threadsafe(self._tick(), self._loop)
+                try:
+                    fut.result(timeout=60)
+                except concurrent.futures.TimeoutError:
+                    # 超时就取消本轮，避免慢 tick（如 LLM 调用卡住）在 loop 上越积越多
+                    fut.cancel()
+                    log.error("schedule tick 超时(60s)，已取消本轮")
             except Exception as e:
                 log.error("schedule tick error: %s", e)
             # 每 30 秒检查一次

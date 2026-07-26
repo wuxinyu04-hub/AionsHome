@@ -12,6 +12,9 @@ from database import get_db
 from model_json import extract_json_object
 from ws import manager
 
+import logging
+log = logging.getLogger("memory")
+
 # ── 向量工具 ──────────────────────────────────────
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMS = 3072
@@ -21,7 +24,8 @@ def _connor_display_name() -> str:
     try:
         from chatroom import load_chatroom_config
         return load_chatroom_config().get("connor_name") or "第二AI"
-    except Exception:
+    except Exception as e:
+        log.warning("读取第二AI显示名失败，使用默认名: %s", e)
         return "第二AI"
 
 
@@ -38,7 +42,8 @@ def _json_list(value) -> list:
     try:
         parsed = json.loads(text)
         return parsed if isinstance(parsed, list) else []
-    except Exception:
+    except Exception as e:
+        log.debug("字段非 JSON 列表，按原文单条处理: %s", e)
         return [text]
 
 
@@ -162,7 +167,8 @@ async def _fetch_source_rows_by_ids(source_ids: list[str], user_name: str, ai_na
     try:
         from chatroom import get_chatroom_names
         chat_user_name, chat_ai_name, companion_name = get_chatroom_names()
-    except Exception:
+    except Exception as e:
+        log.warning("读取群聊显示名失败，使用默认名: %s", e)
         chat_user_name, chat_ai_name, companion_name = user_name, ai_name, "第二AI"
     chat_name_map = {"user": chat_user_name, "aion": chat_ai_name, "connor": companion_name}
     async with get_db() as db:
@@ -263,7 +269,8 @@ async def get_embedding(text: str) -> list[float] | None:
                 resp = await client.post(url, json=body)
                 resp.raise_for_status()
                 return resp.json()["embedding"]["values"]
-        except Exception:
+        except Exception as e:
+            log.warning("Gemini embedding 调用失败，本次无向量: %s", e)
             return None
 
 
@@ -841,7 +848,8 @@ async def instant_digest(
             "topic": topic,
             "first_responder": first_responder,
         }
-    except Exception:
+    except Exception as e:
+        log.warning("即时哨兵分析失败，本轮跳过记忆检索: %s", e)
         return {
             "is_search_needed": False, "keywords": [], "require_detail": False,
             "status": "", "topic": "", "first_responder": "random",
@@ -891,7 +899,8 @@ async def _call_flash_lite(prompt: str) -> dict | None:
             if start >= 0 and end > start:
                 raw = raw[start:end]
         return json.loads(raw)
-    except Exception:
+    except Exception as e:
+        log.warning("哨兵模型调用或 JSON 解析失败: %s", e)
         return None
 
 
@@ -959,7 +968,8 @@ _STRICT_DATE_PREFIX_RE = re.compile(r"^\s*\d{4}-\d{2}-\d{2}")
 def _date_prefix_for_ts(ts: float | int | str | None) -> str:
     try:
         return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
-    except Exception:
+    except Exception as e:
+        log.warning("记忆日期前缀时间戳无效，回退当前日期: %s", e)
         return datetime.now().strftime("%Y-%m-%d")
 
 
@@ -979,7 +989,8 @@ def _replace_relative_time_terms(content: str, ts: float | int | str | None) -> 
     text = str(content or "")
     try:
         base_dt = datetime.fromtimestamp(float(ts))
-    except Exception:
+    except Exception as e:
+        log.warning("相对时间换算时间戳无效，回退当前时间: %s", e)
         base_dt = datetime.now()
 
     def day(offset: int) -> str:
@@ -1034,7 +1045,8 @@ def _recover_digest_memory_items_from_text(text: str) -> list[dict]:
         content = content.replace('\\"', '"').replace("\\n", "\n").strip()
         try:
             importance = float(match.group("importance"))
-        except Exception:
+        except Exception as e:
+            log.warning("恢复记忆条目时 importance 解析失败，用默认值: %s", e)
             importance = 0.5
         unresolved_raw = (match.group("unresolved") or "").lower()
         recovered.append({
@@ -1115,7 +1127,8 @@ def _normalize_digest_memory_items(result: dict, group: list[dict]) -> list[dict
         memory_type = LONG_TERM_MEMORY_TYPE if raw_type in {"important", "long_term", "长期重要"} else "daily"
         try:
             raw_importance = float(item.get("importance", 0.5 if memory_type == "daily" else 0.0))
-        except Exception:
+        except Exception as e:
+            log.warning("digest 记忆 importance 解析失败，用默认值: %s", e)
             raw_importance = 0.5 if memory_type == "daily" else 0.0
         if memory_type == LONG_TERM_MEMORY_TYPE:
             if raw_importance < 0.75:
@@ -1359,7 +1372,8 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
         if att_raw and m["role"] == "user":
             try:
                 atts = json.loads(att_raw) if isinstance(att_raw, str) else (att_raw or [])
-            except Exception:
+            except Exception as e:
+                log.warning("解析消息附件失败，语音转写未注入: %s", e)
                 atts = []
             for att in atts:
                 if isinstance(att, dict) and att.get("type") == "voice":
@@ -1720,20 +1734,20 @@ async def _ensure_daily_compression_schema():
         for table in ("memories", "chatroom_memories"):
             try:
                 await db.execute(f"ALTER TABLE {table} ADD COLUMN compression_stage INTEGER DEFAULT 0")
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("加列 compression_stage 跳过（多为列已存在）: %s", e)
             try:
                 await db.execute(f"ALTER TABLE {table} ADD COLUMN evidence_summary TEXT DEFAULT ''")
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("加列 evidence_summary 跳过（多为列已存在）: %s", e)
             try:
                 await db.execute(f"ALTER TABLE {table} ADD COLUMN evidence_detail_level TEXT DEFAULT 'summary'")
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("加列 evidence_detail_level 跳过（多为列已存在）: %s", e)
         try:
             await db.execute("ALTER TABLE chatroom_memories ADD COLUMN memory_kind TEXT DEFAULT 'long_term'")
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("加列 memory_kind 跳过（多为列已存在）: %s", e)
         await db.execute(
             "UPDATE memories SET compression_stage=1 "
             "WHERE type='seeky_compressed' AND COALESCE(compression_stage,0)=0"
@@ -1771,8 +1785,8 @@ async def _ensure_daily_compression_schema():
         """)
         try:
             await db.execute("ALTER TABLE daily_memory_compress_reviews ADD COLUMN target TEXT NOT NULL DEFAULT 'both'")
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("加列 target 跳过（多为列已存在）: %s", e)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_daily_memory_compress_reviews_created ON daily_memory_compress_reviews(created_at DESC)")
         await db.commit()
 
@@ -1812,8 +1826,8 @@ def _parse_memory_time(value, fallback_ts: float) -> float:
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
             return datetime.strptime(text, fmt).timestamp()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("记忆时间格式 %s 不匹配: %s", fmt, e)
     return fallback_ts
 
 
@@ -2087,7 +2101,8 @@ def _normalize_daily_draft_item(
     source_start, source_end = _source_bounds(source_rows, fallback_ts)
     try:
         raw_importance = float(item.get("importance", default_importance))
-    except Exception:
+    except Exception as e:
+        log.warning("压缩记忆 importance 解析失败，用默认值: %s", e)
         raw_importance = default_importance
     if memory_kind == "long_term":
         if raw_importance < 0.8:
@@ -2352,11 +2367,13 @@ def _serialize_daily_compression_review(row) -> dict | None:
     data = dict(row)
     try:
         payload = json.loads(data.get("payload") or "{}")
-    except Exception:
+    except Exception as e:
+        log.warning("压缩评审 payload 解析失败，按空处理: %s", e)
         payload = {}
     try:
         apply_result = json.loads(data.get("apply_result") or "{}")
-    except Exception:
+    except Exception as e:
+        log.warning("压缩评审 apply_result 解析失败，按空处理: %s", e)
         apply_result = {}
     return {
         "id": data.get("id"),
@@ -2806,7 +2823,7 @@ async def rebuild_embeddings() -> dict:
                     await db.commit()
                     await asyncio.sleep(0.3)
             await db.commit()
-        except Exception:
-            pass  # 聊天室记忆表可能不存在
+        except Exception as e:
+            log.debug("聊天室记忆表重建向量跳过（表可能不存在）: %s", e)
     print(f"[Memory] 向量索引重建完成: {success}/{total} 成功, {failed} 失败")
     return {"total": total, "success": success, "failed": failed}

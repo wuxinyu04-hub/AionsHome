@@ -3,12 +3,15 @@ AI 模型调用：硅基流动 / Gemini 流式 + 多模态消息构建
 """
 
 import json, base64, mimetypes, asyncio, shutil, subprocess, os, re, time, uuid
+import logging
 from pathlib import Path
 
 import httpx
 import tempfile
 
 from config import get_key, MODELS, UPLOADS_DIR, CODEX_UPLOADS_DIR, SETTINGS, get_sentinel_config, DATA_DIR, resolve_model_key, is_model_deprecated
+
+log = logging.getLogger("ai_providers")
 
 # ── 网络代理策略 ───────────────────────────────────
 # 国内域名/IP 直连，绕过系统代理环境变量（HTTP_PROXY/HTTPS_PROXY）；
@@ -31,7 +34,8 @@ def _is_domestic_url(url: str) -> bool:
     """判断 URL 是否属于国内域名，应直连不走代理。"""
     try:
         host = httpx.URL(url).host
-    except Exception:
+    except Exception as e:
+        log.debug("解析 URL host 失败（代理直连判断按国外处理）: %s", e)
         return False
     if not host:
         return False
@@ -404,7 +408,9 @@ def build_multimodal_messages(history: list):
         attachments = m.get("attachments", [])
         if isinstance(attachments, str):
             try: attachments = json.loads(attachments) if attachments else []
-            except: attachments = []
+            except Exception as e:
+                log.debug("多模态消息附件 JSON 解析失败，按无附件处理: %s", e)
+                attachments = []
         if attachments and m["role"] == "user":
             parts = []
             if m["content"]:
@@ -441,7 +447,9 @@ def build_gemini_contents(history: list):
         attachments = m.get("attachments", [])
         if isinstance(attachments, str):
             try: attachments = json.loads(attachments) if attachments else []
-            except: attachments = []
+            except Exception as e:
+                log.debug("Gemini 消息附件 JSON 解析失败，按无附件处理: %s", e)
+                attachments = []
         parts = []
         if m["content"]:
             parts.append({"text": m["content"]})
@@ -496,8 +504,8 @@ async def call_siliconflow(messages: list, model: str, meta: dict | None = None,
                             meta["reasoning_content"] = meta.get("reasoning_content", "") + str(reasoning)
                         if "content" in delta and delta["content"]:
                             yield delta["content"]
-                    except:
-                        pass
+                    except Exception as e:
+                        log.warning("硅基流动流式 chunk 解析失败，已跳过该 chunk: %s", e)
 
 
 # ── Gemini 安全设置（全局关闭内容过滤）─────────────
@@ -550,8 +558,8 @@ async def call_gemini(messages: list, model: str, meta: dict | None = None, temp
                                     meta["reasoning_content"] = meta.get("reasoning_content", "") + text
                             else:
                                 yield text
-                    except:
-                        pass
+                    except Exception as e:
+                        log.warning("Gemini 流式 chunk 解析失败，已跳过该 chunk: %s", e)
 
 # ── AiPro 中转站  ────────────────────────────────────────https://vip.aipro.love
 async def call_aipro(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None):
@@ -594,8 +602,8 @@ async def call_aipro(messages: list, model: str, meta: dict | None = None, tempe
                         meta["reasoning_content"] = meta.get("reasoning_content", "") + str(reasoning)
                     if "content" in delta and delta["content"]:
                         yield delta["content"]
-                except:
-                    pass
+                except Exception as e:
+                    log.warning("AiPro 流式 chunk 解析失败，已跳过该 chunk: %s", e)
 
 
 def _openai_chat_completions_url(base_url: str) -> str:
@@ -659,8 +667,8 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
                         meta["reasoning_content"] = meta.get("reasoning_content", "") + str(reasoning)
                     if delta.get("content"):
                         yield delta["content"]
-                except:
-                    pass
+                except Exception as e:
+                    log.warning("自定义中转站流式 chunk 解析失败，已跳过该 chunk: %s", e)
 
 # ── Gemini CLI ────────────────────────────────────
 def _find_gemini_script() -> str | None:
@@ -672,8 +680,8 @@ def _find_gemini_script() -> str | None:
         script = Path(npm_root) / "@google" / "gemini-cli" / "bundle" / "gemini.js"
         if script.exists():
             return str(script)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("npm root 定位 gemini CLI 失败，尝试下一种方式: %s", e)
     # 方式2: 从 gemini.cmd 位置推导
     try:
         gemini_cmd = shutil.which("gemini")
@@ -682,8 +690,8 @@ def _find_gemini_script() -> str | None:
             script = prefix / "node_modules" / "@google" / "gemini-cli" / "bundle" / "gemini.js"
             if script.exists():
                 return str(script)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("从 gemini.cmd 推导 gemini CLI 脚本失败: %s", e)
     return None
 
 _GEMINI_SCRIPT: str | None = _find_gemini_script()
@@ -830,7 +838,8 @@ def _build_cli_prompt(messages: list, *, copy_cr_uploads: bool = False) -> str:
             if isinstance(attachments, str):
                 try:
                     attachments = json.loads(attachments) if attachments else []
-                except Exception:
+                except Exception as e:
+                    log.debug("CLI 消息附件 JSON 解析失败，按无附件处理: %s", e)
                     attachments = []
             for att in attachments:
                 if isinstance(att, dict):
@@ -1354,7 +1363,8 @@ def _extract_antigravity_sqlite_output(log_path: Path | None, *, prefer_bot: boo
             "WHERE step_payload IS NOT NULL ORDER BY idx DESC"
         ).fetchall()
         con.close()
-    except Exception:
+    except Exception as e:
+        log.warning("读取 Antigravity 会话 sqlite 失败，无法兜底提取回复: %s", e)
         return ""
 
     type15_rows = [row for row in rows if row[1] == 15]
@@ -1579,8 +1589,8 @@ async def call_antigravity_cli(messages: list, model: str, meta: dict | None = N
             if f:
                 try:
                     Path(f).unlink(missing_ok=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("清理 Antigravity 临时脚本失败: %s", e)
 
 
 # ── Codex CLI ─────────────────────────────────────
@@ -1597,8 +1607,8 @@ def _find_codex_script() -> str | None:
         script = Path(npm_root) / "@openai" / "codex" / "bin" / "codex.js"
         if script.exists():
             return str(script)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("npm root 定位 Codex CLI 失败: %s", e)
     return None
 
 _CODEX_SCRIPT: str | None = _find_codex_script()
@@ -1939,7 +1949,9 @@ def _messages_have_images(messages: list) -> bool:
         atts = m.get("attachments", [])
         if isinstance(atts, str):
             try: atts = json.loads(atts) if atts else []
-            except: atts = []
+            except Exception as e:
+                log.debug("检查图片附件时 JSON 解析失败，按无附件处理: %s", e)
+                atts = []
         for att in atts:
             fpath = _resolve_attachment_path(att)
             if fpath and fpath.exists():
@@ -1961,7 +1973,9 @@ async def _sentinel_describe_images(messages: list) -> list:
         atts = nm.get("attachments", [])
         if isinstance(atts, str):
             try: atts = json.loads(atts) if atts else []
-            except: atts = []
+            except Exception as e:
+                log.debug("哨兵识图时附件 JSON 解析失败，按无附件处理: %s", e)
+                atts = []
 
         if nm.get("role") != "user" or not atts:
             result.append(nm)

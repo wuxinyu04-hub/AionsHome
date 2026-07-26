@@ -77,6 +77,9 @@ from web_search import (
     run_web_commands,
 )
 
+import logging
+log = logging.getLogger("chat")
+
 
 def _process_voice_attachments_in_history(history: list, keep_idx: int = -1):
     """处理历史消息中的语音/视频附件：
@@ -463,18 +466,18 @@ def _path_url_for_local_image(ref: str) -> str | None:
     try:
         rel = resolved.relative_to(UPLOADS_DIR.resolve())
         return "/uploads/" + rel.as_posix()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("图片路径不在 uploads 目录内: %s", e)
     try:
         rel = resolved.relative_to(CODEX_UPLOADS_DIR.resolve())
         return "/cr-uploads/" + rel.as_posix()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("图片路径不在 cr-uploads 目录内: %s", e)
     try:
         rel = resolved.relative_to(PUBLIC_DIR.resolve())
         return "/public/" + rel.as_posix()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("图片路径不在 public 目录内: %s", e)
     dest_name = f"inline_{int(time.time()*1000)}_{src.name}"
     dest = UPLOADS_DIR / dest_name
     counter = 1
@@ -610,8 +613,8 @@ async def _music_sys_msg(conv_id: str, music_cards: list):
     for s in music_cards:
         try:
             playback.log_shared(s)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("记录共享听歌历史失败: %s", e)
     wb = load_worldbook()
     ai_name = wb.get("ai_name", "AI")
     parts = [f"《{s['name']}》- {s['artist']}" for s in music_cards]
@@ -1269,8 +1272,8 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                             song["audio_url"] = get_audio_url(song["id"])
                             song["candidates"] = results[1:4]
                             music_cards.append(song)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning("点歌搜索失败: %s", e)
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
 
@@ -1409,8 +1412,8 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                             await t_db.commit()
                         await manager.broadcast({"type": "wallet_update"})
                         print(f"[WALLET] AI 转账: -{t_val}元")
-                except (ValueError, Exception):
-                    pass
+                except Exception as e:
+                    log.warning("AI 转账入账失败: %s", e)
 
             music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
             full_text, image_atts = _extract_reply_image_attachments(full_text)
@@ -1524,8 +1527,8 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             if tts_streamer:
                 try:
                     await tts_streamer.flush()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("TTS 流收尾 flush 失败（末段语音可能丢失）: %s", e)
             await _q.put({"type": "done"})
 
     asyncio.create_task(_bg_generate())
@@ -1622,8 +1625,8 @@ async def send_message(conv_id: str, body: MsgCreate):
                 await t_db.commit()
             await manager.broadcast({"type": "wallet_update"})
             print(f"[WALLET] 用户转账: {t_val}元")
-        except (ValueError, Exception):
-            pass
+        except Exception as e:
+            log.warning("用户转账入账失败: %s", e)
 
     # 连发批量：仅插入用户消息 + 广播 + 转账 + 哨兵重置，不触发生成。
     # 前端连发 N 条 = 前 N-1 条 defer_generation=True（只插不生成），最后一条 defer_generation=False（正常生成）。
@@ -1873,8 +1876,8 @@ async def send_message(conv_id: str, body: MsgCreate):
                             song["audio_url"] = get_audio_url(song["id"])
                             song["candidates"] = results[1:4]
                             music_cards.append(song)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning("点歌搜索失败: %s", e)
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
 
@@ -2021,8 +2024,8 @@ async def send_message(conv_id: str, body: MsgCreate):
                             await t_db.commit()
                         await manager.broadcast({"type": "wallet_update"})
                         print(f"[WALLET] AI 转账: -{t_val}元")
-                except (ValueError, Exception):
-                    pass
+                except Exception as e:
+                    log.warning("AI 转账入账失败: %s", e)
 
             # 检测剧场指令 [剧场属性：xxx ±N] / [剧场道具：xxx]
             theater_updates = []
@@ -2192,8 +2195,8 @@ async def send_message(conv_id: str, body: MsgCreate):
             if tts_streamer:
                 try:
                     await tts_streamer.flush()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("TTS 流收尾 flush 失败（末段语音可能丢失）: %s", e)
             await _q.put({"type": "done"})
 
     asyncio.create_task(_bg_generate())
@@ -2513,8 +2516,8 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
     if web_tts:
         try:
             await web_tts.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("联网搜索回复 TTS flush 失败（末段语音可能丢失）: %s", e)
     await export_conversation(conv_id)
     print(f"[WEB_SEARCH] 搜索完成，已自动追加回复: searches={len(searches)}, extracts={len(extracts)}")
 
@@ -2700,8 +2703,8 @@ async def perform_poi_check(conv_id: str, model_key: str, categories: list[str])
     if poi_tts:
         try:
             await poi_tts.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("POI 回复 TTS flush 失败（末段语音可能丢失）: %s", e)
     await export_conversation(conv_id)
     print(f"[POI_CHECK] 搜索完成，已自动追加回复: {searched_cats}")
 
@@ -2837,8 +2840,8 @@ async def perform_activity_check(conv_id: str, model_key: str, n: int = 6):
     if ac_tts:
         try:
             await ac_tts.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("活动评论 TTS flush 失败（末段语音可能丢失）: %s", e)
     await export_conversation(conv_id)
     print(f"[ACTIVITY_CHECK] 查看动态完成，n={n}，已自动追加回复")
 
@@ -3037,8 +3040,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                             song["audio_url"] = get_audio_url(song["id"])
                             song["candidates"] = results[1:4]
                             music_cards.append(song)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning("点歌搜索失败: %s", e)
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
 
@@ -3185,8 +3188,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                             await t_db.commit()
                         await manager.broadcast({"type": "wallet_update"})
                         print(f"[WALLET] AI 转账: -{t_val}元")
-                except (ValueError, Exception):
-                    pass
+                except Exception as e:
+                    log.warning("AI 转账入账失败: %s", e)
 
             # 清洗 AI 回复中模仿产生的 <meta> 标签
             full_text = _visible_ai_text(full_text)
@@ -3311,8 +3314,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             if regen_tts:
                 try:
                     await regen_tts.flush()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("重新生成 TTS flush 失败（末段语音可能丢失）: %s", e)
             await _q.put({"type": "done"})
 
     asyncio.create_task(_bg_generate())
