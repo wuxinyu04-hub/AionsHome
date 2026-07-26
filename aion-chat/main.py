@@ -41,6 +41,8 @@ from routes import activity as activity_routes
 from routes import book as book_routes
 from routes import theater as theater_routes
 from routes import date_theater as date_theater_routes
+from routes import todos as todos_routes
+from routes import avatar as avatar_routes
 from routes import ghost_forest as ghost_forest_routes
 from routes import gift as gift_routes
 from routes import fund as fund_routes
@@ -296,6 +298,8 @@ app.include_router(activity_routes.router)
 app.include_router(book_routes.router)
 app.include_router(theater_routes.router)
 app.include_router(date_theater_routes.router)
+app.include_router(todos_routes.router)
+app.include_router(avatar_routes.router)
 app.include_router(ghost_forest_routes.router)
 app.include_router(gift_routes.router)
 app.include_router(fund_routes.router)
@@ -445,6 +449,14 @@ async def health_page():
 @app.get("/pet")
 async def pet_page():
     return FileResponse(BASE_DIR / "static" / "pet.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/music")
+async def music_page():
+    return FileResponse(BASE_DIR / "static" / "music.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/todos")
+async def todos_page():
+    return FileResponse(BASE_DIR / "static" / "todos.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # PWA：Service Worker 必须从根路径提供，作用域才能覆盖所有页面
 @app.get("/sw.js")
