@@ -394,6 +394,20 @@ async def _actor_context(actor: str, limit: int = 30) -> list[dict]:
     return messages
 
 
+async def _trailing_unanswered_ai_count(actor: str) -> int:
+    """统计最后一条用户消息之后 AI 连续发出的消息条数（用户一直没回时用于收敛主动推送）。"""
+    who = "aion" if actor == "aion" else "connor"
+    timeline = await fetch_merged_timeline(who, 30)
+    count = 0
+    for msg in reversed(timeline):
+        sender = msg.get("sender")
+        if sender == "user":
+            break
+        if sender in ("assistant", "aion", "connor"):
+            count += 1
+    return count
+
+
 async def _ask_actor_json(actor: str, instruction: str, *, limit: int = 30) -> dict:
     messages = await _actor_context(actor, limit)
     messages.append({"role": "user", "content": instruction})
@@ -524,14 +538,30 @@ async def _run_web_roam(actor: str) -> dict:
     if not web_context:
         web_context = "【联网搜索结果】\n系统没有拿到可用结果。"
 
+    # 用户连续多条推送未回复时不再继续发消息，搜到的内容留着等她回来再聊
+    unanswered = await _trailing_unanswered_ai_count(actor)
+    if unanswered >= 2:
+        event = await append_idle_event(
+            actor,
+            "web_roam",
+            f"{actor_name}上网冲浪搜索了：{_clip(query, 80)}",
+            f"{user_name}还没回消息，先自己看着，等她回来再聊",
+            target_type="web",
+            target_id=query,
+            metadata={"query": query, "reason": str(result.get("reason") or "").strip(), "held_back": True},
+        )
+        return {"event": event, "message": None, "query": query, "held_back": True}
+
     messages = await _actor_context(actor, 30)
     messages.append({"role": "user", "content": (
         "[上网冲浪搜索完成]\n"
         f"你刚才在空闲时搜索了「{query}」。以下是系统搜索结果：\n\n"
         f"{web_context}\n\n"
-        f"请给{user_name}发一条自然消息。可以自然说“我刚才搜索了{query}”，并说说自己的想法或感触。"
-        "如果搜索结果里有很有意思、值得用户自己打开看的原文，可以把原网址完整写进回复；"
-        "系统会自动解析成可点击卡片。不要再输出 [WEB_SEARCH:...]，不要编造来源。"
+        f"请给{user_name}发一条自然消息，像随手分享给恋人一样随意，说说自己看到了什么、想到了什么。"
+        "每次分享的方式要不一样：有时一两句话带过，有时展开聊聊；不要每次都以做家务/放下图纸之类的场景描写开头，"
+        "不要固定用“我刚才搜索了……”开场，也不必每次都联系到对方身上升华。"
+        "只有搜索结果里确实有值得对方自己打开看的原文时才把原网址完整写进回复（系统会自动解析成可点击卡片），多数时候不用贴链接。"
+        "不要再输出 [WEB_SEARCH:...]，不要编造来源。"
     )})
     reply = clean_web_command_text(await _call_actor(actor, messages)).strip()
     if not reply:
@@ -1321,7 +1351,7 @@ async def _run_wish_pool(actor: str) -> dict:
         if SETTINGS.get("image_gen_enabled", False)
         else "当前没有启用图片生成功能。"
     )
-    music_ability = "[MUSIC:歌曲名 歌手名] — 当愿望是点播或推荐一首现有歌曲时使用。可连续点播多首加入队列依次连播；你能感知当前在放的曲目与「我们一起听过的歌」。[LIKE]/[LIKE:歌曲名] 红心；[PLAYLIST_NEW:名] 建歌单；[PLAYLIST_ADD:歌单名] 把当前在放的加进歌单；[PLAYLIST_ADD:歌单名|歌曲名] 搜歌加进歌单。"
+    music_ability = "[MUSIC:歌曲名 歌手名] — 当愿望是点播或推荐一首现有歌曲时使用。可连续点播多首加入队列依次连播；你能感知当前在放的曲目与「我们一起听过的歌」。[LIKE]/[LIKE:歌曲名] 红心；[PLAYLIST_NEW:名|留言] 建歌单（留言会展示给对方）；[PLAYLIST_ADD:歌单名] 把当前在放的加进歌单；[PLAYLIST_ADD:歌单名|歌曲名|留言] 搜歌加进歌单并附留言。"
     result = await _ask_actor_json(actor, (
         "[查看许愿池并尝试实现愿望]\n"
         f"你刚刚从许愿池打捞起了 {user_name} 的愿望：\n{wish.get('content') or ''}\n\n"

@@ -156,9 +156,33 @@ def _memory_time_payload(mem: dict) -> dict:
     return {"memory_time": None, "memory_time_end": None, "memory_time_label": ""}
 
 
+def _relative_time_label(ts: float | None) -> str:
+    """注入 prompt 用的模糊相对时间。真人记不住精确日期，给模型精确日期它就会
+    复述出“你7月6号说过”这种数据库感的话，所以只给“前几天/上周”粒度。"""
+    if not ts:
+        return ""
+    days = (datetime.now().date() - datetime.fromtimestamp(ts).date()).days
+    if days <= 0:
+        return "今天"
+    if days == 1:
+        return "昨天"
+    if days == 2:
+        return "前天"
+    if days < 7:
+        return "几天前"
+    if days < 14:
+        return "上周"
+    if days < 30:
+        return "两三周前"
+    if days < 60:
+        return "上个月"
+    return f"{days // 30}个月前"
+
+
 def _memory_line_with_evidence(mem: dict, limit: int = 220) -> str:
     content = str(mem.get("content") or "").strip()[:limit]
-    time_label = mem.get("memory_time_label") or _memory_time_payload(mem).get("memory_time_label")
+    payload = _memory_time_payload(mem)
+    time_label = _relative_time_label(mem.get("memory_time") or payload.get("memory_time"))
     return f"- 记忆（{time_label}）：{content}" if time_label else f"- 记忆：{content}"
 
 
@@ -210,11 +234,12 @@ async def _fetch_source_rows_by_ids(source_ids: list[str], user_name: str, ai_na
 
 def _format_raw_evidence_block(mem: dict, rows: list[dict], limit: int = 700) -> str:
     content = str(mem.get("content") or "").strip()[:220]
-    time_label = mem.get("memory_time_label") or _memory_time_payload(mem).get("memory_time_label")
+    payload = _memory_time_payload(mem)
+    time_label = _relative_time_label(mem.get("memory_time") or payload.get("memory_time"))
     head = f"- 记忆（{time_label}）：{content}" if time_label else f"- 记忆：{content}"
     lines = [head, "  来源原文："]
     for row in rows:
-        ts = datetime.fromtimestamp(float(row["created_at"])).strftime("%m-%d %H:%M")
+        ts = _relative_time_label(_coerce_ts(row["created_at"])) or ""
         text = re.sub(r"\s+", " ", str(row.get("content") or "")).strip()
         lines.append(f"  - [{ts}] {row.get('name', '')}: {text[:limit]}")
     return "\n".join(lines)

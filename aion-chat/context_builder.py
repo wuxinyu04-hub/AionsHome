@@ -229,6 +229,10 @@ async def build_ability_block(
                 line = f"【当前音乐】\n正在{st}：《{np.get('name','')}》- {np.get('artist','')}"
                 if qc:
                     line += f"（播放队列还有 {qc} 首）"
+                if np.get("state") != "paused":
+                    cur_lyric = playback.get_current_lyric(np.get("song_id"), np.get("position", 0))
+                    if cur_lyric:
+                        line += f"\n正唱到：♪ {cur_lyric}"
                 parts.append(line)
             shared = playback.get_shared(limit=5, exclude_within_seconds=7200)
             if shared:
@@ -502,6 +506,28 @@ def _sanitize_timeline_content(content: str) -> str:
     return cleaned.strip()
 
 
+# ── 历史消息风格去锚 ──
+# AI 历史消息里的 [心里嘀咕：xxx] 与整行 *动作旁白* 只在前端展示，不进模型上下文。
+# 否则最近几十条同构样本会成为最强 few-shot 示范，模型持续模仿自己的旧输出，
+# 回复结构逐渐锁死成固定模板（人设里的抽象禁令干不过具体样本）。
+# 最近 KEEP_RAW_AI_MSGS 条 AI 消息保留原文，保证嘀咕/旁白里的短期连贯性不断。
+_INNER_MONOLOGUE_RE = re.compile(r'\[心里嘀咕[：:][^\]]*\]')
+# 仅匹配整行的单星号旁白（*...*），负向断言排除 markdown 加粗（**...**）
+_STAGE_DIRECTION_LINE_RE = re.compile(r'^\*(?!\*)[^*\n]+\*[ \t]*$', re.MULTILINE)
+KEEP_RAW_AI_MSGS = 2
+
+
+def _strip_style_anchors(content: str) -> str:
+    """剥掉 AI 历史消息中的心里嘀咕和整行动作旁白（仅影响模型输入，不影响存储与展示）。"""
+    if not content:
+        return content
+    cleaned = _INNER_MONOLOGUE_RE.sub('', content)
+    cleaned = _STAGE_DIRECTION_LINE_RE.sub('', cleaned)
+    cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
+
 async def fetch_merged_timeline(
     who: str,
     limit: int,
@@ -626,10 +652,18 @@ def render_merged_timeline(
             last_user_idx = i
             break
 
+    # 最近 N 条 AI 消息保留原文，更早的做风格去锚（见 _strip_style_anchors）
+    ai_indices = [i for i, m in enumerate(merged) if m["sender"] in ("assistant", "aion", "connor")]
+    keep_raw_ai = set(ai_indices[-KEEP_RAW_AI_MSGS:]) if ai_indices else set()
+
     for idx, msg in enumerate(merged):
         source = msg["source"]
         sender = msg["sender"]
         content = _sanitize_timeline_content(msg.get("content", ""))
+        if sender in ("assistant", "aion", "connor") and idx not in keep_raw_ai:
+            stripped = _strip_style_anchors(content)
+            if stripped:  # 纯旁白消息剥完会空，此时保留原文避免时间线出现空洞
+                content = stripped
 
         # ── 场景切换标记：不再插入 fake 应答对，仅记录下来在下一条消息前内联输出 ──
         if has_mixed and source != current_source:
