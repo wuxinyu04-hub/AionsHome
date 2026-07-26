@@ -610,6 +610,11 @@ def _openai_chat_completions_url(base_url: str) -> str:
     base = (base_url or "").strip().rstrip("/")
     if not base:
         return ""
+    # 用户常填裸 host:port（如 localhost:8317 的 CLI Proxy API），缺 scheme 时 httpx 会
+    # UnsupportedProtocol；本机地址补 http://，其余补 https://
+    if not re.match(r"^https?://", base, re.IGNORECASE):
+        scheme = "http" if re.match(r"^(localhost|127\.|0\.0\.0\.0|192\.168\.|10\.)", base) else "https"
+        base = f"{scheme}://{base}"
     if base.endswith("/chat/completions"):
         return base
     # 以 /v1 /v2 /v3 ... 结尾的 OpenAI 兼容端点（火山方舟 /api/v3、/api/coding/v3 等）直接拼 /chat/completions，

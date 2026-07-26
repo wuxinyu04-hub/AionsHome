@@ -317,12 +317,12 @@ async def _request_edge_tts_audio(text: str, voice: str, *, seq: int | None = No
     return None
 
 
-async def _request_fishaudio_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION) -> bytes | None:
+async def _request_fishaudio_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION, prosody: dict | None = None) -> bytes | None:
     """Fish Audio S2.1 Pro Free 合成。
     免费档持续到 2026-07 底（无字符上限，受公平使用政策约束）。
-    接口返回原始 MP3 bytes（非 hex）；emotion 参数被上游忽略直接丢弃。
-    voice 字段映射到 reference_id：空字符串时不传，走 Fish Audio 默认声；
-    填了 reference_id 则用用户自己的克隆声。
+    接口返回原始 MP3 bytes（非 hex）。
+    voice 字段映射到 reference_id；prosody={"speed":0.5-2.0,"volume":0} 控制语速音量。
+    emotion 不作为字段传（S2 用文本内自然语言/括号表达控制，由调用方在 text 里处理）。
     """
     key = get_key("fishaudio")
     if not key:
@@ -335,9 +335,13 @@ async def _request_fishaudio_tts_audio(text: str, voice: str, *, seq: int | None
     }
     if voice:
         payload["reference_id"] = voice
+    if prosody:
+        payload["prosody"] = prosody
+    # timeout 30->120：哄睡段落 300-500 字 + prosody 慢速，合成常超 30s，短超时会把好请求掐死
+    # （ReadTimeout 的 str(e) 是空串，日志里表现为"请求异常: " 后面没内容）
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=30, trust_env=True) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=True) as client:
                 resp = await client.post(
                     "https://api.fish.audio/v1/tts",
                     headers={
@@ -358,8 +362,9 @@ async def _request_fishaudio_tts_audio(text: str, voice: str, *, seq: int | None
                 log.warning("FishAudio TTS API 错误: status=%d body=%s seq=%s attempt=%d",
                             resp.status_code, snippet, seq, attempt + 1)
         except Exception as e:
-            log.warning("FishAudio TTS 请求异常: %s seq=%s attempt=%d", e, seq, attempt + 1)
-        await asyncio.sleep(0.5 * (attempt + 1))
+            # ReadTimeout 的 str 为空，补上类型名方便排错
+            log.warning("FishAudio TTS 请求异常: %s%s seq=%s attempt=%d", type(e).__name__, f": {e}" if str(e) else "", seq, attempt + 1)
+        await asyncio.sleep(2.0 * (attempt + 1))  # 代理抖动时给足恢复时间
     return None
 
 
@@ -416,9 +421,9 @@ async def _request_minimax_tts_audio(text: str, voice: str, *, seq: int | None =
     return None
 
 
-async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION) -> bytes | None:
+async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION, provider: str | None = None, prosody: dict | None = None) -> bytes | None:
     from config import get_tts_provider
-    provider = get_tts_provider()
+    provider = provider or get_tts_provider()
     if provider == "senseaudio":
         # SenseAudio 没有 emotion 参数，丢掉
         return await _request_senseaudio_tts_audio(text, voice, seq=seq)
@@ -428,8 +433,8 @@ async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None, e
         # Edge TTS 无 emotion 字段，丢掉；无需 API Key
         return await _request_edge_tts_audio(text, voice, seq=seq)
     if provider == "fishaudio":
-        # Fish Audio s2.1-pro-free 不支持 emotion 参数，丢掉；走 MP3 bytes 直返
-        return await _request_fishaudio_tts_audio(text, voice, seq=seq, emotion=emotion)
+        # Fish Audio：prosody 控制语速音量；emotion 靠文本内表达（S2 自然语言/括号）
+        return await _request_fishaudio_tts_audio(text, voice, seq=seq, emotion=emotion, prosody=prosody)
     key = get_key("siliconflow")
     if not key:
         log.warning("TTS: 无硅基流动 API Key，跳过合成 seq=%s", seq)
@@ -467,8 +472,10 @@ async def synthesize_text_to_mp3(
     concurrency: int = 2,
     segment_prefix: str | None = None,
     cleanup_segments: bool = True,
+    provider: str | None = None,
 ) -> dict:
-    """Synthesize long text into one MP3 file by chunking and merging segments."""
+    """Synthesize long text into one MP3 file by chunking and merging segments.
+    provider: 强制使用的 TTS 服务商（如 'fishaudio'）；None 时走全局 get_tts_provider()。"""
     segments = split_text_for_tts(text, min_chars=min_chars, max_chars=max_chars)
     if not segments:
         raise ValueError("TTS text is empty")
@@ -482,7 +489,7 @@ async def synthesize_text_to_mp3(
 
     async def _synthesize_segment(seq: int, segment: str) -> Path:
         async with semaphore:
-            audio_data = await _request_tts_audio(segment, voice, seq=seq)
+            audio_data = await _request_tts_audio(segment, voice, seq=seq, provider=provider)
             if not audio_data:
                 raise RuntimeError(f"TTS segment {seq} failed")
             path = output_path.parent / f"{prefix}_s{seq}.mp3"
