@@ -41,6 +41,7 @@ from routes import activity as activity_routes
 from routes import book as book_routes
 from routes import theater as theater_routes
 from routes import date_theater as date_theater_routes
+from routes import sleep as sleep_routes
 from routes import todos as todos_routes
 from routes import avatar as avatar_routes
 from routes import ghost_forest as ghost_forest_routes
@@ -298,6 +299,7 @@ app.include_router(activity_routes.router)
 app.include_router(book_routes.router)
 app.include_router(theater_routes.router)
 app.include_router(date_theater_routes.router)
+app.include_router(sleep_routes.router)
 app.include_router(todos_routes.router)
 app.include_router(avatar_routes.router)
 app.include_router(ghost_forest_routes.router)
@@ -349,6 +351,10 @@ async def capabilities_page():
 @app.get("/worldbook")
 async def worldbook_page():
     return FileResponse(BASE_DIR / "static" / "worldbook.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/sleep")
+async def sleep_page():
+    return FileResponse(BASE_DIR / "static" / "sleep.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/memory")
 async def memory_page():

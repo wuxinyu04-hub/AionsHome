@@ -3,13 +3,13 @@ AI 生图模块：Gemini gemini-3.1-flash-lite-image 生成图片
 支持 SELFIE（带参考图）和 DRAW（纯文本）两种模式
 """
 
-import base64, time
+import base64, re, time
 from pathlib import Path
 
 import httpx
 
 from config import get_key, UPLOADS_DIR, PUBLIC_DIR
-from ai_providers import _make_http_client
+from ai_providers import _make_http_client, _openai_chat_completions_url
 
 # 参考图位置（用于 SELFIE 模式）
 REFERENCE_IMAGE_PATH = PUBLIC_DIR / "生图锚点.jpg"
@@ -119,4 +119,90 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
         return None
     except Exception as e:
         print(f"[image_gen] 生图异常: {type(e).__name__}: {e!r}")
+        return None
+
+
+CPA_IMAGE_MODEL = "gemini-3.1-flash-image"
+
+
+async def generate_image_custom_route(prompt: str) -> str | None:
+    """通过自定义 OpenAI 兼容路由生图（如 CLI Proxy API 本地代理，走 CLI 授权不吃 API 配额）。
+
+    遍历设置里的 custom_model_routes，对每个 base_url 试 gemini-3.1-flash-image；
+    CPA 的响应把图放在 message.images[0].image_url.url（data:image/...;base64,...）。
+    不支持该模型的路由（如火山）会报错，直接跳到下一条。
+    """
+    from config import SETTINGS
+    for route in SETTINGS.get("custom_model_routes") or []:
+        url = _openai_chat_completions_url(route.get("base_url") or "")
+        if not url:
+            continue
+        name = route.get("name") or url
+        try:
+            # trust_env=False：本地路由不能被系统代理劫持
+            async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT, trust_env=False) as client:
+                resp = await client.post(url, headers={"Authorization": f"Bearer {route.get('api_key') or ''}"},
+                                         json={"model": CPA_IMAGE_MODEL,
+                                               "messages": [{"role": "user", "content": prompt}],
+                                               "stream": False})
+            if resp.status_code != 200:
+                print(f"[image_gen] 路由 {name} 生图失败 ({resp.status_code})，试下一条")
+                continue
+            msg = (resp.json().get("choices") or [{}])[0].get("message") or {}
+            images = msg.get("images") or []
+            data_url = (images[0].get("image_url") or {}).get("url", "") if images else ""
+            m = re.match(r"data:image/(\w+);base64,(.+)$", data_url, re.DOTALL)
+            if not m:
+                print(f"[image_gen] 路由 {name} 响应里没有图，试下一条")
+                continue
+            ext = "jpg" if m.group(1) in ("jpeg", "jpg") else m.group(1)
+            filename = f"img_gen_{int(time.time() * 1000)}.{ext}"
+            (UPLOADS_DIR / filename).write_bytes(base64.b64decode(m.group(2)))
+            print(f"[image_gen] 路由 {name} 生图成功: {filename}")
+            return filename
+        except Exception as e:
+            print(f"[image_gen] 路由 {name} 生图异常: {type(e).__name__}: {e!r}")
+    return None
+
+
+async def generate_image_siliconflow(prompt: str, image_size: str = "1024x1024") -> str | None:
+    """硅基流动 Kolors 生图（免费额度档）。保存到 uploads 目录，返回文件名；失败返回 None。
+
+    用作 Gemini 生图的兜底：Gemini free tier 生图配额为 0（全模型 429），
+    Kolors 中文 prompt 友好，插画质感也合适。
+    """
+    api_key = get_key("siliconflow")
+    if not api_key:
+        print("[image_gen] 没有硅基流动 API Key，跳过 Kolors 生图")
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT, trust_env=True) as client:
+            print(f"[image_gen] Kolors 生图... prompt: {prompt[:80]}")
+            resp = await client.post(
+                "https://api.siliconflow.cn/v1/images/generations",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "Kwai-Kolors/Kolors",
+                    "prompt": prompt,
+                    "image_size": image_size,
+                    "batch_size": 1,
+                    "num_inference_steps": 25,
+                },
+            )
+            if resp.status_code != 200:
+                print(f"[image_gen] Kolors 请求失败 ({resp.status_code}): {resp.text[:300]}")
+                return None
+            images = resp.json().get("images") or []
+            url = (images[0] or {}).get("url") if images else None
+            if not url:
+                print("[image_gen] Kolors 响应中没有图片 URL")
+                return None
+            img = await client.get(url)
+            img.raise_for_status()
+            filename = f"img_gen_{int(time.time() * 1000)}.png"
+            (UPLOADS_DIR / filename).write_bytes(img.content)
+            print(f"[image_gen] Kolors 图片已保存: {filename}")
+            return filename
+    except Exception as e:
+        print(f"[image_gen] Kolors 生图异常: {type(e).__name__}: {e!r}")
         return None

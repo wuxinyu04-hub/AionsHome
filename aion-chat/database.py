@@ -834,6 +834,32 @@ async def init_db():
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_health_period_start ON health_period_entries(start_date DESC)")
+        # ── 哄睡内容表 ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS sleep_items (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                script_text TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'preset',
+                book_ref TEXT DEFAULT '',
+                voice TEXT DEFAULT '',
+                audio_path TEXT DEFAULT '',
+                duration_sec INTEGER DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                progress_sec INTEGER DEFAULT 0,
+                created_at REAL NOT NULL
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_sleep_items_category ON sleep_items(category, created_at DESC)")
+        for col, defn in [
+            ("play_count", "INTEGER DEFAULT 0"),
+            ("cover_path", "TEXT DEFAULT ''"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE sleep_items ADD COLUMN {col} {defn}")
+            except:
+                pass
         await db.commit()
 
 
