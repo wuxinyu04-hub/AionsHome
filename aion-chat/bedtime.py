@@ -296,7 +296,7 @@ def _mp3_duration_sec(data: bytes) -> int:
 
 
 async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) -> list[bytes]:
-    """文本块：切段 -> 段尾补省略号 -> 并发 Fish Audio 合成。
+    """文本块：切段 -> 段尾补省略号 -> 并发 TTS 合成（provider 由 get_tts_provider() 决定）。
     返回纯语音 mp3 bytes 列表（有序，不含静音——静音在拼装时按真实帧参数插）。"""
     segments = split_text_for_tts(text, min_chars=300, max_chars=500)
     segments = [_tail_ellipsis(s) for s in segments if s.strip()]
@@ -305,8 +305,8 @@ async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) 
 
     async def _syn(seq: int, seg: str) -> bytes:
         async with sem:
-            # prosody.speed 0.8 = 慢语速（晚安感）；Fish Audio 支持 0.5-2.0
-            data = await _request_tts_audio(seg, voice, seq=seq, provider="fishaudio", prosody={"speed": 0.8})
+            # prosody.speed 0.8 = 慢语速（晚安感）；各 provider 自行映射 prosody 参数
+            data = await _request_tts_audio(seg, voice, seq=seq, prosody={"speed": 0.8})
             if not data:
                 raise RuntimeError(f"TTS segment {seq} failed")
             return data
@@ -338,7 +338,7 @@ def _sfx_bytes(name: str, ref: tuple[int, int, int] | None) -> bytes:
 
 
 async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
-    """后台合成：按 [SFX:名] 切块 -> 文本块切段补省略号 -> Fish Audio 慢语速 prosody
+    """后台合成：按 [SFX:名] 切块 -> 文本块切段补省略号 -> 慢语速 prosody
     -> 从真实语音抄帧参数造静音/校验 SFX -> 字节拼接。"""
     try:
         await _set_status(item_id, "synthesizing", voice=voice)

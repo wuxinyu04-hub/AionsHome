@@ -368,6 +368,78 @@ async def _request_fishaudio_tts_audio(text: str, voice: str, *, seq: int | None
     return None
 
 
+# 阶跃星辰 Step TTS：step-tts-2 支持 voice_label（emotion + style）。
+# emotion 从项目现有 9 值映射到中文标签；style 按场景选一个（prosody慢→慢速, whisper→温柔）。
+_STEP_EMOTION_MAP = {
+    "happy":     "高兴",
+    "sad":       "悲伤",
+    "angry":     "生气",
+    "whisper":   "撒娇",
+    "fearful":   "恐惧",
+    "surprised": "惊讶",
+}
+
+async def _request_step_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION, prosody: dict | None = None) -> bytes | None:
+    """阶跃星辰 Step TTS（step-tts-2）。voice_label 传 emotion+style；prosody 映射 speed/volume。
+    响应为原始 MP3 bytes。无 emotion 信号时不发 voice_label（保持默认语气）。"""
+    key = get_key("step")
+    if not key:
+        log.warning("Step TTS: 无 API Key，跳过合成 seq=%s", seq)
+        return None
+    if not voice:
+        log.warning("Step TTS: 未选择音色，跳过合成 seq=%s", seq)
+        return None
+    payload: dict = {
+        "model": "step-tts-2",
+        "input": text,
+        "voice": voice,
+        "response_format": "mp3",
+    }
+    # prosody → Step speed/volume
+    speed = 1.0
+    volume = 1.0
+    if prosody:
+        speed = prosody.get("speed", speed)
+        volume = prosody.get("volume", volume)
+    payload["speed"] = max(0.5, min(2.0, float(speed)))
+    payload["volume"] = max(0.1, min(2.0, float(volume)))
+    # voice_label：仅在有明确情绪信号时发送，避免传 null 触校验异常
+    emo_tag = _STEP_EMOTION_MAP.get(emotion)
+    style_tag = None
+    # style 单选优先级：prosody 慢速 > whisper 温柔 > 无
+    if prosody and prosody.get("speed", 1.0) < 1.0:
+        style_tag = "慢速"
+    elif emotion == "whisper":
+        style_tag = "温柔"
+    if emo_tag or style_tag:
+        label: dict = {}
+        if emo_tag:
+            label["emotion"] = emo_tag
+        if style_tag:
+            label["style"] = style_tag
+        payload["voice_label"] = label
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15), trust_env=True) as client:
+                resp = await client.post(
+                    "https://api.stepfun.com/v1/audio/speech",
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json=payload,
+                )
+            if resp.status_code == 200:
+                if resp.content:
+                    return resp.content
+                log.warning("Step TTS: 响应为空 seq=%s attempt=%d", seq, attempt + 1)
+            else:
+                snippet = resp.text[:200] if resp.text else ""
+                log.warning("Step TTS API 错误: status=%d body=%s seq=%s attempt=%d",
+                            resp.status_code, snippet, seq, attempt + 1)
+        except Exception as e:
+            log.warning("Step TTS 请求异常: %s seq=%s attempt=%d", type(e).__name__, seq, attempt + 1)
+        await asyncio.sleep(1.0 * (attempt + 1))
+    return None
+
+
 async def _request_minimax_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION) -> bytes | None:
     """MiniMax T2A v2 合成。响应里音频是 hex 编码字符串，需 fromhex 解码。"""
     key = get_key("minimax")
@@ -435,6 +507,9 @@ async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None, e
     if provider == "fishaudio":
         # Fish Audio：prosody 控制语速音量；emotion 靠文本内表达（S2 自然语言/括号）
         return await _request_fishaudio_tts_audio(text, voice, seq=seq, emotion=emotion, prosody=prosody)
+    if provider == "step":
+        # 阶跃星辰 Step TTS：voice_label 传 emotion+style；prosody 映射 speed/volume
+        return await _request_step_tts_audio(text, voice, seq=seq, emotion=emotion, prosody=prosody)
     key = get_key("siliconflow")
     if not key:
         log.warning("TTS: 无硅基流动 API Key，跳过合成 seq=%s", seq)

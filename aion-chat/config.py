@@ -75,13 +75,15 @@ def get_key(provider: str) -> str:
         return SETTINGS.get("minimax_key", "")
     if provider == "fishaudio":
         return SETTINGS.get("fishaudio_key", "")
+    if provider == "step":
+        return SETTINGS.get("step_key", "")
     return SETTINGS.get("siliconflow_key", "")
 
 
 def get_tts_provider() -> str:
-    """返回当前 TTS 服务商：siliconflow（默认）/ senseaudio / minimax / edge / fishaudio。
+    """返回当前 TTS 服务商：siliconflow（默认）/ senseaudio / minimax / edge / fishaudio / step。
     edge 为微软 Azure 神经语音免费逆向接口，无需 API Key。
-    fishaudio 走 Fish Audio S2.1 Pro Free（2026-07 底前免费）。"""
+    step 走阶跃星辰 Step TTS（step-tts-2，情感标签+风格控制）。"""
     return (SETTINGS.get("tts_provider", "") or "siliconflow").strip()
 
 def get_sentinel_config() -> dict:

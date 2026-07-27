@@ -60,6 +60,7 @@ class SettingsUpdate(BaseModel):
     senseaudio_key: Optional[str] = None
     minimax_key: Optional[str] = None
     fishaudio_key: Optional[str] = None
+    step_key: Optional[str] = None
     tts_provider: Optional[str] = None
     tavily_api_key: Optional[str] = None
     netease_music_u: Optional[str] = None
@@ -122,6 +123,7 @@ async def get_settings():
         "senseaudio_key": mask(SETTINGS.get("senseaudio_key", "")),
         "minimax_key": mask(SETTINGS.get("minimax_key", "")),
         "fishaudio_key": mask(SETTINGS.get("fishaudio_key", "")),
+        "step_key": mask(SETTINGS.get("step_key", "")),
         "tts_provider": SETTINGS.get("tts_provider", "siliconflow"),
         "tavily_api_key": mask(SETTINGS.get("tavily_api_key", "")),
         "netease_music_u": mask(SETTINGS.get("netease_music_u", "")),
@@ -144,6 +146,7 @@ async def get_settings():
         "senseaudio_key_masked": mask(SETTINGS.get("senseaudio_key", "")),
         "minimax_key_masked": mask(SETTINGS.get("minimax_key", "")),
         "fishaudio_key_masked": mask(SETTINGS.get("fishaudio_key", "")),
+        "step_key_masked": mask(SETTINGS.get("step_key", "")),
         "tavily_api_key_masked": mask(SETTINGS.get("tavily_api_key", "")),
         "netease_music_u_masked": mask(SETTINGS.get("netease_music_u", "")),
         "sentinel_api_key_masked": mask(SETTINGS.get("sentinel_api_key", "")),
@@ -163,6 +166,7 @@ async def update_settings(body: SettingsUpdate):
     set_secret("senseaudio_key", body.senseaudio_key)
     set_secret("minimax_key", body.minimax_key)
     set_secret("fishaudio_key", body.fishaudio_key)
+    set_secret("step_key", body.step_key)
     if body.tts_provider is not None:
         SETTINGS["tts_provider"] = body.tts_provider
     set_secret("tavily_api_key", body.tavily_api_key)
@@ -768,6 +772,32 @@ async def _list_fishaudio_voices_impl(key: str) -> dict:
     return {"voices": voices, **({"note": "; ".join(notes)} if notes else {})}
 
 
+# 阶跃星辰 Step TTS 精选男友向中文男声（step-tts-2 支持全部 36 音色，这里只列中文男声）。
+_STEP_DEFAULT_VOICE = {"uri": "", "customName": "⭐ Step 默认声（不指定 voice_label）"}
+_STEP_CURATED_VOICES = [
+    {"uri": "cixingnansheng",     "customName": "⭐ 磁性男声（低沉磁性·男友向·推荐首选）"},
+    {"uri": "shenchennanyin",     "customName": "深沉男音（低沉稳重·年上爹系）"},
+    {"uri": "wenrougongzi",       "customName": "温柔公子（温润绅士·优雅亲密）"},
+    {"uri": "ruyananshi",         "customName": "儒雅男士（沉稳优雅·知性）"},
+    {"uri": "wenrounansheng",     "customName": "温柔男声（柔和关怀·温暖）"},
+    {"uri": "zixinnansheng",      "customName": "自信男声（坚定自信·阳光）"},
+    {"uri": "zhengpaiqingnian",   "customName": "正派青年（正直阳光·少年感）"},
+    {"uri": "boyinnansheng",      "customName": "播音男声（清晰标准· audiobook）"},
+    {"uri": "yuanqinansheng",     "customName": "元气男声（活力四射·开朗）"},
+    {"uri": "qingniandaxuesheng", "customName": "青年大学生（青春校园·邻家）"},
+    {"uri": "shuangkuainansheng", "customName": "爽快男声（直爽坦诚·接地气）"},
+    {"uri": "vibrant-youth",      "customName": "Vibrant Youth（活力青年·动感）"},
+    {"uri": "soft-spoken-gentleman", "customName": "Soft-spoken Gentleman（温和绅士·轻声细语）"},
+    {"uri": "magnetic-voiced-male",  "customName": "Magnetic-voiced Male（磁性嗓音·深情）"},
+]
+
+
+async def _list_step_voices(key: str) -> dict:
+    """返回 Step TTS 精选中文男声。Step 暂不支持用户克隆声 API（只读精选列表）。"""
+    voices = [_STEP_DEFAULT_VOICE] + list(_STEP_CURATED_VOICES)
+    return {"voices": voices}
+
+
 # Edge TTS 精选中文音色（微软 Azure 神经语音，免费无需 key）
 # 直接硬编码 curated 列表，避免去拉全量几百个多语种音色污染下拉。
 # 注意：edge-tts 7.x 实际只有 6 个 zh-CN 音色，其他音色 ID 会 NoAudioReceived 错误。
@@ -808,6 +838,13 @@ async def tts_voice_list():
         if not key:
             return {"voices": [], "error": "未配置 FishAudio API Key", "provider": provider}
         result = await _list_fishaudio_voices(key)
+        result["provider"] = provider
+        return result
+    if provider == "step":
+        key = get_key("step")
+        if not key:
+            return {"voices": [], "error": "未配置 Step API Key", "provider": provider}
+        result = await _list_step_voices(key)
         result["provider"] = provider
         return result
     # 默认硅基流动

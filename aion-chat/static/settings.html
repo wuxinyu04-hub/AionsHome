@@ -561,6 +561,7 @@ body[data-theme="light"] .avatar-preview {
             <option value="minimax">MiniMax（speech-2.6-turbo，系统音色）</option>
             <option value="edge">Edge TTS（微软神经语音，免费无需 Key）</option>
             <option value="fishaudio">Fish Audio（S2.1 Pro Free，2026-07 底前免费，中文/克隆声）</option>
+            <option value="step">阶跃星辰（Step TTS step-tts-2，情感标签+风格控制）</option>
           </select>
         </div>
         <div class="field">
@@ -583,6 +584,10 @@ body[data-theme="light"] .avatar-preview {
           </div>
           <div id="fishaudioUserVoiceList" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;"></div>
           <small style="opacity:.7;">在 fish.audio 搜/试听后把链接粘这里；会出现在音色下拉最后。精选默认(该隐/男1/秦彻等)不在此删。</small>
+        </div>
+        <div class="field">
+          <label class="form-label">阶跃星辰 Step API Key（选 Step 时必填）</label>
+          <input class="form-input mono-input" type="text" id="stepKeyInput" placeholder="platform.stepfun.com → API Keys 获取" autocomplete="off">
         </div>
         <div class="field">
           <label class="form-label">Tavily API Key（联网搜索）</label>
@@ -1225,6 +1230,7 @@ async function removeFishaudioVoice(uri) {
   $("senseaudioKeyInput").value = s.senseaudio_key || "";
   $("minimaxKeyInput").value = s.minimax_key || "";
   $("fishaudioKeyInput").value = s.fishaudio_key || "";
+  $("stepKeyInput").value = s.step_key || "";
   $("tavilyApiKeyInput").value = s.tavily_api_key || "";
   $("neteaseMusicUInput").value = s.netease_music_u || "";
   $("neteaseUidInput").value = s.netease_uid || "";
@@ -1273,6 +1279,7 @@ async function saveSettings() {
     senseaudio_key: $("senseaudioKeyInput").value.trim(),
     minimax_key: $("minimaxKeyInput").value.trim(),
     fishaudio_key: $("fishaudioKeyInput").value.trim(),
+    step_key: $("stepKeyInput").value.trim(),
     tavily_api_key: $("tavilyApiKeyInput").value.trim(),
     netease_music_u: $("neteaseMusicUInput").value.trim(),
     netease_uid: $("neteaseUidInput").value.trim(),
