@@ -10,12 +10,25 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from config import get_key
+from config import get_key, get_tts_provider
 
 import bedtime
 
 router = APIRouter(prefix="/api/sleep", tags=["sleep"])
 logger = logging.getLogger("sleep_routes")
+
+
+def _require_tts_key() -> None:
+    """按当前全局 TTS provider 检查对应 API Key；edge 免 key。未配置则抛 400。
+
+    哄睡合成内核（bedtime._synthesize_text_block -> _request_tts_audio）已跟随
+    全局 get_tts_provider()，故路由层只查「当前 provider 是否有 key」即可，
+    不再硬编码 Fish Audio。"""
+    provider = get_tts_provider()
+    if provider == "edge":
+        return  # Edge TTS 免 key
+    if not get_key(provider):
+        raise HTTPException(400, f"未配置当前 TTS provider（{provider}）的 API Key，请到设置页填写")
 
 
 class SynthesizeIn(BaseModel):
@@ -34,7 +47,7 @@ async def library(category: str = ""):
 
 @router.post("/{item_id}/synthesize")
 async def synthesize(item_id: str, body: SynthesizeIn):
-    """触发后台合成。voice = Fish Audio reference_id（克隆声）。
+    """触发后台合成。voice 按当前全局 TTS provider 的语义存。
     首次合成需 1-2 分钟，前端轮询 /status 或听 WS sleep_item_updated。"""
     item = await bedtime.get_item_raw(item_id)
     if not item:
@@ -48,11 +61,11 @@ async def synthesize(item_id: str, body: SynthesizeIn):
 
     voice = (body.voice or item.get("voice") or "").strip()
     if not voice:
-        raise HTTPException(400, "未选择音色（reference_id），请在播放器里选一个 Fish Audio 克隆声")
-    if not get_key("fishaudio"):
-        raise HTTPException(400, "未配置 Fish Audio API Key，请到设置页填写")
+        raise HTTPException(400, "未选择音色，请在播放器里选一个")
+    _require_tts_key()
 
-    # bedtime 内部强制按 fishaudio 合成（不受全局 provider 影响），voice 用 reference_id
+    # bedtime 合成内核已 provider-agnostic（_request_tts_audio 走全局 get_tts_provider()），
+    # voice 按当前 provider 语义存（Fish Audio=reference_id / Step=预置音色ID / …）
     bedtime.trigger_synthesize(item_id, script_text, voice)
     return {"ok": True, "status": "synthesizing"}
 
@@ -128,9 +141,8 @@ async def generate(body: GenerateIn):
         raise HTTPException(400, "请输入梗概")
     voice = body.voice.strip()
     if not voice:
-        raise HTTPException(400, "未选择音色（reference_id）")
-    if not get_key("fishaudio"):
-        raise HTTPException(400, "未配置 Fish Audio API Key")
+        raise HTTPException(400, "未选择音色")
+    _require_tts_key()
     if body.title.strip():
         title = body.title.strip()
     elif book:
@@ -214,15 +226,12 @@ async def noise_file(name: str):
 
 @router.get("/voices")
 async def voices():
-    """哄睡专用音色列表：强制 Fish Audio 克隆声，与全局 TTS provider 解耦。
+    """哄睡音色列表：跟随设置页全局 TTS provider（不再强制 Fish Audio）。
 
-    bedtime 合成强制 fishaudio（见 synthesize 路由），音色列表也必须始终走
-    Fish Audio，否则用户全局没切到 fishaudio 时下拉空白、无法选声、无法生成。
-    复用设置页的 _list_fishaudio_voices（精选男声 + 用户克隆声）。
+    bedtime 合成内核（_synthesize_text_block -> _request_tts_audio）已 provider-agnostic，
+    音色列表也跟随全局 provider：设置页切 step，哄睡页出 Step 音色；切 fishaudio 就出
+    Fish Audio 克隆声。后面接新 TTS 只要 tts.py + settings.py 加分支，哄睡零改动自动支持。
+    直接复用设置页的 tts_voice_list（已含全 provider 分发，返回带 provider 字段）。
     """
-    from routes.settings import _list_fishaudio_voices
-    key = get_key("fishaudio")
-    if not key:
-        return {"voices": [], "error": "未配置 Fish Audio API Key，请到设置页填写"}
-    result = await _list_fishaudio_voices(key)
-    return {"voices": result.get("voices", [])}
+    from routes.settings import tts_voice_list
+    return await tts_voice_list()

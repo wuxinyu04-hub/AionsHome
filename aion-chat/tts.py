@@ -379,6 +379,28 @@ _STEP_EMOTION_MAP = {
     "surprised": "惊讶",
 }
 
+# stepaudio-2.5-tts 主聊天 instruction：daily 基础 + 情绪描述（替代 step-tts-2 的 voice_label）。
+# provider=step 且未传 instruction（主聊天）时，按 emotion 自动构造 -> stepaudio。
+_STEP_DAILY_INSTRUCTION = "自然说话，年上温润的男性嗓音，像平时聊天，松弛不刻意。"
+_EMOTION_INSTRUCTION = {
+    "happy":     "语气带点笑意，开心一点。",
+    "whisper":   "语气撒娇，带点气声，轻一点。",
+    "sad":       "语气低沉一点，难过。",
+    "angry":     "语气重一点，带点情绪。",
+    "fearful":   "语气紧张一点。",
+    "surprised": "语气惊讶一点。",
+}
+
+
+def _build_chat_instruction(emotion: str) -> str:
+    """主聊天 instruction = daily 基础 + 情绪描述（calm/fluent 不加，用基础 daily）。"""
+    instr = _STEP_DAILY_INSTRUCTION
+    extra = _EMOTION_INSTRUCTION.get(emotion)
+    if extra:
+        instr += extra
+    return instr
+
+
 async def _request_step_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION, prosody: dict | None = None) -> bytes | None:
     """阶跃星辰 Step TTS（step-tts-2）。voice_label 传 emotion+style；prosody 映射 speed/volume。
     响应为原始 MP3 bytes。无 emotion 信号时不发 voice_label（保持默认语气）。"""
@@ -403,21 +425,14 @@ async def _request_step_tts_audio(text: str, voice: str, *, seq: int | None = No
         volume = prosody.get("volume", volume)
     payload["speed"] = max(0.5, min(2.0, float(speed)))
     payload["volume"] = max(0.1, min(2.0, float(volume)))
-    # voice_label：仅在有明确情绪信号时发送，避免传 null 触校验异常
+    # voice_label：Step API 限制只能传一个字段（emotion 或 style 二选一，同时传报
+    # "too many voice label fields" 400）。emotion 优先（情绪区分度高）；无 emotion
+    # 信号时才用 style。注：prosody.speed 已机械控速，不再叠 style「慢速」（重复且抢字段）。
     emo_tag = _STEP_EMOTION_MAP.get(emotion)
-    style_tag = None
-    # style 单选优先级：prosody 慢速 > whisper 温柔 > 无
-    if prosody and prosody.get("speed", 1.0) < 1.0:
-        style_tag = "慢速"
+    if emo_tag:
+        payload["voice_label"] = {"emotion": emo_tag}
     elif emotion == "whisper":
-        style_tag = "温柔"
-    if emo_tag or style_tag:
-        label: dict = {}
-        if emo_tag:
-            label["emotion"] = emo_tag
-        if style_tag:
-            label["style"] = style_tag
-        payload["voice_label"] = label
+        payload["voice_label"] = {"style": "温柔"}
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15), trust_env=True) as client:
@@ -436,6 +451,49 @@ async def _request_step_tts_audio(text: str, voice: str, *, seq: int | None = No
                             resp.status_code, snippet, seq, attempt + 1)
         except Exception as e:
             log.warning("Step TTS 请求异常: %s seq=%s attempt=%d", type(e).__name__, seq, attempt + 1)
+        await asyncio.sleep(1.0 * (attempt + 1))
+    return None
+
+
+async def _request_stepaudio_tts_audio(text: str, voice: str, *, seq: int | None = None, instruction: str = "", prosody: dict | None = None) -> bytes | None:
+    """阶跃星辰 StepAudio 2.5 TTS（stepaudio-2.5-tts）。用 instruction（自然语言描述）控风格，
+    不传 voice_label（stepaudio 不支持，传了报错）。speed 固定 1.0 靠 instruction 描述慢
+    （prosody.speed 留给 fishaudio 等 provider，此处不机械降速以免叠效果失真）。"""
+    key = get_key("step")
+    if not key:
+        log.warning("StepAudio TTS: 无 API Key，跳过合成 seq=%s", seq)
+        return None
+    if not voice:
+        log.warning("StepAudio TTS: 未选择音色，跳过合成 seq=%s", seq)
+        return None
+    payload: dict = {
+        "model": "stepaudio-2.5-tts",
+        "input": text,
+        "voice": voice,
+        "response_format": "mp3",
+        "speed": 1.0,
+    }
+    if instruction:
+        payload["instruction"] = instruction[:200]
+    # timeout 120：哄睡长文本段落合成常超 60s，短超时会把好请求掐死
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=True) as client:
+                resp = await client.post(
+                    "https://api.stepfun.com/v1/audio/speech",
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json=payload,
+                )
+            if resp.status_code == 200:
+                if resp.content:
+                    return resp.content
+                log.warning("StepAudio TTS: 响应为空 seq=%s attempt=%d", seq, attempt + 1)
+            else:
+                snippet = resp.text[:200] if resp.text else ""
+                log.warning("StepAudio TTS API 错误: status=%d body=%s seq=%s attempt=%d",
+                            resp.status_code, snippet, seq, attempt + 1)
+        except Exception as e:
+            log.warning("StepAudio TTS 请求异常: %s seq=%s attempt=%d", type(e).__name__, seq, attempt + 1)
         await asyncio.sleep(1.0 * (attempt + 1))
     return None
 
@@ -493,7 +551,7 @@ async def _request_minimax_tts_audio(text: str, voice: str, *, seq: int | None =
     return None
 
 
-async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION, provider: str | None = None, prosody: dict | None = None) -> bytes | None:
+async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None, emotion: str = _DEFAULT_EMOTION, provider: str | None = None, prosody: dict | None = None, instruction: str | None = None) -> bytes | None:
     from config import get_tts_provider
     provider = provider or get_tts_provider()
     if provider == "senseaudio":
@@ -508,8 +566,11 @@ async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None, e
         # Fish Audio：prosody 控制语速音量；emotion 靠文本内表达（S2 自然语言/括号）
         return await _request_fishaudio_tts_audio(text, voice, seq=seq, emotion=emotion, prosody=prosody)
     if provider == "step":
-        # 阶跃星辰 Step TTS：voice_label 传 emotion+style；prosody 映射 speed/volume
-        return await _request_step_tts_audio(text, voice, seq=seq, emotion=emotion, prosody=prosody)
+        # 主聊天（无 instruction）自动构造 daily+emotion instruction；哄睡传 STEP_SLEEP_INSTRUCTION。
+        # 两者都走 stepaudio-2.5-tts（step-tts-2 + voice_label 已停用，_request_step_tts_audio 保留备用）。
+        if not instruction:
+            instruction = _build_chat_instruction(emotion)
+        return await _request_stepaudio_tts_audio(text, voice, seq=seq, instruction=instruction, prosody=prosody)
     key = get_key("siliconflow")
     if not key:
         log.warning("TTS: 无硅基流动 API Key，跳过合成 seq=%s", seq)

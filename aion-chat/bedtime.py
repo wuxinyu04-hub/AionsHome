@@ -10,7 +10,7 @@ import time
 import logging
 from pathlib import Path
 
-from config import DATA_DIR
+from config import DATA_DIR, STEP_SLEEP_INSTRUCTION
 from database import get_db
 from tts import split_text_for_tts, _request_tts_audio
 
@@ -305,8 +305,9 @@ async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) 
 
     async def _syn(seq: int, seg: str) -> bytes:
         async with sem:
-            # prosody.speed 0.8 = 慢语速（晚安感）；各 provider 自行映射 prosody 参数
-            data = await _request_tts_audio(seg, voice, seq=seq, prosody={"speed": 0.8})
+            # prosody.speed 0.8 = 慢语速（fishaudio 等用）；instruction = 哄睡风格
+            # （provider=step 时切 stepaudio-2.5-tts，靠 instruction 控慢不靠 speed 机械降速）
+            data = await _request_tts_audio(seg, voice, seq=seq, prosody={"speed": 0.8}, instruction=STEP_SLEEP_INSTRUCTION)
             if not data:
                 raise RuntimeError(f"TTS segment {seq} failed")
             return data

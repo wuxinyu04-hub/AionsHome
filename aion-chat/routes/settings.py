@@ -772,10 +772,11 @@ async def _list_fishaudio_voices_impl(key: str) -> dict:
     return {"voices": voices, **({"note": "; ".join(notes)} if notes else {})}
 
 
-# 阶跃星辰 Step TTS 精选男友向中文男声（step-tts-2 支持全部 36 音色，这里只列中文男声）。
+# 阶跃星辰 Step TTS 精选男友向中文男声（step-tts-2 / stepaudio-2.5-tts 通用预置音色）。
+# ⭐ 标注 = 哄睡推荐（stepaudio-2.5-tts + STEP_SLEEP_INSTRUCTION 实测效果好）；主聊天音色用户自选。
 _STEP_DEFAULT_VOICE = {"uri": "", "customName": "⭐ Step 默认声（不指定 voice_label）"}
 _STEP_CURATED_VOICES = [
-    {"uri": "cixingnansheng",     "customName": "⭐ 磁性男声（低沉磁性·男友向·推荐首选）"},
+    {"uri": "cixingnansheng",     "customName": "⭐ 适合哄睡（低沉磁性·男友枕边·推荐首选）"},
     {"uri": "shenchennanyin",     "customName": "深沉男音（低沉稳重·年上爹系）"},
     {"uri": "wenrougongzi",       "customName": "温柔公子（温润绅士·优雅亲密）"},
     {"uri": "ruyananshi",         "customName": "儒雅男士（沉稳优雅·知性）"},
@@ -788,7 +789,7 @@ _STEP_CURATED_VOICES = [
     {"uri": "shuangkuainansheng", "customName": "爽快男声（直爽坦诚·接地气）"},
     {"uri": "vibrant-youth",      "customName": "Vibrant Youth（活力青年·动感）"},
     {"uri": "soft-spoken-gentleman", "customName": "Soft-spoken Gentleman（温和绅士·轻声细语）"},
-    {"uri": "magnetic-voiced-male",  "customName": "Magnetic-voiced Male（磁性嗓音·深情）"},
+    {"uri": "magnetic-voiced-male",  "customName": "⭐ 适合哄睡（磁性深情·男友枕边·备选）"},
 ]
 
 
