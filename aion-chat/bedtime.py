@@ -356,7 +356,7 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
             if text_pieces[idx]:
                 ref = _mp3_frame_params(text_pieces[idx][0])
                 break
-        sil = _silence_mp3(500, ref)
+        sil = _silence_mp3(900, ref)
         all_pieces: list[bytes] = []
         for idx, (kind, val) in enumerate(parts):
             if kind == "sfx":
@@ -364,7 +364,7 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
             else:
                 for p in text_pieces.get(idx, []):
                     all_pieces.append(p)
-                    all_pieces.append(sil)  # 段间 0.5s 停顿（Fish 不认省略号）
+                    all_pieces.append(sil)  # 段间 0.9s 停顿（Fish 不认省略号；加长强化哄睡慢节奏）
         if not any(p for p in all_pieces):
             raise RuntimeError("合成结果为空")
         output_path = SLEEP_CACHE_DIR / f"{item_id}.mp3"
@@ -399,7 +399,7 @@ def trigger_synthesize(item_id: str, script_text: str, voice: str) -> None:
 
 # ── 梗概生成剧本 ──
 _COMMON_RULES = """- 第一人称"我"对第二人称"你"，语气克制温柔，有命令感但不凶（爹系轻哄，年上沉稳温润）
-- 3500-4500 字，适合 18-20 分钟慢语速朗读
+- 4500-5500 字，适合 20 分钟慢语速朗读
 - 轻声呢喃、气声、慢语速，像在耳边说话；多留停顿（省略号 ... 表轻停，…… 表长停，段落间空行）
 - 不要章节标题、旁白说明、动作括号、分点
 - 纯台词与独白，可直接朗读"""
@@ -534,6 +534,26 @@ def _script_model_candidates() -> list[str]:
     return cands[:4]
 
 
+# 剧本长度下限：prompt 要求 4500-5500 字，正常输出 2600+。旧门槛 100 太低，
+# Gemini 400 错误 JSON(139 字)/Flash 偷懒短输出(215 字)都漏过，合成出 10-50 秒废音频。
+# 提到 800：低于此判定过短，换兜底模型重试。
+_SCRIPT_MIN_CHARS = 800
+
+# 错误文本特征：stream_ai 把 provider 错误当正文 yield（如 Gemini 400 location 的 JSON 体），
+# 这类一般也 <800 字，但单独识别更稳，避免某天凑够长度混进剧本被念出来。
+_SCRIPT_ERROR_MARKERS = (
+    '{"error"',                              # Gemini 400：{"error":{"code":400,...}}
+    "user location is not supported",
+    "[gemini错误", "[codexcli错误", "[antigravitycli错误",
+    "[错误]",
+)
+
+
+def _looks_like_error_text(text: str) -> bool:
+    head = (text or "").lstrip()[:160].lower()
+    return any(m in head for m in _SCRIPT_ERROR_MARKERS)
+
+
 async def generate_script(category: str, prompt: str, book: dict | None = None) -> str:
     """调 stream_ai 生成温暖哄睡剧本（非流式收集完整文本）。默认模型挂了自动换兜底模型。"""
     from ai_providers import stream_ai, CLI_STATUS_PREFIX
@@ -550,10 +570,14 @@ async def generate_script(category: str, prompt: str, book: dict | None = None) 
             log.warning("sleep 剧本生成异常 model=%s: %s", mk, e)
             continue
         full = full.strip()
-        if len(full) >= 100:
+        if _looks_like_error_text(full):
+            log.warning("sleep 剧本生成返回错误文本 model=%s content=%r", mk, full[:200])
+            last = full
+            continue
+        if len(full) >= _SCRIPT_MIN_CHARS:
             log.info("sleep 剧本生成成功 model=%s len=%d", mk, len(full))
             return full
-        # 过短基本 = 提供方错误文本（如 [Gemini错误 400] ...），记录原文换下一个模型
+        # 过短 = 模型偷懒/被截断（如 Flash 输出到 215 字就停），记录换下一个模型
         log.warning("sleep 剧本生成过短 model=%s len=%d content=%r", mk, len(full), full[:200])
         last = full
     return last
