@@ -29,6 +29,9 @@ COVERS_DIR = DATA_DIR / "sleep_covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
 _NOISE_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".aac"}
 
+# 生成/合成进度（仅内存，不落库。item_id -> {phase, pct, detail}）
+_progress: dict[str, dict] = {}
+
 
 def list_noise_files() -> list[str]:
     try:
@@ -195,7 +198,13 @@ async def get_item_raw(item_id: str) -> dict | None:
 
 
 def to_public(d: dict) -> dict:
-    return _public_fields(d)
+    pub = _public_fields(d)
+    # 合并内存中的生成/合成进度（仅 generating/synthesizing 期间有值）
+    if d.get("id") in _progress:
+        p = _progress[d["id"]]
+        pub["progress_pct"] = p.get("pct", 0)
+        pub["progress_detail"] = p.get("detail", "")
+    return pub
 
 
 async def _set_status(item_id: str, status: str, **extra) -> None:
@@ -343,14 +352,22 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
     -> 从真实语音抄帧参数造静音/校验 SFX -> 字节拼接。"""
     try:
         await _set_status(item_id, "synthesizing", voice=voice)
-        await _broadcast(item_id, {"status": "synthesizing"})
         sem = asyncio.Semaphore(3)
         parts = _parse_sfx_parts(script_text)
+        # 统计文本块总数（用于进度条）
+        total_blocks = sum(1 for kind, val in parts if kind == "text" and val.strip())
         # 先合成所有文本块（块内并发），再统一拼装
         text_pieces: dict[int, list[bytes]] = {}
+        done = 0
         for idx, (kind, val) in enumerate(parts):
             if kind == "text" and val.strip():
                 text_pieces[idx] = await _synthesize_text_block(val, voice, sem)
+                done += 1
+                if total_blocks > 0:
+                    pct = 90 + int(done / total_blocks * 10)
+                    detail = f"正在录音… {done}/{total_blocks} 段"
+                    _progress[item_id] = {"phase": "synthesizing", "pct": pct, "detail": detail}
+                    await _broadcast(item_id, {"status": "synthesizing", "progress_pct": pct, "progress_detail": detail})
         # 从第一段真实语音抄帧参数（采样率/码率/声道），静音与 SFX 全部对齐它
         ref = None
         for idx in sorted(text_pieces):
@@ -376,10 +393,12 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
         audio_rel = f"sleep_tts_cache/{item_id}.mp3"
         duration = _mp3_duration_sec(output_path.read_bytes())
         await _set_status(item_id, "ready", audio_path=audio_rel, duration_sec=duration)
+        _progress.pop(item_id, None)
         await _broadcast(item_id, {"status": "ready", "audio_path": audio_rel})
         log.info("sleep 合成完成 id=%s pieces=%d", item_id, len(all_pieces))
     except Exception as e:
         log.exception("sleep 合成失败 id=%s", item_id)
+        _progress.pop(item_id, None)
         await _set_status(item_id, "failed")
         await _broadcast(item_id, {"status": "failed", "error": str(e)[:200]})
 
@@ -555,18 +574,28 @@ def _looks_like_error_text(text: str) -> bool:
     return any(m in head for m in _SCRIPT_ERROR_MARKERS)
 
 
-async def generate_script(category: str, prompt: str, book: dict | None = None) -> str:
-    """调 stream_ai 生成温暖哄睡剧本（非流式收集完整文本）。默认模型挂了自动换兜底模型。"""
+async def generate_script(category: str, prompt: str, book: dict | None = None,
+                         progress_callback=None) -> str:
+    """调 stream_ai 生成温暖哄睡剧本（非流式收集完整文本）。默认模型挂了自动换兜底模型。
+
+    progress_callback(phase, pct, detail) 每 ~300 字调一次，用于前端进度条。"""
     from ai_providers import stream_ai, CLI_STATUS_PREFIX
     messages = [{"role": "user", "content": build_script_prompt(category, prompt, book)}]
     last = ""
+    TARGET = 4500  # 目标字数，用于估算进度
     for mk in _script_model_candidates():
         full = ""
+        last_cb = 0
         try:
             async for chunk in stream_ai(messages, mk, {}, max_tokens=8192):
                 if chunk.startswith(CLI_STATUS_PREFIX):
                     continue
                 full += chunk
+                # 每 ~300 字回调一次进度
+                if progress_callback and len(full) - last_cb >= 300:
+                    last_cb = len(full)
+                    pct = min(int(len(full) / TARGET * 90), 89)
+                    await progress_callback("generating", pct, f"AI 正在写剧本… 已写 {len(full)} 字")
         except Exception as e:
             log.warning("sleep 剧本生成异常 model=%s: %s", mk, e)
             continue
@@ -577,6 +606,8 @@ async def generate_script(category: str, prompt: str, book: dict | None = None) 
             continue
         if len(full) >= _SCRIPT_MIN_CHARS:
             log.info("sleep 剧本生成成功 model=%s len=%d", mk, len(full))
+            if progress_callback:
+                await progress_callback("generating", 90, f"剧本写好了，{len(full)} 字，开始录音…")
             return full
         # 过短 = 模型偷懒/被截断（如 Flash 输出到 215 字就停），记录换下一个模型
         log.warning("sleep 剧本生成过短 model=%s len=%d content=%r", mk, len(full), full[:200])
@@ -604,12 +635,19 @@ async def _generate_and_synthesize_bg(
     """后台：AI 生成剧本 -> 存 -> 触发 TTS 合成。"""
     try:
         await _set_status(item_id, "generating", voice=voice)
-        await _broadcast(item_id, {"status": "generating"})
-        script_text = await generate_script(category, prompt, book)
+        _progress[item_id] = {"phase": "generating", "pct": 0, "detail": "AI 正在写剧本…"}
+        await _broadcast(item_id, {"status": "generating", "progress_pct": 0, "progress_detail": "AI 正在写剧本…"})
+
+        async def _on_gen_progress(phase: str, pct: int, detail: str):
+            _progress[item_id] = {"phase": phase, "pct": pct, "detail": detail}
+            await _broadcast(item_id, {"status": "generating", "progress_pct": pct, "progress_detail": detail})
+
+        script_text = await generate_script(category, prompt, book, progress_callback=_on_gen_progress)
         if not script_text or len(script_text) < 100:
             err = (script_text or "").strip()[:150] or "模型没有返回内容"
             log.warning("sleep 生成失败 id=%s: %s", item_id, err)
             await _set_status(item_id, "failed")
+            _progress.pop(item_id, None)
             await _broadcast(item_id, {"status": "failed", "error": err})
             return
         async with get_db() as db:
@@ -618,10 +656,12 @@ async def _generate_and_synthesize_bg(
                 (script_text, title, item_id),
             )
             await db.commit()
-        await _broadcast(item_id, {"status": "synthesizing"})
+        _progress[item_id] = {"phase": "synthesizing", "pct": 90, "detail": "写好了，正在录音…"}
+        await _broadcast(item_id, {"status": "synthesizing", "progress_pct": 90, "progress_detail": "写好了，正在录音…"})
         trigger_synthesize(item_id, script_text, voice)
     except Exception as e:
         log.exception("sleep 生成剧本失败 id=%s", item_id)
+        _progress.pop(item_id, None)
         await _set_status(item_id, "failed")
         await _broadcast(item_id, {"status": "failed", "error": str(e)[:200]})
 

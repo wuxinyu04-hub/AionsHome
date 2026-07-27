@@ -493,7 +493,8 @@
     if (it.has_audio) { playItem(it, readyQueue()); return; }
     if (!navigator.onLine) { toast('离线中，只能听已下载的'); return; }
     if (it.status === 'generating' || it.status === 'synthesizing') {
-      showGenNote(it.status === 'generating' ? '在写这一篇了，先躺好' : '写好了，正在录音…');
+      showGenNote(it.status === 'generating' ? '在写这一篇了，先躺好' : '写好了，正在录音…',
+        it.progress_pct, it.progress_detail);
       pollStatus(it.id);
       showScreen('home');
       return;
@@ -509,7 +510,7 @@
         body: JSON.stringify({ voice: state.voice }),
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); toast(e.detail || '合成失败'); return; }
-      showGenNote('在录《' + it.title + '》…', '录好自动开始念');
+      showGenNote('在录《' + it.title + '》…', 0);
       showScreen('home');
       pollStatus(it.id);
     } catch { toast('网络错误'); }
@@ -550,14 +551,22 @@
       pollStatus(d.id);
     } catch { toast('网络错误'); hideGenNote(); }
   }
-  function showGenNote(text, sub) {
+  function showGenNote(text, pct, detail) {
     $('genText').textContent = text || '在写今晚的故事了，先躺好';
-    $('genSubText').textContent = sub || '大概 2 分钟 · 写完自动开始念';
+    $('genBar').style.width = (pct || 0) + '%';
+    $('genPct').textContent = pct != null ? Math.round(pct) + '%' : '';
     $('genNote').classList.add('on');
   }
   function hideGenNote() {
     $('genNote').classList.remove('on');
+    $('genBar').style.width = '0%';
+    $('genPct').textContent = '';
     clearInterval(state.pollTimer); state.pollTimer = null;
+  }
+  function updateGenProgress(pct, detail) {
+    $('genBar').style.width = (pct || 0) + '%';
+    $('genPct').textContent = pct != null ? Math.round(pct) + '%' : '';
+    if (detail) $('genText').textContent = detail;
   }
   $('genCancel').onclick = () => { hideGenNote(); toast('后台还在写，写完去故事库找'); };
 
@@ -569,7 +578,9 @@
       let it = null;
       try { const r = await fetch('/api/sleep/' + id + '/status'); it = await r.json(); } catch { return; }
       if (!it || !it.status) return;
-      if (it.status === 'synthesizing') showGenNote('写好了，正在录音…', '马上就好');
+      // 更新进度条
+      if (it.progress_pct != null) updateGenProgress(it.progress_pct, it.progress_detail);
+      if (it.status === 'synthesizing') showGenNote('写好了，正在录音…', it.progress_pct, it.progress_detail);
       else if (it.status === 'ready') {
         hideGenNote();
         await loadLibrary();
