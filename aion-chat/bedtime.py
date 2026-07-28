@@ -250,57 +250,123 @@ def _tail_ellipsis(seg: str) -> str:
     return seg + '……'
 
 
+# MPEG Layer 3 参数表（所有版本共享 bitrate 表；sample rate 表按版本分）
 _MP3_BITRATES = {1: 32, 2: 40, 3: 48, 4: 56, 5: 64, 6: 80, 7: 96, 8: 112,
                  9: 128, 10: 160, 11: 192, 12: 224, 13: 256, 14: 320}
-_MP3_SRATES = {0: 44100, 1: 48000, 2: 32000}
+_MP3_SRATES = {
+    1:   {0: 44100, 1: 48000, 2: 32000},   # MPEG1
+    2:   {0: 22050, 1: 24000, 2: 16000},   # MPEG2
+    2.5: {0: 11025, 1: 12000, 2: 8000},    # MPEG2.5
+}
+# MPEG version → (header_byte1_base, frame_coeff, samples_per_frame)
+# header_byte1: 0xFB=MPEG1, 0xF3=MPEG2, 0xE3=MPEG2.5（Layer3 + no CRC）
+_MPEG_META = {
+    1:   (0xFB, 144, 1152),
+    2:   (0xF3, 144, 1152),    # MPEG2 Layer 3: 144 * br / sr, 1152 samples
+    2.5: (0xE3, 72,  576),     # MPEG2.5 Layer 3: 72 * br / sr, 576 samples
+}
 
 
-def _mp3_frame_params(data: bytes) -> tuple[int, int, int] | None:
-    """扫描前 8KB 找第一个 MPEG1 Layer3 帧头，返回 (bitrate_idx, samplerate_idx, channel_bits)。
+def _strip_id3(data: bytes) -> bytes:
+    """剥离 ID3v2 标签，返回纯 MPEG 帧数据。
 
-    静音帧必须仿制真实语音的参数：流中间采样率/声道突变会让浏览器解码器直接卡住
-    （踩过的坑：Fish 输出 mono、静音帧写死 stereo，播放到第一处拼接边界即停）。"""
+    Step TTS 每个 segment 返回完整 MP3（带 ID3v2 头），多段拼接后 ID3 标签
+    散落在音频流中间会让浏览器解码器卡死/无法播放。拼接前必须全部剥掉。"""
+    if len(data) < 10 or data[:3] != b"ID3":
+        return data
+    # ID3v2 size: 4 bytes synchsafe (bit 7 ignored per byte)
+    size = (data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9]
+    return data[10 + size:]
+
+
+def _mp3_frame_params(data: bytes) -> dict | None:
+    """扫描前 8KB 找第一个 MPEG Layer3 帧头（兼容 MPEG1/2/2.5）。
+
+    Step TTS 返回 MPEG2.5 Layer 3，旧代码只认 MPEG1 导致帧参数检测失败。
+    返回 {'br_i': int, 'sr_i': int, 'ch': int, 'mpeg': 1|2|2.5} | None。"""
     n = min(len(data), 8192)
     i = 0
     while i < n - 4:
-        # sync(11) + MPEG1(11) + Layer3(01)，忽略 CRC 位
-        if data[i] == 0xFF and (data[i + 1] & 0xFE) == 0xFA:
-            br = (data[i + 2] >> 4) & 0xF
-            sr = (data[i + 2] >> 2) & 3
-            if br in _MP3_BITRATES and sr in _MP3_SRATES:
-                return br, sr, (data[i + 3] >> 6) & 3
-        i += 1
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        b1 = data[i + 1]
+        # 检测 MPEG version + Layer 3
+        ver_bits = (b1 >> 3) & 3
+        layer_bits = (b1 >> 1) & 3
+        if layer_bits != 1:  # 不是 Layer 3
+            i += 1
+            continue
+        if ver_bits == 3:
+            mpeg = 1
+        elif ver_bits == 2:
+            mpeg = 2
+        elif ver_bits == 0:
+            mpeg = 2.5
+        else:
+            i += 1
+            continue  # reserved
+        br_i = (data[i + 2] >> 4) & 0xF
+        sr_i = (data[i + 2] >> 2) & 3
+        if br_i not in _MP3_BITRATES or sr_i not in _MP3_SRATES[mpeg]:
+            i += 1
+            continue
+        return {"br_i": br_i, "sr_i": sr_i, "ch": (data[i + 3] >> 6) & 3, "mpeg": mpeg}
     return None
 
 
-def _silence_mp3(duration_ms: float = 500, ref: tuple[int, int, int] | None = None) -> bytes:
+def _silence_mp3(duration_ms: float = 500, ref: dict | None = None) -> bytes:
     """生成静音 mp3 bytes 用于段间停顿。无 pydub/ffmpeg，用原始 MP3 静音帧拼接。
-    ref = _mp3_frame_params 的返回值，静音帧参数与真实语音对齐；缺省 128k/44.1k/mono。
-    Fish Audio 不认省略号停顿，段间插静音是唯一可靠方案。"""
-    br_i, sr_i, ch = ref if ref else (9, 0, 3)
+
+    ref = _mp3_frame_params 的返回值，静音帧参数与真实语音对齐（版本/采样率/码率/声道）；
+    缺省 128k/44.1k/mono/MPEG1。"""
+    if ref:
+        br_i, sr_i, ch, mpeg = ref["br_i"], ref["sr_i"], ref["ch"], ref["mpeg"]
+    else:
+        br_i, sr_i, ch, mpeg = 9, 0, 3, 1
     br = _MP3_BITRATES[br_i]
-    sr = _MP3_SRATES[sr_i]
-    header = bytes([0xFF, 0xFB, (br_i << 4) | (sr_i << 2), (ch << 6) | 0x04])
-    frame_size = 144 * br * 1000 // sr  # 无 padding
-    frame_ms = 1152 / sr * 1000
+    sr = _MP3_SRATES[mpeg][sr_i]
+    hdr_base, coeff, samples = _MPEG_META[mpeg]
+    header = bytes([0xFF, hdr_base, (br_i << 4) | (sr_i << 2), (ch << 6) | 0x04])
+    frame_size = coeff * br * 1000 // sr  # 无 padding
+    frame_ms = samples / sr * 1000
     n = max(1, round(duration_ms / frame_ms))
     return (header + b'\x00' * (frame_size - 4)) * n
 
 
 def _mp3_duration_sec(data: bytes) -> int:
-    """逐帧扫 MPEG1 Layer3 算总时长（拼接 mp3 没有整体头，浏览器估的也不准，自己算）。"""
+    """逐帧扫 MPEG Layer3（兼容 MPEG1/2/2.5）算总时长。"""
     i, n, t = 0, len(data), 0.0
+    FLAG = {1: 0xFA, 2: 0xF2, 2.5: 0xE2}  # (b1 & 0xFE) 匹配值
     while i < n - 4:
-        if data[i] == 0xFF and (data[i + 1] & 0xFE) == 0xFA:
-            br_i = (data[i + 2] >> 4) & 0xF
-            sr_i = (data[i + 2] >> 2) & 3
-            pad = (data[i + 2] >> 1) & 1
-            if br_i in _MP3_BITRATES and sr_i in _MP3_SRATES:
-                sr = _MP3_SRATES[sr_i]
-                i += 144 * _MP3_BITRATES[br_i] * 1000 // sr + pad
-                t += 1152 / sr
-                continue
-        i += 1
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        b1 = data[i + 1]
+        # 快速反推 mpeg version
+        ver_bits = (b1 >> 3) & 3
+        if ver_bits == 3:
+            mpeg = 1
+        elif ver_bits == 2:
+            mpeg = 2
+        elif ver_bits == 0:
+            mpeg = 2.5
+        else:
+            i += 1
+            continue
+        if (b1 >> 1) & 3 != 1:  # 不是 Layer 3
+            i += 1
+            continue
+        br_i = (data[i + 2] >> 4) & 0xF
+        sr_i = (data[i + 2] >> 2) & 3
+        pad = (data[i + 2] >> 1) & 1
+        if br_i not in _MP3_BITRATES or sr_i not in _MP3_SRATES[mpeg]:
+            i += 1
+            continue
+        sr = _MP3_SRATES[mpeg][sr_i]
+        _, coeff, samples = _MPEG_META[mpeg]
+        i += coeff * _MP3_BITRATES[br_i] * 1000 // sr + pad
+        t += samples / sr
     return int(t)
 
 
@@ -330,7 +396,7 @@ async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) 
     return pieces
 
 
-def _sfx_bytes(name: str, ref: tuple[int, int, int] | None) -> bytes:
+def _sfx_bytes(name: str, ref: dict | None) -> bytes:
     """读 data/sleep_sfx/{name}.mp3（如 翻书.mp3）。缺素材/格式与语音流不一致时
     退化为 0.8s 静音停顿——流中间帧参数突变会卡死浏览器解码器，宁可没音效不可卡。"""
     path = SFX_DIR / f"{name}.mp3"
@@ -368,11 +434,13 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
                     detail = f"正在录音… {done}/{total_blocks} 段"
                     _progress[item_id] = {"phase": "synthesizing", "pct": pct, "detail": detail}
                     await _broadcast(item_id, {"status": "synthesizing", "progress_pct": pct, "progress_detail": detail})
-        # 从第一段真实语音抄帧参数（采样率/码率/声道），静音与 SFX 全部对齐它
+        # 从第一段真实语音抄帧参数（采样率/码率/声道），静音与 SFX 全部对齐它。
+        # 先剥 ID3 再读帧参数——Step TTS 每个 segment 返回完整 MP3（带 ID3v2），
+        # 不剥的话 ID3 标签散落在拼接流中间，浏览器解码器直接卡死。
         ref = None
         for idx in sorted(text_pieces):
             if text_pieces[idx]:
-                ref = _mp3_frame_params(text_pieces[idx][0])
+                ref = _mp3_frame_params(_strip_id3(text_pieces[idx][0]))
                 break
         sil = _silence_mp3(900, ref)
         all_pieces: list[bytes] = []
@@ -381,7 +449,7 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
                 all_pieces.append(_sfx_bytes(val, ref))
             else:
                 for p in text_pieces.get(idx, []):
-                    all_pieces.append(p)
+                    all_pieces.append(_strip_id3(p))
                     all_pieces.append(sil)  # 段间 0.9s 停顿（Fish 不认省略号；加长强化哄睡慢节奏）
         if not any(p for p in all_pieces):
             raise RuntimeError("合成结果为空")
