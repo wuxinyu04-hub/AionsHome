@@ -463,6 +463,28 @@
     closeSheet('itemSheet');
     if (it) queueAdd(it);
   };
+  $('isDelete').onclick = async () => {
+    const it = state.items.find(x => x.id === sheetItemId);
+    closeSheet('itemSheet');
+    if (!it) return;
+    if (!window.confirm(`确定删除「${it.title}」吗？\n\n音频文件也会一起删除，不可恢复。`)) return;
+    try {
+      const r = await fetch('/api/sleep/' + it.id, { method: 'DELETE' });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); toast(e.detail || '删除失败'); return; }
+      // 如果正在播这条，停掉
+      if (state.currentId === it.id) {
+        audio.pause(); audio.src = '';
+        state.currentId = null; state.queue = []; state.qIdx = 0;
+        saveQueue();
+        showScreen('home');
+      }
+      // 从队列里移除
+      state.queue = state.queue.filter(x => x.id !== it.id);
+      saveQueue();
+      await loadLibrary();
+      toast('已删除');
+    } catch { toast('网络错误'); }
+  };
 
   function updateCounts() {
     const total = state.items.length;

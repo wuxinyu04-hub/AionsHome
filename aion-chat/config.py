@@ -89,8 +89,8 @@ def get_tts_provider() -> str:
 
 # 哄睡 TTS instruction（stepaudio-2.5-tts 专属，自然语言描述声音风格）。
 # 哄睡合成传这条 instruction -> provider=step 时自动切 stepaudio-2.5-tts（主聊天不传，走 step-tts-2）。
-# stepaudio-2.5-tts 不支持 voice_label，改用 instruction 控情绪/风格/人设感（这才是 Step 的 voice design）。
-STEP_SLEEP_INSTRUCTION = "像男友在枕边哄你睡觉，用平时的声音慢慢说，轻一点。"
+# 极简：堆情绪词/场景词会让 stepaudio 过度演绎导致失真，只保留"自然"一个方向。
+STEP_SLEEP_INSTRUCTION = "用自然的声音说话"
 
 
 def get_sentinel_config() -> dict:

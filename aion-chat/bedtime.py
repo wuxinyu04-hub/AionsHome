@@ -754,6 +754,32 @@ async def generate_cover(item_id: str, extra_prompt: str = "") -> str | None:
     return cover_rel
 
 
+async def delete_item(item_id: str) -> bool:
+    """删除条目：清 DB 行 + 删音频/封面文件。返回是否成功找到并删除。"""
+    item = await get_item_raw(item_id)
+    if not item:
+        return False
+    # 删音频文件
+    if item.get("audio_path"):
+        p = DATA_DIR / item["audio_path"]
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            log.exception("删除音频失败 id=%s", item_id)
+    # 删封面文件
+    if item.get("cover_path"):
+        p = DATA_DIR / item["cover_path"]
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            log.exception("删除封面失败 id=%s", item_id)
+    async with get_db() as db:
+        await db.execute("DELETE FROM sleep_items WHERE id=?", (item_id,))
+        await db.commit()
+    log.info("sleep 条目已删除 id=%s title=%s", item_id, item.get("title"))
+    return True
+
+
 async def update_progress(item_id: str, progress_sec: int) -> None:
     async with get_db() as db:
         await db.execute(

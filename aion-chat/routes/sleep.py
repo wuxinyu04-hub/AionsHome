@@ -214,6 +214,15 @@ async def noise_list():
     return {"files": bedtime.list_noise_files()}
 
 
+@router.delete("/{item_id}")
+async def delete_item(item_id: str):
+    """删除条目（含音频和封面文件）。"""
+    ok = await bedtime.delete_item(item_id)
+    if not ok:
+        raise HTTPException(404, "条目不存在")
+    return {"ok": True}
+
+
 @router.get("/noise/{name}")
 async def noise_file(name: str):
     if ".." in name or "/" in name or "\\" in name:
