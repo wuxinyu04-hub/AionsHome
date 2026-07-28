@@ -437,7 +437,7 @@ async def _request_step_tts_audio(text: str, voice: str, *, seq: int | None = No
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15), trust_env=True) as client:
                 resp = await client.post(
-                    "https://api.stepfun.com/v1/audio/speech",
+                    "https://api.stepfun.com/step_plan/v1/audio/speech",
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                     json=payload,
                 )
@@ -480,7 +480,7 @@ async def _request_stepaudio_tts_audio(text: str, voice: str, *, seq: int | None
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=True) as client:
                 resp = await client.post(
-                    "https://api.stepfun.com/v1/audio/speech",
+                    "https://api.stepfun.com/step_plan/v1/audio/speech",
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                     json=payload,
                 )

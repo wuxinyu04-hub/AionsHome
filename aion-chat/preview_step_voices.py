@@ -47,7 +47,7 @@ async def synth_one(idx, label, voice, text, instr, speed):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=True) as client:
                 resp = await client.post(
-                    "https://api.stepfun.com/v1/audio/speech",
+                    "https://api.stepfun.com/step_plan/v1/audio/speech",
                     headers={"Authorization": f"Bearer {get_key('step')}", "Content-Type": "application/json"},
                     json=payload,
                 )
