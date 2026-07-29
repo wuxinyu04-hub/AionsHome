@@ -46,10 +46,61 @@
     return m + ':' + (x < 10 ? '0' : '') + x;
   }
   function esc(s) { return (s || '').replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c])); }
+
+  // ── 导航栈（替换硬编码的 showScreen，支持物理返回键） ──
+  const navStack = ['home']; // 栈底 = 入口
   function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('on'));
     $(id).classList.add('on');
   }
+  function pushScreen(id) {
+    navStack.push(id);
+    showScreen(id);
+    document.title = (id === 'player' ? '播放中 ' : id === 'album' ? '故事 ' : '') + (id === 'player' ? $('pTitle').textContent : '');
+  }
+  function popScreen() {
+    if (navStack.length <= 1) {
+      // 回到入口后，再按返回 = 退出回到主页
+      try { top.location.href = '/'; } catch { location.href = '/'; }
+      return;
+    }
+    navStack.pop();
+    const prev = navStack[navStack.length - 1];
+    showScreen(prev);
+    document.title = '晚安，小语';
+    updateMiniPlayer();
+  }
+  function setScreen(id) {
+    showScreen(id);
+  }
+  window.addEventListener('popstate', popScreen);
+  // 物理返回键兜底：部分 WebView 走 hashchange，这里用 history 空态兜底
+  window.addEventListener('hashchange', () => { history.replaceState(null, '', location.href.split('#')[0]); });
+
+  // ── 底部迷你播放器（全局悬浮，播放时滑入覆盖在所有页面上方） ──
+  const miniPlayer = $('miniPlayer');
+  function updateMiniPlayer() {
+    if (state.currentId && state.queue.length) {
+      const it = state.items.find(x => x.id === state.currentId) || { title: $('pTitle').textContent || '今晚的故事', id: state.currentId };
+      $('miniTitle').textContent = it.title || '—';
+      renderMiniCover(it.id);
+      miniPlayer.classList.add('show');
+    } else {
+      miniPlayer.classList.remove('show');
+    }
+  }
+  function renderMiniCover(id) {
+    const it = state.items.find(x => x.id === id);
+    $('miniCover').innerHTML = it ? coverHtml(it) : '';
+  }
+  // 点迷你播放器 → 进全屏播放页
+  miniPlayer.onclick = () => { pushScreen('player'); };
+  $('miniPause').onclick = (e) => {
+    e.stopPropagation();
+    if (!audio.src) return;
+    if (audio.paused) audio.play().catch(() => { }); else audio.pause();
+  };
+
   function hashIdx(str, n) {
     let h = 0; for (let i = 0; i < (str || '').length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
     return h % n;
@@ -375,9 +426,9 @@
       e.stopPropagation();
       openItemSheet(b.dataset.more);
     });
-    showScreen('album');
+    pushScreen('album');
   }
-  $('alBack').onclick = () => showScreen('library');
+  $('alBack').onclick = () => popScreen();
   $('alPlay').onclick = () => {
     const a = albumGroups().find(x => x.book_id === albumBid);
     if (!a) return;
@@ -400,11 +451,60 @@
     }).then(async r => {
       if (!r.ok) { const e = await r.json().catch(() => ({})); toast(e.detail || '生成失败'); return; }
       const d = await r.json();
-      showScreen('home');
+      setScreen('home');
       showGenNote(`在翻《${a.title}》的下一章…`);
       pollStatus(d.id);
     }).catch(() => toast('网络错误'));
   };
+  $('alBatch').onclick = async () => {
+    const a = albumGroups().find(x => x.book_id === albumBid);
+    if (!a) return;
+    if (!navigator.onLine) { toast('联网才能生成'); return; }
+    if (!state.voice) { openVoiceSheet(() => $('alBatch').onclick()); return; }
+    let pending = null;
+    try {
+      const r = await fetch('/api/books/' + a.book_id);
+      if (r.ok) {
+        const d = await r.json();
+        const ready = new Set(a.eps.filter(e => e.has_audio).map(e => e.book_chapter));
+        const active = new Set(a.eps.filter(e => ['generating', 'synthesizing'].includes(e.status)).map(e => e.book_chapter));
+        pending = (d.chapters || []).filter(ch => (ch.char_count || 0) > 0 && !ready.has(ch.chapter_index) && !active.has(ch.chapter_index)).length;
+      }
+    } catch { }
+    if (pending === 0) { toast('这本书已经全部生成好了，或正在生成中'); return; }
+    const hint = pending == null ? '未完成章节' : `${pending} 章未完成`;
+    if (!window.confirm(`《${a.title}》${hint}，开始整本续跑吗？`)) return;
+    const btn = $('alBatch');
+    btn.disabled = true;
+    btn.textContent = '▣ 正在排队…';
+    try {
+      const r = await fetch('/api/sleep/generate-book', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ book_id: a.book_id, voice: state.voice }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { toast(d.detail || '整本生成失败'); return; }
+      toast(`已开始续跑 ${a.title}，完成情况会自动更新`);
+      setScreen('library');
+      pollLibraryWhileGenerating(a.book_id);
+    } catch { toast('网络错误'); }
+    finally {
+      btn.disabled = false;
+      btn.textContent = '▣ 整本生成';
+    }
+  };
+  let batchPollTimer = null;
+  function pollLibraryWhileGenerating(bookId) {
+    clearInterval(batchPollTimer);
+    let rounds = 0;
+    batchPollTimer = setInterval(async () => {
+      rounds++;
+      await loadLibrary();
+      const a = albumGroups().find(x => x.book_id === bookId);
+      const active = a && a.eps.some(e => ['generating', 'synthesizing'].includes(e.status));
+      if (!active || rounds >= 360) clearInterval(batchPollTimer);
+    }, 5000);
+  }
 
   // ── 条目操作单：重命名 / AI 封面 / 加列表 ──
   let sheetItemId = null;
@@ -476,7 +576,7 @@
         audio.pause(); audio.src = '';
         state.currentId = null; state.queue = []; state.qIdx = 0;
         saveQueue();
-        showScreen('home');
+        setScreen('home');
       }
       // 从队列里移除
       state.queue = state.queue.filter(x => x.id !== it.id);
@@ -518,7 +618,7 @@
       showGenNote(it.status === 'generating' ? '在写这一篇了，先躺好' : '写好了，正在录音…',
         it.progress_pct, it.progress_detail);
       pollStatus(it.id);
-      showScreen('home');
+      setScreen('home');
       return;
     }
     // 未合成 / 失败：触发 TTS 合成
@@ -533,7 +633,7 @@
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); toast(e.detail || '合成失败'); return; }
       showGenNote('在录《' + it.title + '》…', 0);
-      showScreen('home');
+      setScreen('home');
       pollStatus(it.id);
     } catch { toast('网络错误'); }
   }
@@ -632,7 +732,7 @@
     $('pMid').classList.remove('expanded');
     $('capPast').textContent = ''; $('capNow').textContent = '';
     state.capIdx = -1;
-    showScreen('player');
+    pushScreen('player');
 
     // 剧本分句（去掉 [SFX:...] 标记），按字数权重对齐进度
     try {
@@ -714,7 +814,7 @@
   $('pPlay').onclick = () => { if (!audio.src) return; if (audio.paused) audio.play().catch(() => { }); else audio.pause(); };
   $('pRew').onclick = () => { audio.currentTime = Math.max(0, audio.currentTime - 15); };
   $('pFwd').onclick = () => { audio.currentTime = Math.min(audio.duration || 1e9, audio.currentTime + 15); };
-  $('pBack').onclick = () => { showScreen('home'); renderResume(); };
+  $('pBack').onclick = () => popScreen();
 
   // 进度条：pointer 拖动 scrub（按住实时预览，松手 seek），不再是点一下才跳
   let scrubbing = false;
@@ -751,11 +851,16 @@
       $('pCur').textContent = fmtTime(audio.currentTime);
     }
     $('pDur').textContent = fmtTime(audio.duration);
+    // 迷你播放器进度同步
+    if (miniPlayer.classList.contains('show')) {
+      $('miniProgFill').style.width = (audio.currentTime / audio.duration * 100) + '%';
+      $('miniPause').textContent = audio.paused ? '▶' : '⏸';
+    }
     updateCaptions();
     saveProgressThrottled();
   });
   audio.addEventListener('ended', () => {
-    if (state.stopAtEnd) { resetTimer(); toast('播完了，晚安 🌙'); wnStop(); return; }
+    if (state.stopAtEnd) { resetTimer(); toast('播完了，晚安 🌙'); wnStop(); updateMiniPlayer(); return; }
     if (state.qIdx < state.queue.length - 1) { state.qIdx++; playItem(state.queue[state.qIdx], state.queue); }
   });
 
@@ -984,11 +1089,12 @@
   // ── 入口屏事件 ──
   $('goBtn').onclick = () => startGenerate($('promptInput').value);
   $('promptInput').addEventListener('keydown', e => { if (e.key === 'Enter') startGenerate($('promptInput').value); });
-  $('openLib').onclick = () => showScreen('library');
-  $('libBack').onclick = () => { showScreen('home'); renderResume(); };
+  $('openLib').onclick = () => setScreen('library');
+  $('libBack').onclick = () => { setScreen('home'); renderResume(); };
   // 旧的静态 .mood 绑定已由 renderModeChips 接管
 
   // ── 启动 ──
   loadVoices();
   loadLibrary();
+  updateMiniPlayer();
 })();

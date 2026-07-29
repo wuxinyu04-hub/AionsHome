@@ -108,7 +108,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .gen-bar-fill{height:100%;width:0%;border-radius:2px;background:linear-gradient(90deg,var(--amber),#e8a850);transition:width .6s ease}
 .gen-pct{font-size:11px;color:var(--muted);min-width:32px;text-align:right;font-variant-numeric:tabular-nums}
 
-.home-foot{padding:14px 26px calc(20px + env(safe-area-inset-bottom));display:flex;justify-content:space-between;align-items:center;margin-top:auto;position:relative;z-index:2}
+.home-foot{padding:14px 26px 8px;display:flex;justify-content:space-between;align-items:center;margin-top:auto;position:relative;z-index:2}
 .f-lib{font-size:13px;color:var(--fg-soft);cursor:pointer;background:none;border:none;font-family:var(--sans)}
 .f-lib .n{font-size:11px;color:var(--muted);margin-left:6px}
 
@@ -237,6 +237,29 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .toast{position:fixed;top:max(20px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);background:var(--bg-2);color:var(--fg);
   padding:10px 20px;border-radius:12px;font-size:13px;z-index:100;opacity:0;transition:opacity .3s;pointer-events:none;border:1px solid var(--line);max-width:86%;text-align:center}
 .toast.show{opacity:1}
+
+/* 被底部播放器取代的旧入口隐藏 */
+#openLib, #libBack{display:none !important}
+
+/* ══ 底部迷你播放器（全局悬浮，播放时滑入，不播时消失） ══ */
+#miniPlayer{position:absolute;left:0;right:0;bottom:0;z-index:60;background:rgba(11,14,24,.92);
+  border-top:1px solid var(--line);display:flex;flex-direction:row;align-items:center;gap:10px;
+  padding:10px 14px max(10px,env(safe-area-inset-bottom));cursor:pointer;user-select:none;
+  opacity:0;transform:translateY(100%);transition:opacity .3s ease,transform .3s ease;pointer-events:none}
+#miniPlayer.show{opacity:1;transform:none;pointer-events:auto}
+.mini-cover{flex:0 0 auto;width:44px;height:44px;border-radius:9px;overflow:hidden;background:linear-gradient(160deg,#101a33,#0b0e18)}
+.mini-cover svg,.mini-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.mini-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.mini-title{font-size:14px;font-family:var(--serif);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--fg)}
+.mini-prog-wrap{display:flex;align-items:center}
+.mini-prog-track{width:100%;height:3px;border-radius:2px;background:rgba(239,233,219,.12);overflow:hidden;position:relative}
+.mini-prog-fill{position:absolute;left:0;top:0;height:100%;width:0%;background:var(--amber);border-radius:2px;transition:width .3s linear}
+.mini-pause{flex:0 0 auto;width:36px;height:36px;border:none;background:rgba(224,180,120,.15);color:var(--amber);
+  border-radius:50%;font-size:15px;cursor:pointer;display:grid;place-items:center;transition:background .15s}
+
+/* 给所有 screen 加底部留白，避免内容被迷你播放器遮住 */
+#player, #library, #album{padding-bottom:74px}
+#home{padding-bottom:90px} /* 入口屏底部有 home-foot 按钮，多留一点 */
 </style>
 </head>
 <body>
@@ -464,12 +487,25 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
       <div class="al-actions">
         <button class="al-play" id="alPlay">▶ 继续听</button>
         <button class="al-next" id="alNext">✨ 读下一章</button>
+        <button class="al-next" id="alBatch">▣ 整本生成</button>
       </div>
       <div class="al-list" id="alList"></div>
     </div>
   </div>
 
-  <!-- ═══ 条目操作单 ═══ -->
+  <!-- ═══ 底部迷你播放器（全局悬浮，播放时滑入，不播时消失） ══ -->
+  <div id="miniPlayer" class="mini-player">
+    <div class="mini-cover" id="miniCover"></div>
+    <div class="mini-meta">
+      <div class="mini-title" id="miniTitle">—</div>
+      <div class="mini-prog-wrap">
+        <div class="mini-prog-track"><div class="mini-prog-fill" id="miniProgFill"></div></div>
+      </div>
+    </div>
+    <button class="mini-pause" id="miniPause">⏸</button>
+  </div>
+
+  <!-- ═══ 抽屉（必须在 .app 内，inset:0 才铺满 app）═══ -->
   <div class="sheet" id="itemSheet">
     <div class="mask" data-close="itemSheet"></div>
     <div class="panel">
@@ -484,7 +520,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
     </div>
   </div>
 
-  <!-- ═══ 声音选择抽屉 ═══ -->
   <div class="sheet" id="voiceSheet">
     <div class="mask" data-close="voiceSheet"></div>
     <div class="panel">
@@ -494,7 +529,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
     </div>
   </div>
 
-  <!-- ═══ 播放列表抽屉 ═══ -->
   <div class="sheet" id="queueSheet">
     <div class="mask" data-close="queueSheet"></div>
     <div class="panel">
@@ -509,6 +543,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
-<script src="/static/sleep.js?v=delete-20260728"></script>
+<script src="/static/sleep.js?v=mini-bottom-tab-20260730"></script>
 </body>
 </html>
