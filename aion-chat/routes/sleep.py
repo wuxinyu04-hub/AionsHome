@@ -39,10 +39,39 @@ class ProgressIn(BaseModel):
     progress_sec: int = 0
 
 
+class ExportIn(BaseModel):
+    book_id: str = ""
+
+
+class GenerateBookIn(BaseModel):
+    book_id: str
+    voice: str = ""
+
+
 @router.get("/library")
 async def library(category: str = ""):
     """列出条目（按分类可选）。预置库首次访问时自动同步进库。"""
     return {"items": await bedtime.list_items(category)}
+
+
+@router.post("/generate-book")
+async def generate_book(body: GenerateBookIn):
+    """整本书后台串行囤讲书音频，跳过已生成/正在生成章节。"""
+    voice = (body.voice or bedtime.default_sleep_voice()).strip()
+    if not voice:
+        raise HTTPException(400, "未选择音色，请先在哄睡页选择当前 TTS 服务商的声音")
+    _require_tts_key()
+    task = bedtime.auto_generate_book(body.book_id, voice)
+    # 手动触发也不阻塞请求；详细结果写日志，库列表看逐章状态。
+    import asyncio
+    asyncio.create_task(task)
+    return {"ok": True, "status": "queued", "book_id": body.book_id, "voice": voice}
+
+
+@router.post("/export")
+async def export_audio(body: ExportIn):
+    """把 ready 音频 copy 到 data/sleep_export，不重命名原缓存。"""
+    return await bedtime.export_items(body.book_id)
 
 
 @router.post("/{item_id}/synthesize")
@@ -62,6 +91,7 @@ async def synthesize(item_id: str, body: SynthesizeIn):
     voice = (body.voice or item.get("voice") or "").strip()
     if not voice:
         raise HTTPException(400, "未选择音色，请在播放器里选一个")
+    bedtime.remember_sleep_voice(voice)
     _require_tts_key()
 
     # bedtime 合成内核已 provider-agnostic（_request_tts_audio 走全局 get_tts_provider()），
@@ -142,6 +172,7 @@ async def generate(body: GenerateIn):
     voice = body.voice.strip()
     if not voice:
         raise HTTPException(400, "未选择音色")
+    bedtime.remember_sleep_voice(voice)
     _require_tts_key()
     if body.title.strip():
         title = body.title.strip()

@@ -23,6 +23,7 @@ from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from book import parse_epub, delete_book_files, build_annotate_text, BOOKS_DIR
 from context_builder import fetch_merged_timeline, render_merged_timeline
 from chatroom import stream_connor_cli, check_connor_online, _read_connor_persona, load_chatroom_config
+import bedtime
 
 router = APIRouter()
 logger = logging.getLogger("book")
@@ -77,12 +78,15 @@ async def upload_book(file: UploadFile = File(...)):
 
             await db.commit()
 
+        asyncio.create_task(bedtime.auto_generate_book(parsed.book_id))
+
         return {
             "book_id": parsed.book_id,
             "title": parsed.title,
             "author": parsed.author,
             "cover_path": parsed.cover_path,
             "total_chapters": len(parsed.chapters),
+            "auto_generate": True,
         }
     except HTTPException:
         raise

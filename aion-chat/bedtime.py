@@ -6,6 +6,7 @@
 import asyncio
 import json
 import re
+import shutil
 import time
 import logging
 from pathlib import Path
@@ -27,10 +28,13 @@ NOISE_DIR.mkdir(parents=True, exist_ok=True)
 # AI 生成的封面
 COVERS_DIR = DATA_DIR / "sleep_covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
+SLEEP_EXPORT_DIR = DATA_DIR / "sleep_export"
+SLEEP_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 _NOISE_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".aac"}
 
 # 生成/合成进度（仅内存，不落库。item_id -> {phase, pct, detail}）
 _progress: dict[str, dict] = {}
+_book_batch_lock = asyncio.Lock()
 
 
 def list_noise_files() -> list[str]:
@@ -114,6 +118,47 @@ def _book_ref_fields(book_ref: str) -> dict:
         except Exception:
             pass
     return {"book_id": "", "book_chapter": -1}
+
+
+def _safe_filename(name: str, fallback: str = "audio") -> str:
+    """保留中文可读性，只替换 Windows/跨平台非法文件名字符。"""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (name or "").strip())
+    name = re.sub(r"\s+", " ", name).strip(" ._")
+    return (name or fallback)[:120]
+
+
+def default_sleep_voice() -> str:
+    """返回当前 TTS provider 最近选过的哄睡音色；Step 首次使用有内置兜底。"""
+    try:
+        from config import SETTINGS, get_tts_provider
+        provider = get_tts_provider()
+        voices = SETTINGS.get("sleep_default_voices") or {}
+        voice = str(voices.get(provider) or "").strip() if isinstance(voices, dict) else ""
+        if voice:
+            return voice
+        if provider == "step":
+            return "cixingnansheng"
+    except Exception:
+        pass
+    return ""
+
+
+def remember_sleep_voice(voice: str) -> None:
+    """按 provider 分开记音色，避免切换 Step/Fish 后把另一家的 voice ID 传过去。"""
+    voice = (voice or "").strip()
+    if not voice:
+        return
+    try:
+        from config import SETTINGS, get_tts_provider, save_settings
+        provider = get_tts_provider()
+        voices = SETTINGS.get("sleep_default_voices") or {}
+        voices = dict(voices) if isinstance(voices, dict) else {}
+        if voices.get(provider) != voice:
+            voices[provider] = voice
+            SETTINGS["sleep_default_voices"] = voices
+            save_settings(SETTINGS)
+    except Exception:
+        log.exception("保存哄睡默认音色失败")
 
 
 def _load_library_meta() -> dict:
@@ -486,7 +531,7 @@ def trigger_synthesize(item_id: str, script_text: str, voice: str) -> None:
 
 
 # ── 梗概生成剧本 ──
-_COMMON_RULES = """- 第一人称"我"对第二人称"你"，语气克制温柔，有命令感但不凶（爹系轻哄，年上沉稳温润）
+_COMMON_RULES = """- 第一人称"我"对第二人称"你"，自称"哥哥"，语气克制温柔，有命令感但不凶（爹系轻哄，年上沉稳温润）
 - 4500-5500 字，适合 20 分钟慢语速朗读
 - 轻声呢喃、气声、慢语速，像在耳边说话；多留停顿（省略号 ... 表轻停，…… 表长停，段落间空行）
 - 不要章节标题、旁白说明、动作括号、分点
@@ -748,6 +793,216 @@ def trigger_generate(
             log.error("sleep 生成 task 异常 id=%s: %s", item_id, exc)
 
     task.add_done_callback(_on_done)
+
+
+async def _wait_item_terminal(item_id: str, timeout_sec: int = 900) -> str:
+    start = time.time()
+    while time.time() - start < timeout_sec:
+        item = await get_item_raw(item_id)
+        status = (item or {}).get("status") or "missing"
+        if status in ("ready", "failed", "missing"):
+            return status
+        await asyncio.sleep(5)
+    return "timeout"
+
+
+async def _existing_book_chapters(book_id: str) -> dict[int, str]:
+    """按章节汇总历史尝试：ready 优先；超过 30 分钟的运行中条目允许重试。"""
+    existing: dict[int, tuple[str, float]] = {}
+    priority = {"": 0, "failed": 1, "generating": 2, "synthesizing": 2, "ready": 3}
+    async with get_db() as db:
+        db.row_factory = __import__("aiosqlite").Row
+        cur = await db.execute(
+            """SELECT book_ref, status, created_at FROM sleep_items
+               WHERE category='reading' AND source='ai_generated'"""
+        )
+        rows = await cur.fetchall()
+    for row in rows:
+        fields = _book_ref_fields(row["book_ref"] or "")
+        if fields.get("book_id") != book_id:
+            continue
+        ch = int(fields.get("book_chapter", -1))
+        status = row["status"] or ""
+        created_at = float(row["created_at"] or 0)
+        if status in ("generating", "synthesizing") and time.time() - created_at > 1800:
+            status = "failed"
+        old_status, old_created = existing.get(ch, ("", 0))
+        if ch >= 0 and (
+            priority.get(status, 0) > priority.get(old_status, 0)
+            or (priority.get(status, 0) == priority.get(old_status, 0) and created_at > old_created)
+        ):
+            existing[ch] = (status, created_at)
+    return {ch: status for ch, (status, _created) in existing.items()}
+
+
+async def auto_generate_book(
+    book_id: str,
+    voice: str = "",
+    chapters: list[int] | None = None,
+    timeout_sec: int = 900,
+) -> dict:
+    """整本书串行囤音频；跳过已有 ready/generating/synthesizing 条目，failed 会重试。"""
+    voice = (voice or default_sleep_voice()).strip()
+    if not voice:
+        msg = "未配置哄睡默认音色，跳过整书自动生成"
+        log.warning("sleep book batch skipped book_id=%s: %s", book_id, msg)
+        return {"ok": False, "error": msg, "book_id": book_id}
+    wanted = set(chapters or [])
+    async with _book_batch_lock:
+        async with get_db() as db:
+            db.row_factory = __import__("aiosqlite").Row
+            cur = await db.execute("SELECT title, author FROM books WHERE book_id=?", (book_id,))
+            book_row = await cur.fetchone()
+            if not book_row:
+                return {"ok": False, "error": "书籍不存在", "book_id": book_id}
+            cur = await db.execute(
+                """SELECT chapter_index, title, text_content
+                   FROM book_chapters WHERE book_id=? ORDER BY chapter_index""",
+                (book_id,),
+            )
+            rows = await cur.fetchall()
+        existing = await _existing_book_chapters(book_id)
+        result = {
+            "ok": True,
+            "book_id": book_id,
+            "title": book_row["title"] or "未知",
+            "created": 0,
+            "ready": 0,
+            "failed": 0,
+            "timeout": 0,
+            "skipped": 0,
+            "skipped_empty": 0,
+            "items": [],
+        }
+        for row in rows:
+            ch_idx = int(row["chapter_index"])
+            if wanted and ch_idx not in wanted:
+                continue
+            if not (row["text_content"] or "").strip():
+                result["skipped_empty"] += 1
+                continue
+            if existing.get(ch_idx) in ("ready", "generating", "synthesizing"):
+                result["skipped"] += 1
+                continue
+            ch_title = row["title"] or f"第 {ch_idx + 1} 章"
+            title = f"{result['title']} · {ch_title}"
+            book = {
+                "book_title": result["title"],
+                "author": book_row["author"] or "",
+                "ch_index": ch_idx,
+                "ch_title": ch_title,
+                "text": row["text_content"] or "",
+            }
+            book_ref = json.dumps({"book_id": book_id, "chapter": ch_idx}, ensure_ascii=False)
+            item_id = await create_generated_item("reading", title, voice, book_ref)
+            result["created"] += 1
+            result["items"].append({"id": item_id, "chapter": ch_idx, "title": ch_title})
+            log.info("sleep book batch start book=%s chapter=%s item=%s", book_id, ch_idx, item_id)
+            trigger_generate(item_id, "reading", "", voice, title, book)
+            status = await _wait_item_terminal(item_id, timeout_sec)
+            if status == "ready":
+                result["ready"] += 1
+            elif status == "timeout":
+                result["timeout"] += 1
+                log.warning("sleep book batch timeout item=%s；为避免并发，暂停本次整书任务", item_id)
+                break
+            else:
+                result["failed"] += 1
+            log.info("sleep book batch done item=%s status=%s", item_id, status)
+        return result
+
+
+def _unique_export_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem, suffix = path.stem, path.suffix
+    for i in range(2, 1000):
+        cand = path.with_name(f"{stem} ({i}){suffix}")
+        if not cand.exists():
+            return cand
+    return path.with_name(f"{stem}_{int(time.time())}{suffix}")
+
+
+async def export_items(book_id: str = "") -> dict:
+    """把已 ready 的哄睡音频 copy 到 data/sleep_export，保留原缓存文件。"""
+    book_id = (book_id or "").strip()
+    async with get_db() as db:
+        db.row_factory = __import__("aiosqlite").Row
+        cur = await db.execute(
+            """SELECT id, category, title, book_ref, voice, audio_path, duration_sec, created_at
+               FROM sleep_items
+               WHERE status='ready' AND audio_path != ''
+               ORDER BY created_at ASC"""
+        )
+        rows = await cur.fetchall()
+        book_cache: dict[str, dict] = {}
+        chapter_cache: dict[tuple[str, int], str] = {}
+
+        async def _book_title(bid: str) -> str:
+            if bid not in book_cache:
+                cur2 = await db.execute("SELECT title, author FROM books WHERE book_id=?", (bid,))
+                row = await cur2.fetchone()
+                book_cache[bid] = dict(row) if row else {"title": "讲书", "author": ""}
+            return book_cache[bid].get("title") or "讲书"
+
+        async def _chapter_title(bid: str, ch: int) -> str:
+            key = (bid, ch)
+            if key not in chapter_cache:
+                cur2 = await db.execute(
+                    "SELECT title FROM book_chapters WHERE book_id=? AND chapter_index=?", (bid, ch)
+                )
+                row = await cur2.fetchone()
+                chapter_cache[key] = (row["title"] if row else "") or f"第 {ch + 1} 章"
+            return chapter_cache[key]
+
+        exported = []
+        total_bytes = 0
+        for row in rows:
+            item = dict(row)
+            fields = _book_ref_fields(item.get("book_ref") or "")
+            item_book_id = fields.get("book_id") or ""
+            item_ch = int(fields.get("book_chapter", -1))
+            if book_id and item_book_id != book_id:
+                continue
+            src = DATA_DIR / (item.get("audio_path") or "")
+            if not src.exists():
+                continue
+            if item_book_id:
+                bt = await _book_title(item_book_id)
+                ct = await _chapter_title(item_book_id, item_ch)
+                dst_dir = SLEEP_EXPORT_DIR / _safe_filename(bt, "讲书")
+                filename = f"{item_ch + 1:02d} {_safe_filename(ct, item['id'])}.mp3"
+            else:
+                dst_dir = SLEEP_EXPORT_DIR / _safe_filename(item.get("category") or "sleep", "sleep")
+                filename = f"{_safe_filename(item.get('title') or item['id'], item['id'])}.mp3"
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            dst = _unique_export_path(dst_dir / filename)
+            shutil.copy2(src, dst)
+            size = dst.stat().st_size
+            total_bytes += size
+            exported.append({
+                "id": item["id"],
+                "title": item.get("title") or "",
+                "book_id": item_book_id,
+                "chapter": item_ch,
+                "voice": item.get("voice") or "",
+                "duration_sec": item.get("duration_sec") or 0,
+                "bytes": size,
+                "path": str(dst.relative_to(SLEEP_EXPORT_DIR)),
+            })
+    manifest_root = SLEEP_EXPORT_DIR
+    if book_id and exported:
+        manifest_root = SLEEP_EXPORT_DIR / Path(exported[0]["path"]).parts[0]
+    manifest = {
+        "generated_at": int(time.time()),
+        "book_id": book_id,
+        "total": len(exported),
+        "total_bytes": total_bytes,
+        "files": exported,
+    }
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    (manifest_root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "export_dir": str(manifest_root), "total": len(exported), "total_bytes": total_bytes, "files": exported}
 
 
 def audio_abs_path(audio_rel: str) -> Path:
