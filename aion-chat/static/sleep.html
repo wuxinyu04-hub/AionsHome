@@ -228,23 +228,26 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 #album{background:var(--bg)}
 .al-top{padding:max(20px,env(safe-area-inset-top)) 26px 0}
 .al-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 26px calc(36px + env(safe-area-inset-bottom))}
-.al-cover{width:160px;height:160px;border-radius:20px;overflow:hidden;position:relative;margin:6px auto 16px;background:linear-gradient(160deg,#101a33,#0b0e18);border:1px solid var(--line);box-shadow:0 16px 40px rgba(0,0,0,.4)}
+/* 详情页书封也立起来：竖长比例 + 书脊高光，和书库列表一致 */
+.al-cover{width:140px;height:190px;border-radius:6px 12px 12px 6px;overflow:hidden;position:relative;margin:6px auto 16px;background:linear-gradient(160deg,#101a33,#0b0e18);border:1px solid var(--line);box-shadow:0 16px 40px rgba(0,0,0,.4)}
 .al-cover svg,.al-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-.al-title{font-family:var(--serif);font-size:21px;font-weight:500;text-align:center}
+.al-cover::after{content:"";position:absolute;left:0;top:0;bottom:0;width:6px;background:linear-gradient(90deg,rgba(0,0,0,.45),transparent)}
+.al-title{font-family:var(--serif);font-size:21px;font-weight:500;text-align:center;line-height:1.4;padding:0 10px}
 .al-meta{font-size:12px;color:var(--muted);text-align:center;margin-top:6px}
 .al-actions{display:flex;gap:10px;margin:18px 0 8px}
 .al-actions button{flex:1;padding:13px;border-radius:14px;font-size:13px;font-family:var(--sans);cursor:pointer}
 .al-play{background:var(--amber);color:#171106;border:none;font-weight:500}
 .al-next{background:none;color:var(--amber);border:1px solid rgba(224,180,120,.35)}
-.al-ep{display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.al-ep{display:flex;align-items:flex-start;gap:12px;padding:14px 0;border-bottom:1px solid var(--line);cursor:pointer}
 .al-ep:last-child{border-bottom:none}
-.al-ep .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.al-ep .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;margin-top:7px}
 .al-ep .dot.ready{background:var(--amber);box-shadow:0 0 8px rgba(224,180,120,.5)}
 .al-ep .dot.raw{background:none;border:1px solid var(--muted)}
 .al-ep .meta{flex:1;min-width:0}
-.al-ep .t{font-family:var(--serif);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 章节名允许两行，nowrap 时稍长的章名就只剩半句 */
+.al-ep .t{font-family:var(--serif);font-size:14px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .al-ep .d{font-size:11px;color:var(--muted);margin-top:4px}
-.al-ep .lmore{border:none;background:none;color:var(--muted);font-size:15px;cursor:pointer;padding:6px}
+.al-ep .lmore{border:none;background:none;color:var(--muted);font-size:15px;cursor:pointer;padding:6px;align-self:center}
 
 /* ══ 声音选择抽屉 ══ */
 .sheet{position:absolute;inset:0;z-index:40;display:none}
@@ -586,6 +589,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
-<script src="/static/sleep.js?v=home-20260731e"></script>
+<script src="/static/sleep.js?v=album-20260731f"></script>
 </body>
 </html>
