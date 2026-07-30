@@ -49,9 +49,12 @@
 
   // ── 导航栈（替换硬编码的 showScreen，支持物理返回键） ──
   const navStack = ['home']; // 栈底 = 入口
+  let curScreen = 'home';
   function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('on'));
     $(id).classList.add('on');
+    curScreen = id;
+    updateMiniPlayer(); // 唯一入口：所有切屏都在这里同步迷你播放器
   }
   function pushScreen(id) {
     navStack.push(id);
@@ -68,7 +71,6 @@
     const prev = navStack[navStack.length - 1];
     showScreen(prev);
     document.title = '晚安，小语';
-    updateMiniPlayer();
   }
   function setScreen(id) {
     showScreen(id);
@@ -80,10 +82,15 @@
   // ── 底部迷你播放器（全局悬浮，播放时滑入覆盖在所有页面上方） ──
   const miniPlayer = $('miniPlayer');
   function updateMiniPlayer() {
-    if (state.currentId && state.queue.length) {
+    // 有在播/暂停中的音频就显示；播放屏本身有完整控件，迷你条要让位
+    const live = !!(state.currentId && audio.src);
+    if (live && curScreen !== 'player') {
       const it = state.items.find(x => x.id === state.currentId) || { title: $('pTitle').textContent || '今晚的故事', id: state.currentId };
       $('miniTitle').textContent = it.title || '—';
       renderMiniCover(it.id);
+      $('miniPause').textContent = audio.paused ? '▶' : '⏸';
+      const d = audio.duration;
+      $('miniProgFill').style.width = (isFinite(d) && d > 0 ? audio.currentTime / d * 100 : 0) + '%';
       miniPlayer.classList.add('show');
     } else {
       miniPlayer.classList.remove('show');
@@ -848,8 +855,8 @@
   });
   pBar.addEventListener('pointercancel', () => { scrubbing = false; });
 
-  audio.addEventListener('play', updatePlayUi);
-  audio.addEventListener('pause', updatePlayUi);
+  audio.addEventListener('play', () => { updatePlayUi(); updateMiniPlayer(); });
+  audio.addEventListener('pause', () => { updatePlayUi(); updateMiniPlayer(); });
   audio.addEventListener('timeupdate', () => {
     if (!isFinite(audio.currentTime) || !isFinite(audio.duration)) return;
     if (!scrubbing) { // 拖动中进度条归手指管
