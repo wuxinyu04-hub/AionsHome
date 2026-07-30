@@ -67,3 +67,12 @@ tailscale-setup.exe
 # ── 启动日志（运行时生成，量大） ──
 start.log
 start_err.log
+
+# ── 散落临时调试/生成脚本与大二进制（不入库） ──
+aion-chat/_*.py
+aion-chat/batch_*.py
+aion-chat/upload_to_netease_cloud.py
+_template_extracted.html
+/*.zip
+/温叙远*.html
+/ChatGPT*.png
