@@ -3,7 +3,7 @@ Aion Chat — 入口文件
 FastAPI app 创建、lifespan、静态文件挂载、路由注册
 """
 
-import asyncio, json, logging
+import asyncio, json, logging, re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -212,19 +212,27 @@ import auth
 # 无需登录即可访问的路径（登录流程本身 + PWA 安装所需资源）
 _AUTH_EXEMPT_PATHS = {"/login", "/api/login", "/sw.js", "/manifest.json", "/favicon.ico", "/api/client-assets"}
 # AionApp 安卓端原生 OkHttp 请求（AionPushService/AionAccessibilityService）还不会带
-# X-Aion-Token，这些端点暂时豁免；等 App 侧加上 token 头后应逐步收紧
+# X-Aion-Token，这些端点暂时豁免；等 App 侧加上 token 头后应逐步收紧。
+# 剩下的都是 <img src>/<audio src> 类媒体资源（浏览器同源会带 cookie，但 Range/SW
+# 缓存行为与 fetch 不同，未逐个实测前不动）或网页端 + App 双用的接口。
 _AUTH_EXEMPT_PREFIXES = (
     "/public/",
     "/api/location/",
     "/api/health/ring/",
-    "/api/phone-screen/",
-    "/api/activity/report",
-    "/api/cam/esp32/frame",
     "/api/music/stream/",
     "/api/tts/audio/",
     "/api/theater/tts/audio/",
     "/api/gift/thumbnail/",
-    "/api/diaries/",
+)
+# 已收紧（2026-07-30）：
+# - /api/phone-screen/、/api/activity/report、/api/cam/esp32/frame 移除：
+#   网页端零引用（纯 App/硬件用途），且 cam_config 是 active_source=local、
+#   esp32_cam_url 为空，ESP32 没在用。启用 APK 前需给 App 加 token。
+# - /api/diaries/ 整前缀移除，换成下面的精确豁免：原先把日记增删改查全放行了，
+#   而 App 侧（MediaCacheStore）只需要日记 TTS 音频。
+# 精确豁免的完整路径（正则匹配，只放行 App 真正需要的那一个 GET/HEAD）
+_AUTH_EXEMPT_PATTERNS = (
+    re.compile(r"^/api/diaries/[^/]+/tts/audio$"),
 )
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -233,6 +241,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         path = request.url.path
         if path in _AUTH_EXEMPT_PATHS or path.startswith(_AUTH_EXEMPT_PREFIXES):
+            return await call_next(request)
+        if any(p.match(path) for p in _AUTH_EXEMPT_PATTERNS):
             return await call_next(request)
         if auth.check_request(request):
             return await call_next(request)
