@@ -17,6 +17,9 @@ import bedtime
 router = APIRouter(prefix="/api/sleep", tags=["sleep"])
 logger = logging.getLogger("sleep_routes")
 
+# 封面生成 inflight：同步等待端点，连点会并发烧 Gemini 配额，按 item_id 去重
+_cover_inflight: set[str] = set()
+
 
 def _require_tts_key() -> None:
     """按当前全局 TTS provider 检查对应 API Key；edge 免 key。未配置则抛 400。
@@ -81,8 +84,8 @@ async def synthesize(item_id: str, body: SynthesizeIn):
     item = await bedtime.get_item_raw(item_id)
     if not item:
         raise HTTPException(404, "条目不存在")
-    if item.get("status") == "synthesizing":
-        return {"ok": True, "status": "synthesizing"}
+    if item.get("status") in ("synthesizing", "generating"):
+        return {"ok": True, "status": item["status"]}
 
     script_text = item.get("script_text") or ""
     if not script_text:
@@ -94,8 +97,11 @@ async def synthesize(item_id: str, body: SynthesizeIn):
     bedtime.remember_sleep_voice(voice)
     _require_tts_key()
 
+    # 原子 claim：双击/并发只有一个翻成功，另一个当作已在合成，避免重复 TTS 烧配额。
     # bedtime 合成内核已 provider-agnostic（_request_tts_audio 走全局 get_tts_provider()），
     # voice 按当前 provider 语义存（Fish Audio=reference_id / Step=预置音色ID / …）
+    if not await bedtime.claim_synthesizing(item_id, voice):
+        return {"ok": True, "status": "synthesizing"}
     bedtime.trigger_synthesize(item_id, script_text, voice)
     return {"ok": True, "status": "synthesizing"}
 
@@ -220,12 +226,18 @@ class CoverIn(BaseModel):
 @router.post("/{item_id}/cover")
 async def gen_cover(item_id: str, body: CoverIn):
     """AI 生成封面（Gemini 生图，约 10-30s，同步等待返回）。prompt 可选补充描述。"""
+    if item_id in _cover_inflight:
+        return {"ok": True, "status": "in_progress"}
     if not await bedtime.get_item_raw(item_id):
         raise HTTPException(404, "条目不存在")
-    cover = await bedtime.generate_cover(item_id, body.prompt)
-    if not cover:
-        raise HTTPException(500, "生成封面失败，稍后再试")
-    return {"ok": True}
+    _cover_inflight.add(item_id)
+    try:
+        cover = await bedtime.generate_cover(item_id, body.prompt)
+        if not cover:
+            raise HTTPException(500, "生成封面失败，稍后再试")
+        return {"ok": True}
+    finally:
+        _cover_inflight.discard(item_id)
 
 
 @router.get("/{item_id}/cover")

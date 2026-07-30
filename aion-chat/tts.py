@@ -339,6 +339,7 @@ async def _request_fishaudio_tts_audio(text: str, voice: str, *, seq: int | None
         payload["prosody"] = prosody
     # timeout 30->120：哄睡段落 300-500 字 + prosody 慢速，合成常超 30s，短超时会把好请求掐死
     # （ReadTimeout 的 str(e) 是空串，日志里表现为"请求异常: " 后面没内容）
+    # trust_env=True：api.fish.audio 部分网络要走系统代理才通；能直连的话改 False 更快更稳
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=True) as client:
@@ -435,7 +436,8 @@ async def _request_step_tts_audio(text: str, voice: str, *, seq: int | None = No
         payload["voice_label"] = {"style": "温柔"}
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15), trust_env=True) as client:
+            # trust_env=False：stepfun 国内直连，走系统代理（梯子/Tailscale 出口）反而绕远出 400/超时
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15), trust_env=False) as client:
                 resp = await client.post(
                     "https://api.stepfun.com/step_plan/v1/audio/speech",
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
@@ -476,9 +478,10 @@ async def _request_stepaudio_tts_audio(text: str, voice: str, *, seq: int | None
     if instruction:
         payload["instruction"] = instruction[:200]
     # timeout 120：哄睡长文本段落合成常超 60s，短超时会把好请求掐死
+    # trust_env=False：stepfun 国内直连，走系统代理（梯子/Tailscale 出口）反而绕远出 400/超时
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=True) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=False) as client:
                 resp = await client.post(
                     "https://api.stepfun.com/step_plan/v1/audio/speech",
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},

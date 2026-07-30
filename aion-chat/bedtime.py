@@ -430,6 +430,10 @@ async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) 
             data = await _request_tts_audio(seg, voice, seq=seq, prosody={"speed": 0.8}, instruction=STEP_SLEEP_INSTRUCTION)
             if not data:
                 raise RuntimeError(f"TTS segment {seq} failed")
+            # 校验返回的是真 MP3：ID3v2 头("ID3")或 MPEG 帧同步(0xFF)。
+            # provider 偶发把错误 JSON/HTML 当 200 content 返回，不校验会静默拼进流卡死解码器。
+            if not (data[:3] == b"ID3" or data[:1] == b"\xff"):
+                raise RuntimeError(f"TTS segment {seq} 返回非 MP3（前 16 字节: {data[:16]!r}）")
             return data
 
     results = await asyncio.gather(*[_syn(i, s) for i, s in enumerate(segments)], return_exceptions=True)
@@ -514,6 +518,22 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
         _progress.pop(item_id, None)
         await _set_status(item_id, "failed")
         await _broadcast(item_id, {"status": "failed", "error": str(e)[:200]})
+
+
+async def claim_synthesizing(item_id: str, voice: str) -> bool:
+    """原子翻转 status -> synthesizing（排除 generating/synthesizing）做并发守门。
+
+    SQLite 单条 UPDATE...WHERE 在同一写事务内原子；双击/并发请求只有一个 rowcount>0。
+    voice 顺带写下，避免 _synthesize_bg 跑到 _set_status 前另一个请求读到旧 voice。
+    """
+    async with get_db() as db:
+        cur = await db.execute(
+            "UPDATE sleep_items SET status='synthesizing', voice=? "
+            "WHERE id=? AND status NOT IN ('synthesizing','generating')",
+            (voice, item_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
 
 
 def trigger_synthesize(item_id: str, script_text: str, voice: str) -> None:

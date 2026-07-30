@@ -627,6 +627,10 @@
   }
   async function synthesizeItem(it) {
     try {
+      // 重合成前清掉旧音频缓存：SW 音频 cache-first，不清则重合成后仍播旧音色
+      if ('caches' in window) {
+        try { await (await caches.open(CACHE)).delete('/api/sleep/' + it.id + '/audio'); } catch {}
+      }
       const r = await fetch('/api/sleep/' + it.id + '/synthesize', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ voice: state.voice }),
@@ -749,7 +753,8 @@
     const onMeta = () => {
       audio.removeEventListener('loadedmetadata', onMeta);
       if (saved > 5 && isFinite(audio.duration) && saved < audio.duration - 5) audio.currentTime = saved;
-      audio.play().catch(() => { });
+      // autoplay 受限时给提示，避免无反馈
+      audio.play().catch(() => { toast('点 ▶ 开始播放'); });
       $('pDur').textContent = fmtTime(audio.duration);
     };
     audio.addEventListener('loadedmetadata', onMeta);
