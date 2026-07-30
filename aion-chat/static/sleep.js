@@ -3,6 +3,7 @@
 // 离线策略：Cache API 显式下载音频+剧本；sw.js 音频 cache-first。缓存名须与 sw.js 一致。
 (function () {
   const $ = (id) => document.getElementById(id);
+  const appEl = document.querySelector('.app');
   const audio = $('audio');
   const CACHE = 'aion-sleep-v4'; // 与 sw.js SLEEP_CACHE 保持一致
 
@@ -95,6 +96,8 @@
     } else {
       miniPlayer.classList.remove('show');
     }
+    // 迷你条浮起时各屏才让出底部留白，不播时不留空条
+    appEl.classList.toggle('has-mini', miniPlayer.classList.contains('show'));
   }
   function renderMiniCover(id) {
     const it = state.items.find(x => x.id === id);
@@ -169,6 +172,8 @@
     document.querySelectorAll('#modeRow .md').forEach(b => b.classList.toggle('on', b.dataset.m === state.mode));
     $('promptInput').placeholder = MODE_PLACEHOLDER[state.mode] || MODE_PLACEHOLDER.boyfriend;
     $('bookPick').classList.toggle('show', state.mode === 'reading');
+    // 讲书模式书架占一大块，让插画收窄，保证输入框不被顶下折叠线
+    $('home').classList.toggle('reading', state.mode === 'reading');
     if (state.mode === 'reading') loadBooks();
     renderModeChips();
   }

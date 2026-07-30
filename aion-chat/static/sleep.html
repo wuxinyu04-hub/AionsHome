@@ -47,7 +47,12 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
   width:34px;height:34px;color:var(--fg-soft);font-size:15px;cursor:pointer;backdrop-filter:blur(6px)}
 
 /* ══ ① 入口屏 ══ */
-#home .scene{height:42%}
+/* 插画高度跟着屏高走：矮屏别把「说一句话」的输入框顶到折叠线下面 */
+#home .scene{height:42%;max-height:320px;min-height:150px}
+@media (max-height:720px){ #home .scene{height:34%} }
+@media (max-height:620px){ #home .scene{height:27%} }
+/* 讲书模式多出一排书架，插画再收一点，保证书架和输入框同屏 */
+#home.reading .scene{height:26%;max-height:210px}
 .home-body{flex:1;padding:0 26px;position:relative;z-index:2;margin-top:-36px;display:flex;flex-direction:column;overflow-y:auto;-webkit-overflow-scrolling:touch}
 .h-greet{font-family:var(--serif);font-size:27px;font-weight:500;letter-spacing:.04em}
 .h-sub{font-size:13px;color:var(--fg-soft);margin-top:8px}
@@ -274,7 +279,8 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
   padding:10px 14px max(10px,env(safe-area-inset-bottom));cursor:pointer;user-select:none;
   opacity:0;transform:translateY(100%);transition:opacity .3s ease,transform .3s ease;pointer-events:none}
 #miniPlayer.show{opacity:1;transform:none;pointer-events:auto}
-.mini-cover{flex:0 0 auto;width:44px;height:44px;border-radius:9px;overflow:hidden;background:linear-gradient(160deg,#101a33,#0b0e18)}
+.mini-cover{flex:0 0 auto;width:44px;height:44px;border-radius:9px;overflow:hidden;position:relative;
+  background:linear-gradient(160deg,#101a33,#0b0e18);border:1px solid var(--line)}
 .mini-cover svg,.mini-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
 .mini-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
 .mini-title{font-size:14px;font-family:var(--serif);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--fg)}
@@ -284,9 +290,11 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .mini-pause{flex:0 0 auto;width:36px;height:36px;border:none;background:rgba(224,180,120,.15);color:var(--amber);
   border-radius:50%;font-size:15px;cursor:pointer;display:grid;place-items:center;transition:background .15s}
 
-/* 给所有 screen 加底部留白，避免内容被迷你播放器遮住 */
-#player, #library, #album{padding-bottom:74px}
-#home{padding-bottom:90px} /* 入口屏底部有 home-foot 按钮，多留一点 */
+/* 底部留白只在迷你播放器真的浮起来时才占位，否则各屏底部会空一大条 */
+.app.has-mini #player,
+.app.has-mini #library,
+.app.has-mini #album{padding-bottom:74px}
+.app.has-mini #home{padding-bottom:82px}
 </style>
 </head>
 <body>
@@ -574,6 +582,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
-<script src="/static/sleep.js?v=lib-20260731d"></script>
+<script src="/static/sleep.js?v=home-20260731e"></script>
 </body>
 </html>
