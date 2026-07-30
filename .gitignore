@@ -76,3 +76,11 @@ _template_extracted.html
 /*.zip
 /温叙远*.html
 /ChatGPT*.png
+
+# ── Agent 工作目录（settings.local.json 与 memory 里含 api_key/step_key，绝不入库） ──
+.claude/
+.workbuddy/memory/
+
+# ── 设计稿草图与素材大二进制（十几 MB，本地留着参考就行） ──
+.tmp_figma/
+resources/background_clothing_conf/
