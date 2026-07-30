@@ -22,9 +22,9 @@ _EMOJI_RE = re.compile(
 
 from config import get_key
 
-# ─── ASR 配置 ──────────────────────────────────────
-ASR_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
-ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
+# ─── ASR 配置（Step 阶跃星辰 stepaudio-2.5-asr）──────────────────────────────
+ASR_URL = "https://api.stepfun.com/v1/audio/transcriptions"
+ASR_MODEL = "stepaudio-2.5-asr"
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -124,8 +124,8 @@ class VoiceWakeup:
         return buf.read()
 
     def _asr(self, audio) -> str:
-        """调硅基流动 ASR"""
-        key = get_key("siliconflow")
+        """调 Step ASR（stepaudio-2.5-asr）"""
+        key = get_key("step")
         if not key:
             return ""
         wav = self._to_wav(audio)
@@ -134,7 +134,7 @@ class VoiceWakeup:
                 ASR_URL,
                 headers={"Authorization": f"Bearer {key}"},
                 files={"file": ("s.wav", wav, "audio/wav")},
-                data={"model": ASR_MODEL, "language": "zh"},
+                data={"model": ASR_MODEL, "response_format": "json"},
                 timeout=15,
             )
             resp.raise_for_status()
@@ -340,7 +340,7 @@ class VoiceWakeup:
                     # 等 AI 说完（持续读取流，防止缓冲区溢出）
                     while self.ai_speaking and not self._stop_evt.is_set():
                         try:
-                            stream.read(FRAME_SIZE)
+                            stream.read(VAD_FRAME_SIZE)
                         except Exception:
                             time.sleep(0.1)
 
