@@ -160,6 +160,28 @@
   color:var(--accent); font-weight:500; cursor:pointer;
 }
 .comment-reply-tag { color:var(--text3); }
+/* 评论行右侧的显式「回复」按钮：长按菜单不好发现，给个看得见的入口 */
+.comment-row { display:flex; align-items:flex-start; gap:6px; }
+.comment-row .comment-text { flex:1; min-width:0; }
+.comment-reply-btn {
+  flex:none; background:none; border:none; color:var(--text3);
+  font-size:12px; cursor:pointer; padding:0 2px; line-height:1.5;
+}
+.comment-reply-btn:active { color:var(--accent); }
+
+/* 「正在回复…」占位气泡 */
+.comment-pending {
+  font-size:13px; line-height:1.5; padding:3px 0; color:var(--text3);
+}
+.comment-pending .dots::after {
+  content:'…'; animation:pendingDots 1.2s steps(4, end) infinite;
+}
+@keyframes pendingDots { 0%{opacity:.35} 50%{opacity:1} 100%{opacity:.35} }
+.comment-retry-btn {
+  background:none; border:1px solid var(--border); border-radius:6px;
+  color:var(--text2); font-size:12px; padding:2px 8px; margin-left:6px; cursor:pointer;
+}
+.comment-retry-btn:active { opacity:.8; }
 
 /* ── 评论弹窗 ── */
 .comment-overlay {
@@ -488,10 +510,18 @@ function renderMomentCard(m) {
         onpointercancel="cancelCommentPress()"
         onpointerleave="cancelCommentPress()"
         oncontextmenu="openCommentActionMenu('${m.id}', '${c.id}'); return false;">
-        <div class="comment-text"><span class="comment-author">${escapeHtml(cName)}</span>${replyTag}：${escapeHtml(c.content)}</div>
+        <div class="comment-row">
+          <div class="comment-text"><span class="comment-author">${escapeHtml(cName)}</span>${replyTag}：${escapeHtml(c.content)}</div>
+          <button class="comment-reply-btn" title="回复"
+            onclick="event.stopPropagation(); cancelCommentPress(); openCommentModal('${m.id}', '${c.id}')">回复</button>
+        </div>
       </div>`;
     }
+    commentsHtml += renderPendingReplies(m.id);
     commentsHtml += '</div>';
+  } else {
+    const pending = renderPendingReplies(m.id);
+    if (pending) commentsHtml = `<div class="comments-section">${pending}</div>`;
   }
 
   return `<div class="moment-card" id="m_${m.id}">
@@ -513,6 +543,62 @@ function renderMomentCard(m) {
     ${reactionsHtml}
     ${commentsHtml}
   </div>`;
+}
+
+// ── 「正在回复」状态 ──
+// 后端触发 AI 回复是 fire-and-forget 的异步任务，前端原来完全没有反馈：
+// 线路挂了和「AI 就是没话说」看起来一模一样。这里给一个占位提示 + 超时后可重试。
+const PENDING_TIMEOUT_MS = 90000;
+let pendingReplies = {};   // momentId → { since, timer, label }
+
+function renderPendingReplies(momentId) {
+  const p = pendingReplies[momentId];
+  if (!p) return '';
+  if (p.timedOut) {
+    return `<div class="comment-pending">${escapeHtml(p.label)}这次没回应
+      <button class="comment-retry-btn" onclick="retryPending('${momentId}')">重试</button>
+    </div>`;
+  }
+  return `<div class="comment-pending">${escapeHtml(p.label)}正在回复<span class="dots"></span></div>`;
+}
+
+function markPending(momentId, label) {
+  clearPending(momentId, { silent: true });
+  pendingReplies[momentId] = {
+    label: label || '',
+    since: Date.now(),
+    timedOut: false,
+    timer: setTimeout(() => {
+      const p = pendingReplies[momentId];
+      if (!p) return;
+      p.timedOut = true;
+      p.timer = null;
+      renderList();
+    }, PENDING_TIMEOUT_MS),
+  };
+  renderList();
+}
+
+function clearPending(momentId, opts = {}) {
+  const p = pendingReplies[momentId];
+  if (!p) return;
+  if (p.timer) clearTimeout(p.timer);
+  delete pendingReplies[momentId];
+  if (!opts.silent) renderList();
+}
+
+async function retryPending(momentId) {
+  const p = pendingReplies[momentId];
+  if (!p) return;
+  clearPending(momentId, { silent: true });
+  try {
+    const res = await api('POST', `/api/moments/${momentId}/retry-reply`);
+    if (res?.error) throw new Error(res.error);
+    markPending(momentId, res.pending_label || '');
+  } catch (e) {
+    renderList();
+    showToast('重试失败');
+  }
 }
 
 function prependMomentOnce(moment) {
@@ -556,8 +642,8 @@ async function publishMoment() {
     const attachments = pendingMomentAttachments.slice();
     const m = await api('POST', '/api/moments', { content, attachments });
     prependMomentOnce(m);
-    renderList();
     closePublishModal();
+    markPending(m.id, '');   // 内部会 renderList
   } catch(e) {
     showToast('发布失败');
   } finally {
@@ -607,6 +693,10 @@ function upsertMomentComment(comment) {
     comments[existingIdx] = comment;
   } else {
     comments.push(comment);
+  }
+  // AI 的评论到了 → 撤掉"正在回复"占位
+  if (comment.author === 'aion' || comment.author === 'connor') {
+    clearPending(comment.moment_id, { silent: true });
   }
   renderList();
   return true;
@@ -728,6 +818,10 @@ async function submitComment() {
     if (!comment?.id || comment.error) throw new Error(comment?.error || '评论失败');
     if (!upsertMomentComment(comment)) loadMoments(currentPage);
     closeCommentModal();
+    // 后端只在有 AI 接话时返回 pending_authors，没人接话就不显示假的"正在回复"
+    if (comment.pending_authors?.length) {
+      markPending(momentId, comment.pending_label || '');
+    }
   } catch(e) { showToast('评论失败'); }
   finally { btn.disabled = false; }
 }

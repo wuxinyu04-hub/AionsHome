@@ -56,6 +56,52 @@ _ANTIGRAVITY_TIMEOUT_NOTICE_RE = re.compile(
     r"(?:\r?\n)*Error:\s*timed out waiting for response\s*$",
     re.IGNORECASE,
 )
+# ── 线路错误文本识别 ────────────────────────────────
+# 各 provider 失败时不 raise，而是把错误当正文 yield（如 Gemini 400 的 JSON 体、
+# CLI 的 "[CodexCLI错误] ..."）。调用方只 try/except 抓不到任何东西，会把错误当成
+# 正常回复存进库。bedtime/diary/routes.chat 各自抄了一份判断，这里收敛成公共实现。
+_PROVIDER_ERROR_PREFIXES = (
+    "[错误]",
+    "[http ",
+    "[硅基流动错误",
+    "[中转站错误",
+    "[自定义中转站错误",
+    "[gemini错误",
+    "[geminicli错误",
+    "[antigravitycli错误",
+    "[codexcli错误",
+)
+_PROVIDER_ERROR_SUBSTRINGS = (
+    "user location is not supported",
+    "authentication required",
+    "authentication timed out",
+    "tls handshake timeout",
+)
+
+
+def looks_like_provider_error(text: str) -> bool:
+    """判断一段模型输出实际上是被当作正文 yield 出来的线路错误。
+
+    空文本也算失败——模型什么都没吐出来时不该当成"回复成功"。
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    head = stripped[:200].lower()
+    if head.startswith(_PROVIDER_ERROR_PREFIXES):
+        return True
+    if any(marker in head for marker in _PROVIDER_ERROR_SUBSTRINGS):
+        return True
+    # Gemini/中转站的原始错误体：{"error":{"code":400,...}}
+    if stripped.startswith("{"):
+        try:
+            payload = json.loads(stripped)
+        except Exception:
+            return '{"error"' in head.replace(" ", "")
+        return isinstance(payload, dict) and bool(payload.get("error"))
+    return False
+
+
 MODEL_RAW_RESPONSE_DIR = DATA_DIR / "model_raw_responses"
 MODEL_RAW_RESPONSE_RETENTION_SECONDS = 3 * 24 * 60 * 60
 THINK_TAG_OPEN = "<think>"

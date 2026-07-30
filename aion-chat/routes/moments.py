@@ -16,6 +16,7 @@ from ws import manager as ws_manager
 from ai_providers import (
     stream_ai, CLI_STATUS_PREFIX, MODELS,
     _messages_have_images, _sentinel_describe_images,
+    looks_like_provider_error,
 )
 from chatroom import (
     load_chatroom_config, send_to_connor, stream_connor_cli,
@@ -405,9 +406,15 @@ async def _ai_reply_to_moment(who: str, moment_id: str, target_comment_id: str =
 
     # 调用 AI：最多 3 次，指数退避 1s/2s；只重试流式调用本身
     # 瞬时网络/限流/CLI 抽风可被吃掉；模型选择/消息构建失败这类本地错误不会重试浪费
+    #
+    # 关键：provider 失败时不 raise，而是把错误文本当正文 yield（实测存进库的
+    # {"error":{...TLS handshake timeout}}）。所以除了 except，还必须显式检查
+    # 输出是不是线路错误，否则重试形同虚设——第一次就"成功"退出了。
     full_text = ""
     MAX_RETRIES = 3
     for attempt in range(1, MAX_RETRIES + 1):
+        full_text = ""  # 每轮从零开始，避免拼接上一轮的半截输出
+        failure = ""
         try:
             if who == "aion":
                 async for chunk in stream_ai(model_messages, _model, temperature=_temp):
@@ -424,16 +431,23 @@ async def _ai_reply_to_moment(who: str, moment_id: str, target_comment_id: str =
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         continue
                     full_text += chunk
-            break  # 成功，跳出重试循环
         except Exception as e:
-            full_text = ""  # 丢弃已积累的片段，避免拼接半截输出
-            if attempt < MAX_RETRIES:
-                wait = 2 ** (attempt - 1)  # 1s, 2s
-                print(f"[moments] AI 回复失败 ({who}, 第 {attempt}/{MAX_RETRIES} 次): {e} — {wait}s 后重试")
-                await asyncio.sleep(wait)
-            else:
-                print(f"[moments] AI 回复失败 ({who}, {MAX_RETRIES} 次都失败): {e}")
-                return
+            failure = f"异常: {e}"
+        else:
+            if looks_like_provider_error(full_text):
+                failure = f"线路错误文本: {full_text.strip()[:160] or '(空回复)'}"
+
+        if not failure:
+            break  # 真的成功了
+
+        full_text = ""
+        if attempt < MAX_RETRIES:
+            wait = 2 ** (attempt - 1)  # 1s, 2s
+            print(f"[moments] AI 回复失败 ({who}, 第 {attempt}/{MAX_RETRIES} 次): {failure} — {wait}s 后重试")
+            await asyncio.sleep(wait)
+        else:
+            print(f"[moments] AI 回复失败 ({who}, {MAX_RETRIES} 次都失败): {failure}")
+            return
 
     expect_chat_decision = target_comment_id is None and moment.get("author") == "user"
     comment_text, send_chat_message, chat_message = _parse_moment_reply_result(
@@ -441,6 +455,11 @@ async def _ai_reply_to_moment(who: str, moment_id: str, target_comment_id: str =
         expect_chat_decision=expect_chat_decision,
     )
     if not comment_text:
+        return
+    # 兜底：解析后再查一次，防止将来出现没被 looks_like_provider_error 覆盖的
+    # 新错误格式，或 JSON 解析把错误体塞进 comment 字段，最终污染评论区。
+    if looks_like_provider_error(comment_text):
+        print(f"[moments] 丢弃疑似线路错误的评论 ({who}): {comment_text[:120]}")
         return
 
     # 保存评论
@@ -489,6 +508,30 @@ async def _ai_reply_to_moment(who: str, moment_id: str, target_comment_id: str =
     return comment_data
 
 
+async def _ai_participants(moment_id: str) -> list[str]:
+    """这条朋友圈下已经出现过的 AI 角色（按最后发言时间倒序）。"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT author, MAX(created_at) AS last_at FROM moment_comments "
+            "WHERE moment_id=? AND author IN ('aion','connor') "
+            "GROUP BY author ORDER BY last_at DESC",
+            (moment_id,),
+        )
+        rows = await cur.fetchall()
+    return [r["author"] for r in rows]
+
+
+async def _ai_replies_to_comment(roles: list[str], moment_id: str, comment_id: str):
+    """让若干 AI 依次回复用户的同一条评论，彼此错开几秒，避免同时刷屏。"""
+    for role in roles:
+        try:
+            await _ai_reply_to_moment(role, moment_id, comment_id)
+        except Exception as e:
+            print(f"[moments] {role} 回复评论失败: {e}")
+        await asyncio.sleep(random.uniform(1, 3))
+
+
 async def _trigger_ai_replies(moment_id: str, exclude_author: str = None):
     """触发 AI 角色回复朋友圈。exclude_author 为发布者自身，不需要自己回复自己。"""
     ai_roles = ["aion", "connor"]
@@ -522,19 +565,31 @@ async def list_moments(page: int = Query(1, ge=1), page_size: int = Query(20, ge
         )
         moments = [dict(r) for r in await cur.fetchall()]
 
-        for m in moments:
-            m["attachments"] = _normalize_attachments(m.get("attachments"))
+        # 评论/反应一次批量取回。原来是每条朋友圈各查 2 次（20 条 = 41 次查询）。
+        ids = [m["id"] for m in moments]
+        comments_by_moment: dict[str, list] = {mid: [] for mid in ids}
+        reactions_by_moment: dict[str, list] = {mid: [] for mid in ids}
+        if ids:
+            placeholders = ",".join("?" * len(ids))
             cur = await db.execute(
-                "SELECT * FROM moment_comments WHERE moment_id=? ORDER BY created_at ASC",
-                (m["id"],),
+                f"SELECT * FROM moment_comments WHERE moment_id IN ({placeholders}) "
+                "ORDER BY created_at ASC",
+                ids,
             )
-            m["comments"] = [dict(r) for r in await cur.fetchall()]
+            for r in await cur.fetchall():
+                comments_by_moment.setdefault(r["moment_id"], []).append(dict(r))
 
             cur = await db.execute(
-                "SELECT * FROM moment_reactions WHERE moment_id=?",
-                (m["id"],),
+                f"SELECT * FROM moment_reactions WHERE moment_id IN ({placeholders})",
+                ids,
             )
-            m["reactions"] = [dict(r) for r in await cur.fetchall()]
+            for r in await cur.fetchall():
+                reactions_by_moment.setdefault(r["moment_id"], []).append(dict(r))
+
+        for m in moments:
+            m["attachments"] = _normalize_attachments(m.get("attachments"))
+            m["comments"] = comments_by_moment.get(m["id"], [])
+            m["reactions"] = reactions_by_moment.get(m["id"], [])
 
     return {"items": moments, "total": total, "page": page, "page_size": page_size}
 
@@ -651,14 +706,22 @@ class CommentCreate(BaseModel):
 
 @router.post("/{moment_id}/comments")
 async def add_comment(moment_id: str, body: CommentCreate):
-    """用户发表评论，若回复到 AI 评论则只触发被回复的 AI。"""
+    """用户发表评论，决定由哪些 AI 来接话。
+
+    路由规则（按优先级）：
+    1. 明确回复某条 AI 评论 → 只触发那个 AI；
+    2. 评论 AI 的朋友圈 → 朋友圈作者接话；
+    3. 在自己的朋友圈下留言 → 之前在这条下评论过的 AI 都接话。
+       第 3 条以前是漏的：自己发朋友圈、AI 评论、自己再留言时 reply_to_id 为空，
+       两条规则都不匹配，于是没有任何人回应（DB 里 47 条用户评论 reply_to_id 全为 NULL）。
+    """
     content = body.content.strip()
     if not content:
         return {"error": "评论内容不能为空"}
 
     now = time.time()
     comment_id = f"mc_{int(now * 1000)}_u"
-    target_ai_author = None
+    target_ai_authors: list[str] = []
 
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
@@ -676,10 +739,18 @@ async def add_comment(moment_id: str, body: CommentCreate):
             if not parent_comment:
                 return {"error": "被回复的评论不存在"}
             if parent_comment["author"] in ("aion", "connor"):
-                target_ai_author = parent_comment["author"]
+                target_ai_authors = [parent_comment["author"]]
+            elif parent_comment["author"] == "user":
+                # 回复自己/用户的评论：交给这条朋友圈里已经在聊的 AI 接话
+                target_ai_authors = await _ai_participants(moment_id)
         elif moment_row["author"] in ("aion", "connor"):
             # 用户直接评论了 AI 的朋友圈，让朋友圈作者回复。
-            target_ai_author = moment_row["author"]
+            target_ai_authors = [moment_row["author"]]
+        else:
+            # 自己（或对方）的朋友圈下裸留言：让已经评论过的 AI 继续聊。
+            # 只挑最近发言的那个，避免每留一句话就被两个人同时刷屏。
+            participants = await _ai_participants(moment_id)
+            target_ai_authors = participants[:1]
 
         await db.execute(
             "INSERT INTO moment_comments (id, moment_id, author, content, reply_to_id, created_at) "
@@ -694,10 +765,61 @@ async def add_comment(moment_id: str, body: CommentCreate):
     }
     await ws_manager.broadcast({"type": "moment_comment", "data": comment_data})
 
-    if target_ai_author:
-        asyncio.create_task(_ai_reply_to_moment(target_ai_author, moment_id, comment_id))
+    if target_ai_authors:
+        asyncio.create_task(
+            _ai_replies_to_comment(target_ai_authors, moment_id, comment_id)
+        )
 
-    return comment_data
+    # 告诉前端"谁在打字"，好显示占位提示；没人接话时不返回，避免转圈骗人
+    return {
+        **comment_data,
+        "pending_authors": target_ai_authors,
+        "pending_label": "、".join(_author_display(a) for a in target_ai_authors),
+    }
+
+
+@router.post("/{moment_id}/retry-reply")
+async def retry_reply(moment_id: str):
+    """手动重触发 AI 回复：3 次自动重试都失败（线路彻底挂了）后给用户的兜底。"""
+    moment = await _get_moment_with_comments(moment_id)
+    if not moment:
+        return {"error": "朋友圈不存在"}
+
+    comments = moment.get("comments", [])
+    last_user_comment = next(
+        (c for c in reversed(comments) if c["author"] == "user"), None
+    )
+
+    if last_user_comment:
+        # 有用户留言未被回应 → 回应那条留言
+        parent_id = last_user_comment.get("reply_to_id")
+        parent = next((c for c in comments if c["id"] == parent_id), None)
+        if parent and parent["author"] in ("aion", "connor"):
+            roles = [parent["author"]]
+        elif moment["author"] in ("aion", "connor"):
+            roles = [moment["author"]]
+        else:
+            roles = await _ai_participants(moment_id)
+            roles = roles[:1] or ["aion"]
+        asyncio.create_task(
+            _ai_replies_to_comment(roles, moment_id, last_user_comment["id"])
+        )
+    else:
+        # 朋友圈本身没人评论过 → 重跑一遍首轮评论，跳过已经评论过的角色
+        already = set(await _ai_participants(moment_id))
+        roles = [
+            r for r in ("aion", "connor")
+            if r != moment["author"] and r not in already
+        ]
+        if not roles:
+            return {"error": "已经都回复过了"}
+        asyncio.create_task(_ai_replies_to_comment(roles, moment_id, None))
+
+    return {
+        "ok": True,
+        "pending_authors": roles,
+        "pending_label": "、".join(_author_display(r) for r in roles),
+    }
 
 
 @router.delete("/{moment_id}/comments/{comment_id}")
@@ -731,7 +853,8 @@ async def delete_comment(moment_id: str, comment_id: str):
 
 @router.get("/unread")
 async def check_unread():
-    """检查是否有未读朋友圈（红点逻辑）"""
+    """检查是否有未读朋友圈（红点逻辑）。只算别人的动态——
+    自己刚发的朋友圈/评论不该让自己的红点亮起来。"""
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         # 获取上次已读时间
@@ -741,12 +864,14 @@ async def check_unread():
 
         # 检查是否有新的朋友圈或评论
         cur = await db.execute(
-            "SELECT COUNT(*) as cnt FROM moments WHERE created_at > ?", (last_read,)
+            "SELECT COUNT(*) as cnt FROM moments WHERE created_at > ? AND author != 'user'",
+            (last_read,),
         )
         new_moments = (await cur.fetchone())["cnt"]
 
         cur = await db.execute(
-            "SELECT COUNT(*) as cnt FROM moment_comments WHERE created_at > ?", (last_read,)
+            "SELECT COUNT(*) as cnt FROM moment_comments WHERE created_at > ? AND author != 'user'",
+            (last_read,),
         )
         new_comments = (await cur.fetchone())["cnt"]
 
