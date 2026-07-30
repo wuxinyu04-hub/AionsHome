@@ -73,12 +73,17 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 /* 讲书：共读书架选书 */
 .book-pick{display:none;margin-bottom:12px}
 .book-pick.show{display:block}
-.bp-shelf{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch}
-.bp-book{flex:0 0 auto;width:128px;padding:10px 12px;border-radius:12px;background:var(--bg-2);border:1px solid var(--line);cursor:pointer;transition:all .25s}
+/* 选书竖向列表：书名横排正读，不再挤在 128px 横滑卡里 */
+.bp-shelf{display:flex;flex-direction:column;gap:8px;max-height:216px;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px}
+.bp-shelf::-webkit-scrollbar{display:none}
+.bp-book{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:12px;background:var(--bg-2);border:1px solid var(--line);cursor:pointer;transition:all .25s}
 .bp-book.sel{border-color:rgba(224,180,120,.5);background:var(--amber-dim)}
-.bp-book .bt{font-family:var(--serif);font-size:12px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.bp-book .ba{font-size:10px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bp-book .bp{font-size:10px;color:var(--amber);margin-top:4px;opacity:.85}
+.bp-spine{flex:0 0 auto;width:8px;height:38px;border-radius:2px;background:linear-gradient(180deg,#3d4a75,#2a3352)}
+.bp-book.sel .bp-spine{background:linear-gradient(180deg,var(--amber),#b8874f)}
+.bp-book .bmeta{flex:1;min-width:0}
+.bp-book .bt{font-family:var(--serif);font-size:14px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bp-book .ba{font-size:10px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bp-book .bp{flex:0 0 auto;font-size:10px;color:var(--amber);opacity:.85;text-align:right;max-width:82px;line-height:1.4}
 .bp-ch{width:100%;margin-top:8px;padding:10px 12px;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;
   font-size:12px;color:var(--fg-soft);font-family:var(--sans);outline:none;cursor:pointer;-webkit-appearance:none;appearance:none;display:none}
 .bp-ch.show{display:block}
@@ -165,14 +170,24 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .lt.on{border-color:rgba(224,180,120,.5);color:var(--amber);background:var(--amber-dim)}
 .l-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 26px calc(36px + env(safe-area-inset-bottom))}
 .lg-name{font-size:11px;letter-spacing:.22em;color:var(--muted);margin:8px 0 12px}
-/* 书库横滑（一本书=一张专辑） */
-.album-row{display:flex;gap:12px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:16px;margin-bottom:6px}
-.album-row::-webkit-scrollbar{display:none}
-.alb{flex:0 0 auto;width:120px;cursor:pointer}
-.alb-cov{width:120px;height:120px;border-radius:16px;overflow:hidden;position:relative;background:linear-gradient(160deg,#101a33,#0b0e18);border:1px solid var(--line);box-shadow:0 8px 20px rgba(0,0,0,.3)}
+/* 书库竖向列表（一本书=一行）——横滑时书名被压成 nowrap 读不全，改成书封在左、书名横排正读 */
+.album-row{display:flex;flex-direction:column;gap:10px;padding-bottom:14px;margin-bottom:6px}
+.alb{display:flex;align-items:center;gap:14px;cursor:pointer;padding:10px 12px;border-radius:16px;
+  background:var(--bg-2);border:1px solid var(--line);transition:border-color .2s}
+.alb:active{border-color:rgba(224,180,120,.4)}
+/* 书封立起来：竖长比例更像一本书，不是方形专辑 */
+.alb-cov{flex:0 0 auto;width:54px;height:74px;border-radius:6px 10px 10px 6px;overflow:hidden;position:relative;
+  background:linear-gradient(160deg,#101a33,#0b0e18);border:1px solid var(--line);box-shadow:0 6px 16px rgba(0,0,0,.34)}
 .alb-cov svg,.alb-cov img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-.alb-t{font-family:var(--serif);font-size:13px;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.alb-d{font-size:10px;color:var(--muted);margin-top:3px}
+/* 书脊高光，让缩略图读起来是"一本书" */
+.alb-cov::after{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;
+  background:linear-gradient(90deg,rgba(0,0,0,.42),transparent)}
+.alb-meta{flex:1;min-width:0}
+/* 书名允许折到两行完整读，不再单行截断 */
+.alb-t{font-family:var(--serif);font-size:15px;line-height:1.45;font-weight:500;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.alb-d{font-size:11px;color:var(--muted);margin-top:5px}
+.alb-go{flex:0 0 auto;color:var(--muted);font-size:15px}
 .l-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .lc{border-radius:16px;overflow:hidden;background:var(--bg-2);border:1px solid var(--line);cursor:pointer}
 .lc .cov{aspect-ratio:4/3;position:relative;overflow:hidden;background:linear-gradient(160deg,#101a33,#0b0e18)}
@@ -542,6 +557,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
-<script src="/static/sleep.js?v=fix-20260731a"></script>
+<script src="/static/sleep.js?v=books-20260731b"></script>
 </body>
 </html>

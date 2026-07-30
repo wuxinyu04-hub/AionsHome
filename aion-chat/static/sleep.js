@@ -234,9 +234,12 @@
         : `共读到 第 ${(b.current_chapter || 0) + 1} 章`;
       return `
       <div class="bp-book ${bookState.sel && bookState.sel.book_id === b.book_id ? 'sel' : ''}" data-id="${esc(b.book_id)}">
-        <div class="bt">${esc(b.title)}</div>
-        <div class="ba">${esc(b.author || '')}</div>
-        <div class="bp">${line}</div>
+        <span class="bp-spine"></span>
+        <div class="bmeta">
+          <div class="bt">${esc(b.title)}</div>
+          <div class="ba">${esc(b.author || '')}</div>
+        </div>
+        <div class="bp">${esc(line)}</div>
       </div>`;
     }).join('');
     shelf.querySelectorAll('.bp-book').forEach(el => el.onclick = () => {
@@ -375,12 +378,23 @@
     const showAlbums = albums.length > 0 && (libTab === 'all' || libTab === 'reading');
     $('albumSec').style.display = showAlbums ? '' : 'none';
     if (showAlbums) {
-      $('albumRow').innerHTML = albums.map(a => `
+      $('albumRow').innerHTML = albums.map(a => {
+        const ready = a.eps.filter(e => e.has_audio).length;
+        const mins = Math.round(a.eps.reduce((s, e) => s + (e.duration_sec || 0), 0) / 60);
+        const bits = [`${a.eps.length} 集`];
+        if (ready < a.eps.length) bits.push(`${ready} 集可听`);
+        if (mins > 0) bits.push(`共 ${mins} 分钟`);
+        bits.push(voiceLabel(a.eps[0].voice) + ' 读');
+        return `
         <div class="alb" data-bid="${esc(a.book_id)}">
           <div class="alb-cov">${coverHtml(a.eps.find(e => e.has_cover) || a.eps[0])}</div>
-          <div class="alb-t">${esc(a.title)}</div>
-          <div class="alb-d">${a.eps.length} 集 · ${esc(voiceLabel(a.eps[0].voice))} 读</div>
-        </div>`).join('');
+          <div class="alb-meta">
+            <div class="alb-t">${esc(a.title)}</div>
+            <div class="alb-d">${esc(bits.join(' · '))}</div>
+          </div>
+          <span class="alb-go">›</span>
+        </div>`;
+      }).join('');
       $('albumRow').querySelectorAll('.alb').forEach(el => el.onclick = () => openAlbum(el.dataset.bid));
     }
     // 网格（专辑里的集数不重复出现在网格）
