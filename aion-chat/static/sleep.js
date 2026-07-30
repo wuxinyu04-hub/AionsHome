@@ -610,7 +610,7 @@
   function updateCounts() {
     const total = state.items.length;
     isDownloadedMany(state.items.filter(i => i.has_audio).map(i => i.id)).then(n => {
-      $('libCount').textContent = total ? `${total} 篇 · ${n} 篇已离线` : '';
+      $('libCount').textContent = total ? `${total} 篇故事 · ${n} 篇可离线听` : '还没有存下的故事';
       $('libSub').innerHTML = total ? `${total} 篇 · <b>${n} 篇已离线，断网也能听</b>` : '';
     });
   }

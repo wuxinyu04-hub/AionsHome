@@ -113,9 +113,17 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .gen-bar-fill{height:100%;width:0%;border-radius:2px;background:linear-gradient(90deg,var(--amber),#e8a850);transition:width .6s ease}
 .gen-pct{font-size:11px;color:var(--muted);min-width:32px;text-align:right;font-variant-numeric:tabular-nums}
 
-.home-foot{padding:14px 26px 8px;display:flex;justify-content:space-between;align-items:center;margin-top:auto;position:relative;z-index:2}
-.f-lib{font-size:13px;color:var(--fg-soft);cursor:pointer;background:none;border:none;font-family:var(--sans)}
-.f-lib .n{font-size:11px;color:var(--muted);margin-left:6px}
+/* 故事库入口：原来是一行裸文字，太弱看不见；改成整宽可点的卡片 */
+.home-foot{padding:14px 26px 8px;display:flex;margin-top:auto;position:relative;z-index:2}
+.f-lib{flex:1;display:flex;align-items:center;gap:12px;cursor:pointer;background:var(--bg-2);
+  border:1px solid var(--line);border-radius:16px;padding:14px 16px;font-family:var(--sans);
+  color:var(--fg);font-size:14px;text-align:left;transition:border-color .2s}
+.f-lib:active{border-color:rgba(224,180,120,.45)}
+.f-lib .ico{flex:0 0 auto;width:32px;height:32px;border-radius:10px;background:var(--amber-dim);
+  display:grid;place-items:center;font-size:15px;color:var(--amber)}
+.f-lib .lbl{flex:1;min-width:0}
+.f-lib .n{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.f-lib .arw{flex:0 0 auto;color:var(--muted);font-size:15px}
 
 /* ══ ② 播放屏 ══ */
 #player .scene{position:absolute;inset:0;height:100%}
@@ -421,7 +429,11 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
       </div>
     </div>
     <div class="home-foot">
-      <button class="f-lib" id="openLib">故事库<span class="n" id="libCount"></span></button>
+      <button class="f-lib" id="openLib">
+        <span class="ico">▤</span>
+        <span class="lbl">故事库<span class="n" id="libCount"></span></span>
+        <span class="arw">›</span>
+      </button>
     </div>
   </div>
 
@@ -562,6 +574,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
-<script src="/static/sleep.js?v=books-20260731c"></script>
+<script src="/static/sleep.js?v=lib-20260731d"></script>
 </body>
 </html>
