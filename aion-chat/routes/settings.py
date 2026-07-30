@@ -473,30 +473,23 @@ class TTSRequest(BaseModel):
 
 @router.post("/api/tts")
 async def tts_synthesize(body: TTSRequest):
-    key = get_key("siliconflow")
-    if not key:
-        return Response(content=json.dumps({"error": "未配置硅基流动 API Key"}), status_code=400, media_type="application/json")
+    """TTS 合成代理。跟随全局 get_tts_provider() 分派，不再硬编码硅基流动
+    （siliconflow_key 清空后旧写法必然 400）。各家请求格式统一由
+    tts._request_tts_audio 维护，此处只做入参校验与缓存。"""
+    from config import get_tts_provider
+    from tts import _request_tts_audio
+
+    provider = get_tts_provider()
+    if provider != "edge" and not get_key(provider):
+        return Response(content=json.dumps({"error": f"未配置当前 TTS provider（{provider}）的 API Key，请到设置页填写"}), status_code=400, media_type="application/json")
     if not body.text.strip():
         return Response(content=json.dumps({"error": "文本不能为空"}), status_code=400, media_type="application/json")
     if not body.voice:
         return Response(content=json.dumps({"error": "未选择语音"}), status_code=400, media_type="application/json")
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                "https://api.siliconflow.cn/v1/audio/speech",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": "FunAudioLLM/CosyVoice2-0.5B",
-                    "input": body.text.strip(),
-                    "voice": body.voice,
-                    "response_format": "mp3",
-                    "speed": 1.0,
-                    "gain": 0
-                }
-            )
-        if resp.status_code != 200:
-            return Response(content=json.dumps({"error": f"TTS API 错误: {resp.status_code}"}), status_code=502, media_type="application/json")
-        audio_data = resp.content
+        audio_data = await _request_tts_audio(body.text.strip(), body.voice)
+        if not audio_data:
+            return Response(content=json.dumps({"error": f"TTS 合成失败（provider={provider}），请确认音色属于当前服务商"}), status_code=502, media_type="application/json")
         # 如果提供了 msg_id，将音频缓存到服务器
         if body.msg_id:
             import re
