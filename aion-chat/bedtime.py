@@ -1016,7 +1016,9 @@ async def export_items(book_id: str = "") -> dict:
                 filename = f"{_safe_filename(item.get('title') or item['id'], item['id'])}.mp3"
             dst_dir.mkdir(parents=True, exist_ok=True)
             dst = _unique_export_path(dst_dir / filename)
-            shutil.copy2(src, dst)
+            # to_thread：单次 copy2 十几 MB，全量导出近 1GB，同步 copy 会把事件循环
+            # 卡到导出结束（聊天/WS/播放全停）。同 tts.py _merge_mp3_files 的处理。
+            await asyncio.to_thread(shutil.copy2, src, dst)
             size = dst.stat().st_size
             total_bytes += size
             exported.append({

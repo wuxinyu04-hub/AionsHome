@@ -700,7 +700,8 @@
     clearInterval(state.pollTimer);
     let n = 0;
     state.pollTimer = setInterval(async () => {
-      if (++n > 150) { hideGenNote(); toast('等太久了，稍后去故事库看看'); return; }
+      // 放弃时必须 clearInterval：只 return 的话定时器还在，会一直 2.5s 打一次 /status
+      if (++n > 150) { clearInterval(state.pollTimer); state.pollTimer = null; hideGenNote(); toast('等太久了，稍后去故事库看看'); return; }
       let it = null;
       try { const r = await fetch('/api/sleep/' + id + '/status'); it = await r.json(); } catch { return; }
       if (!it || !it.status) return;
