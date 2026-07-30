@@ -483,8 +483,15 @@ async def manifest():
 # WebSocket
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    # BaseHTTPMiddleware 不拦 WebSocket。AionApp 推送长连接（AionPushService）
-    # 不带 cookie/token，暂不强制鉴权；等 App 侧带上 ?token= 后这里应改为强制校验
+    # BaseHTTPMiddleware 不拦 WebSocket，所以这里必须自己校验：
+    # ws.broadcast 会把聊天/朋友圈/日记内容推给所有连上的客户端，不校验等于公网旁听。
+    # 浏览器握手自带 aion_auth cookie，网页端无需改动；非浏览器客户端用 ?token=。
+    # 注意：拒绝要在 accept 之前 close，否则等于先接受了连接。
+    if auth.auth_enabled() and not auth.check_request(ws):
+        client_ip = ws.client.host if ws.client else "?"
+        logging.getLogger("ws").warning("WS 鉴权失败，拒绝连接 from %s", client_ip)
+        await ws.close(code=1008)  # 1008 = policy violation
+        return
     await manager.connect(ws)
     try:
         while True:

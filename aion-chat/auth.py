@@ -46,7 +46,11 @@ def is_authed_cookies(cookies) -> bool:
 
 
 def check_request(request) -> bool:
-    """HTTP 请求鉴权：cookie / X-Aion-Token 头 / ?token= 任一命中即通过"""
+    """请求鉴权：cookie / X-Aion-Token 头 / ?token= 任一命中即通过。
+
+    starlette 的 WebSocket 与 Request 一样有 cookies/headers/query_params，
+    所以这个函数对 /ws 握手同样适用（浏览器握手会自动带 cookie）。
+    """
     if is_authed_cookies(request.cookies):
         return True
     token = request.headers.get("x-aion-token") or request.query_params.get("token")
