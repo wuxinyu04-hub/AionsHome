@@ -520,6 +520,25 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
         await _broadcast(item_id, {"status": "failed", "error": str(e)[:200]})
 
 
+async def reclaim_orphaned() -> int:
+    """启动时把 generating/synthesizing 全部改判 failed，返回改判条数。
+
+    单 worker uvicorn：进程重启后不可能还有活着的合成 task，所以启动时残留的
+    运行中状态一定是上次进程被杀留下的孤儿——这个判定是精确的，不用猜超时。
+    不改判的话 claim_synthesizing / synthesize 端点会把这些条目永久挡住重试
+    （failed 才允许重合成），只能手动改库（见 _cleanup_stale.py）。
+    """
+    async with get_db() as db:
+        cur = await db.execute(
+            "UPDATE sleep_items SET status='failed' WHERE status IN ('generating','synthesizing')"
+        )
+        await db.commit()
+        n = cur.rowcount
+    if n:
+        log.warning("sleep 启动清理：%d 条孤儿运行中状态改判 failed（可重试）", n)
+    return n
+
+
 async def claim_synthesizing(item_id: str, voice: str) -> bool:
     """原子翻转 status -> synthesizing（排除 generating/synthesizing）做并发守门。
 

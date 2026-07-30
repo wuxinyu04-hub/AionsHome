@@ -119,6 +119,13 @@ async def _auto_digest_loop():
 async def lifespan(app: FastAPI):
     await init_db()
     print(f"[Auth] 登录密码: {auth.get_secret()}（存于 data/auth_secret.txt，改成 off 可关闭鉴权）")
+    # 哄睡孤儿状态回收：上次进程被杀时留在 generating/synthesizing 的条目改判 failed，
+    # 否则它们会被合成端点永久挡住重试
+    try:
+        import bedtime
+        await bedtime.reclaim_orphaned()
+    except Exception as e:
+        print(f"[Sleep] ❌ 孤儿状态清理异常: {e}")
     loop = asyncio.get_running_loop()
     # 各子系统启动互相独立：任何一个失败（摄像头被占、HA 离线、配置缺字段…）
     # 都不应拖死整个应用，聊天主链路必须先活着
