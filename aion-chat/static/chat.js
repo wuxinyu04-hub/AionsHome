@@ -366,6 +366,82 @@ function notifyVoiceCamCheckStart() {
   }
 }
 
+// ══════════════════════════════════════════════════
+// ── RealtimeAudioPlayer: 阶跃 Realtime 全双工 PCM16 流播放 ──
+// 服务端把 response.audio.delta（base64 PCM16）经 WS voice_audio_delta 回传，
+// 这里顺序入队播放，可及时 clearAll 打断。
+// ══════════════════════════════════════════════════
+const RealtimeAudioPlayer = (() => {
+  let ctx = null, currentSource = null, buffered = [], playing = false, nextStart = 0;
+
+  function _ctx() {
+    if (!ctx) {
+      const C = window.AudioContext || window.webkitAudioContext;
+      if (!C) return null;
+      ctx = new C();
+    }
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    return ctx;
+  }
+
+  function appendPCM(b64, sampleRate) {
+    if (!b64) return;
+    try {
+      const binary = atob(b64);
+      const len = binary.length / 2;
+      if (len === 0) return;
+      const f32 = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        const lo = binary.charCodeAt(i * 2);
+        const hi = binary.charCodeAt(i * 2 + 1);
+        const int16 = (hi << 8) | lo;
+        f32[i] = int16 >= 32768 ? (int16 - 65536) / 32768 : int16 / 32768;
+      }
+      buffered.push({ data: f32, rate: sampleRate || 24000 });
+      if (!playing) _playNext();
+    } catch (e) {
+      console.error('RealtimeAudioPlayer decode error:', e);
+    }
+  }
+
+  function _playNext() {
+    if (buffered.length === 0) { playing = false; return; }
+    const ac = _ctx();
+    if (!ac) { buffered = []; playing = false; return; }
+    playing = true;
+    const { data, rate } = buffered.shift();
+    try {
+      const buf = ac.createBuffer(1, data.length, rate);
+      buf.copyToChannel(data, 0);
+      const src = ac.createBufferSource();
+      src.buffer = buf;
+      src.connect(ac.destination);
+      const start = Math.max(ac.currentTime, nextStart);
+      nextStart = start + buf.duration;
+      src.start(start);
+      currentSource = src;
+      src.onended = () => { currentSource = null; _playNext(); };
+    } catch (e) {
+      console.error('RealtimeAudioPlayer play error:', e);
+      _playNext();
+    }
+  }
+
+  function clearAll() {
+    if (currentSource) {
+      try { currentSource.stop(); } catch (e) {}
+      currentSource.onended = null;
+      currentSource = null;
+    }
+    buffered = [];
+    playing = false;
+    if (ctx) nextStart = ctx.currentTime;
+    else nextStart = 0;
+  }
+
+  return { appendPCM, clearAll };
+})();
+
 function updateVoiceUI(data) {
   const ind = $('voiceIndicator');
   const txt = $('voiceIndicatorText');
@@ -375,6 +451,7 @@ function updateVoiceUI(data) {
   if (!data.enabled) {
     voiceEnabled = false;
     voiceInCall = false;
+    RealtimeAudioPlayer.clearAll();
     ind.className = 'voice-indicator';
     btn.style.display = 'none';
     if (status) status.textContent = '未开启';
@@ -404,8 +481,9 @@ function updateVoiceUI(data) {
       btn.style.display = 'inline-block';
       voiceInCall = true;
       if (status) status.textContent = '通话中';
-      // 播放唤醒回复音频
-      playWakeupReply();
+      // realtime 模式由模型自己开场，跳过唤醒 MP3
+      RealtimeAudioPlayer.clearAll();
+      if (!data.realtime) playWakeupReply();
       break;
     case 'listening_cmd':
       ind.className = 'voice-indicator active in-call';
@@ -421,11 +499,18 @@ function updateVoiceUI(data) {
       ind.className = 'voice-indicator active ai-speaking';
       txt.textContent = '🤖 AI 思考中...';
       break;
+    case 'ai_speaking':
+      ind.className = 'voice-indicator active ai-speaking';
+      txt.textContent = '🗣 ' + (data.message || 'AI 说话中...');
+      btn.style.display = 'inline-block';
+      voiceInCall = true;
+      break;
     case 'hangup':
       ind.className = 'voice-indicator active waiting';
       txt.textContent = '📞 ' + (data.message || '通话结束');
       btn.style.display = 'none';
       voiceInCall = false;
+      RealtimeAudioPlayer.clearAll();
       if (status) status.textContent = '监听中';
       setTimeout(() => {
         if (voiceEnabled && !voiceInCall) {
@@ -1144,6 +1229,9 @@ function enqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "") 
   if (!isChatroomTTS && !ttsEnabled && !voiceCallActive && !(typeof videoCall !== 'undefined' && videoCall.active)) return;
   // 忽略小剧场的 TTS（tm_ 前缀），避免重复播放
   if (msgId.startsWith('tm_')) return;
+  // 忽略群聊的 TTS（cm_ 前缀），群聊 TTS 由 chatroom iframe 自己的 _ttsEngine 处理，
+  // 父页 ttsAudio 再播一遍就会和 iframe 重叠 → 声音打架
+  if (msgId.startsWith('cm_')) return;
   if (!shouldAcceptTTSMsg(msgId, createdAt, targetClientId)) return;
   if (!ttsChunkQueues[msgId]) {
     ttsChunkQueues[msgId] = { nextPlay: 0, chunks: {} };
@@ -1248,6 +1336,7 @@ async function playNextTTSChunk() {
 	}
 
 function finishTTSForMsg(msgId, createdAt, targetClientId) {
+  if (msgId.startsWith('cm_')) return; // 群聊 TTS 由 chatroom iframe 处理
   if (targetClientId && targetClientId !== _clientId) return;
   const ts = Number(createdAt || 0);
   if (ttsSuppressedMsgIds.has(msgId) || (ts && ts < ttsAcceptAfter)) {
@@ -1616,6 +1705,9 @@ function handleSync(msg) {
   } else if (type === "voice_state") {
     // 远程模式下忽略后端的语音状态广播（PC sounddevice 的状态不应覆盖手机麦克风的状态）
     if (!isRemoteVoice()) updateVoiceUI(data);
+  } else if (type === "voice_audio_delta") {
+    // 阶跃 Realtime：AI 音频流（base64 PCM16）回传浏览器播放
+    if (!isRemoteVoice()) RealtimeAudioPlayer.appendPCM(data.base64, data.sample_rate);
   } else if (type === "cam_check") {
     // 通过 WebSocket 收到 cam_check（语音发送时前端没有 SSE 流）
     if (data.conv_id === currentConvId && !streamingAiId) {
@@ -2646,6 +2738,27 @@ function musicOnBCMessage(msg) {
       if (typeof msg.index === 'number') musicIndex = msg.index;
       musicMirrorState = { songId: msg.songId, name: msg.name, artist: msg.artist, paused: msg.paused, position: msg.position, duration: msg.duration, leader: msg.tabId };
       musicRenderBar();
+    }
+  } else if (msg.type === 'handoff') {
+    // 音乐子页关闭时把播放权交回聊天页 bar：接管并续播
+    if (!musicClosed) {
+      if (Array.isArray(msg.queue) && msg.queue.length) {
+        musicQueue = msg.queue;
+        musicSaveQueue();
+        musicQueue.forEach(s => { if (s && s.id != null) musicSongIndex[s.id] = s; });
+      }
+      if (typeof msg.index === 'number') musicIndex = msg.index;
+      musicSaveState();
+      musicClaimLeader();  // 清关门标志、接管 leader、让其他上下文(含音乐 iframe)让权
+      const song = musicCurrent();
+      if (song) {
+        musicEnsureBar();
+        musicAudio.src = '/api/music/stream/' + song.id;
+        musicAudio.play().then(() => { try { if ((msg.position || 0) > 0) musicAudio.currentTime = msg.position; } catch (e) {} }).catch(() => {});
+        musicRenderBar();
+        musicReportNowPlaying(true);
+        if (musicPlayerOverlay) { musicPlayerRender(); loadMusicLyrics(song.id); }
+      }
     }
   } else if (msg.type === 'request_play') {
     // 其他标签/子页请求在此播放
@@ -6557,6 +6670,10 @@ function closeSubPage(skipReload = false) {
   ov.classList.remove('show');
   ov.classList.remove('home-subpage');
   ov.classList.remove('immersive-subpage');
+  // 音乐子页关闭：让 iframe 把播放权交回聊天页 bar（handoff），音乐不断
+  if (activeSubPageFrame && subPagePath(currentSubPage || '') === '/music') {
+    try { activeSubPageFrame.contentWindow?.postMessage({ type: 'aionMusicSubpageClose' }, '*'); } catch (e) {}
+  }
   if (activeSubPageFrame === transientSubPageFrame) {
     transientSubPageFrame.src = 'about:blank';
   }
