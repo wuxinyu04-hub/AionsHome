@@ -1182,7 +1182,11 @@ async def cover_targets() -> list[dict]:
 
 
 async def run_cover_batch() -> None:
-    """后台串行（并发 2）生成所有缺封面。免费生图优先。幂等：running 中重复调用直接返回。"""
+    """后台串行生成所有缺封面。免费生图优先。
+
+    CPA（本地 CLI 路由）对并发/连续请求会 429 限流，故强制串行（Semaphore 1）+
+    每张间隔，失败再退避重试（最多 3 轮），避免一次限流就跳过。幂等：running 中重复调用直接返回。
+    """
     async with _cover_batch_lock:
         if _cover_batch.get("running"):
             return
@@ -1191,18 +1195,29 @@ async def run_cover_batch() -> None:
     if not targets:
         _cover_batch["running"] = False
         return
-    sem = asyncio.Semaphore(2)
+    sem = asyncio.Semaphore(1)  # CPA 并发会 429，强制串行
 
     async def work(t: dict) -> None:
         async with sem:
             if _cover_batch.get("cancelled"):
                 return
             _cover_batch["current_title"] = t["title_override"] or "故事"
-            try:
-                await generate_cover(t["id"], "", t["title_override"], prefer_free=True)
-            except Exception:
-                log.exception("批量补封面失败 id=%s", t["id"])
+            ok = False
+            for attempt in range(3):  # 429 限流时退避重试，最多 3 轮
+                if _cover_batch.get("cancelled"):
+                    return
+                try:
+                    if await generate_cover(t["id"], "", t["title_override"], prefer_free=True):
+                        ok = True
+                        break
+                except Exception:
+                    log.exception("批量补封面失败 id=%s attempt=%d", t["id"], attempt)
+                if attempt < 2:  # 最后一轮不睡
+                    await asyncio.sleep(12)  # CPA 限流冷却窗口
+            if not ok:
+                log.warning("批量补封面最终失败 id=%s（3 轮重试后仍无封面）", t["id"])
             _cover_batch["done"] += 1
+            await asyncio.sleep(3)  # 串行下每张之间也留点喘息，防 CPA 连续 429
 
     try:
         await asyncio.gather(*(work(t) for t in targets))
