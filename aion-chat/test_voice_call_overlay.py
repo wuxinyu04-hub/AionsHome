@@ -16,7 +16,10 @@ class VoiceCallOverlayTests(unittest.TestCase):
 
             queue = asyncio.Queue()
 
-            async def fake_request(text, voice, *, seq=None):
+            # **kwargs 兜住生产侧新增的关键字参数（emotion/provider/prosody/
+            # instruction）：签名不匹配的 TypeError 会被 tts 的 except 吞成
+            # "合成失败"，测试会变成静默无效而不是报错。
+            async def fake_request(text, voice, *, seq=None, **kwargs):
                 return b"mp3"
 
             with patch.object(tts, "_request_tts_audio", fake_request):

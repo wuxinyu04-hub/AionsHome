@@ -97,7 +97,8 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured_recall["kwargs"].get("top_k"), 5)
         self.assertEqual(captured_recall["kwargs"].get("min_results"), 3)
 
-    async def test_private_chat_regenerate_injects_recalled_memory_without_search_signal(self):
+    async def _regenerate_prompt_text(self, *, is_search_needed: bool) -> str:
+        """跑一次 regenerate_message，返回送给 stream_ai 的完整 prompt 文本。"""
         captured = {}
 
         async def fake_stream_ai(messages, *args, **kwargs):
@@ -123,7 +124,7 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                     return_value={
                         "keywords": [],
                         "topic": "unit topic",
-                        "is_search_needed": False,
+                        "is_search_needed": is_search_needed,
                         "status": "",
                         "require_detail": False,
                     }
@@ -150,8 +151,24 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             async for _ in response.body_iterator:
                 pass
 
-        prompt_text = "\n".join(str(m.get("content", "")) for m in captured["messages"])
+        return "\n".join(str(m.get("content", "")) for m in captured["messages"])
+
+    async def test_private_chat_regenerate_injects_recalled_memory_when_search_needed(self):
+        """digest 判定需要检索时，召回的记忆必须进 prompt。"""
+        prompt_text = await self._regenerate_prompt_text(is_search_needed=True)
         self.assertIn("private memory", prompt_text)
+        self.assertIn("[相关记忆]", prompt_text)
+
+    async def test_private_chat_regenerate_skips_memory_when_search_not_needed(self):
+        """digest 判定不需要检索时不灌记忆——1bea2c3「记忆按需注入」治模板化的核心。
+
+        原测试断言的是 1bea2c3 之前的"无条件注入"行为，那次提交刻意加了
+        is_search_needed 门（chat.py 三处注入点），所以这里反过来锁住新契约：
+        闲聊时 prompt 里不该出现记忆块，否则记忆又变成待办清单被无差别灌入。
+        """
+        prompt_text = await self._regenerate_prompt_text(is_search_needed=False)
+        self.assertNotIn("private memory", prompt_text)
+        self.assertNotIn("[相关记忆]", prompt_text)
 
 
 class _FakeCursor:

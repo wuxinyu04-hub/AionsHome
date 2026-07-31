@@ -15,7 +15,13 @@ class ChatroomMobileFocusTests(unittest.TestCase):
         self.assertIn("matchMedia('(pointer: coarse)')", js)
         self.assertIn("navigator.maxTouchPoints", js)
         self.assertIn("function crRefocusComposerAfterSend()", js)
-        self.assertIn("chatroom-mobile-focus-20260704", html)
+        # 原来钉死 'chatroom-mobile-focus-20260704'，生产 bump 到 -20260715 就红。
+        # 真正要保证的是"引用带缓存版本"，不是某个具体版本号。
+        self.assertRegex(
+            html,
+            r"chatroom\.js\?v=[\w.-]+",
+            "chatroom.js 引用必须带 ?v= 缓存版本",
+        )
 
         voice_call_send = re.search(
             r"window\.ChatroomVoiceCallAdapter = \{.*?async sendText\(text\).*?\n  \}\n\};",

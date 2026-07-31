@@ -23,7 +23,8 @@ class LinkPreviewUiTests(unittest.TestCase):
         self.assertIn("--user-link-preview-offset", css)
         self.assertIn("margin-right:var(--user-link-preview-offset)", css)
         self.assertNotIn("padding-right:var(--user-link-preview-offset)", css)
-        self.assertIn("chat.css?v=link-preview-align-20260706", html)
+        # 只保证带缓存版本，不钉死具体版本号（否则每次 bump 都要改测试）
+        self.assertRegex(html, r"chat\.css\?v=[\w.-]+")
 
     def test_chatroom_renders_clickable_link_preview_cards(self):
         js = (ROOT / "static" / "chatroom.js").read_text(encoding="utf-8")
@@ -46,7 +47,7 @@ class LinkPreviewUiTests(unittest.TestCase):
         self.assertIn("gap: var(--chatroom-message-avatar-gap)", css)
         self.assertIn("width: var(--chatroom-message-avatar-size)", css)
         self.assertIn("margin-right: var(--user-link-preview-offset)", css)
-        self.assertIn("chatroom.css?v=system-event-mobile-width-20260706b", html)
+        self.assertRegex(html, r"chatroom\.css\?v=[\w.-]+")
 
 
 if __name__ == "__main__":

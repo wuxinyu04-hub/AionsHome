@@ -109,7 +109,8 @@ class ChatroomFrontendSystemDisplayTests(unittest.TestCase):
         self.assertIn("flex: none;", css)
         self.assertIn("position: absolute;", css)
         self.assertIn("overflow-wrap: anywhere;", css)
-        self.assertIn("chatroom.css?v=system-event-mobile-width-20260706b", html)
+        # 只保证带缓存版本，不钉死具体版本号（否则每次 bump 都要改测试）
+        self.assertRegex(html, r"chatroom\.css\?v=[\w.-]+")
 
 
 if __name__ == "__main__":

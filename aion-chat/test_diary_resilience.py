@@ -77,7 +77,10 @@ class DigestDiaryCircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
     async def test_failure_calls_model_only_once(self):
         calls = []
 
-        async def fake_call(messages, model_key, temperature=None, *, trace_label=""):
+        # 注意 **kwargs：生产侧新增关键字参数（如 max_tokens）时，签名不匹配的
+        # TypeError 会被 _generate_digest_diary 的 except 吞掉，导致"零次调用"的
+        # 假阴性而不是报错。用 **kwargs 兜住，别让测试沉默地失去意义。
+        async def fake_call(messages, model_key, temperature=None, *, trace_label="", **kwargs):
             calls.append((model_key, trace_label))
             return "not-json"
 
