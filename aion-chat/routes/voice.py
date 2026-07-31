@@ -19,10 +19,13 @@ _EMOJI_RE = re.compile(
     "\U00002600-\U000026FF\U0000FE00-\U0000FE0F\U0000200D]+"
 )
 
-from voice import voice
+from voice import get_voice
 from config import get_key
 
 router = APIRouter()
+
+# 引擎按 settings.json 的 voice_realtime_enabled 选择（默认原半双工 VoiceWakeup）
+voice = get_voice()
 
 
 class VoiceToggle(BaseModel):

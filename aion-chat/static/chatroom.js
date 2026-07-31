@@ -603,28 +603,46 @@ function crOpenInNetease(songId) {
   window.open('https://music.163.com/song?id=' + songId, '_blank');
 }
 
+function crFindSong(songId) {
+  const cards = crMusicCards || {};
+  for (const mid of Object.keys(cards)) {
+    const f = (cards[mid] || []).find(s => s && s.id === songId);
+    if (f) return f;
+  }
+  return null;
+}
 function crPlayMusicOnline(songId) {
+  let song = crFindSong(songId);
   // 优先委托给父页（chat）的队列播放器：共享队列，避免双 audio 叠播
   try {
-    if (window.parent !== window && typeof window.parent.playMusicNow === 'function') {
-      let song = null;
-      for (const mid of Object.keys(crMusicCards || {})) {
-        const f = (crMusicCards[mid] || []).find(s => s && s.id === songId);
-        if (f) { song = f; break; }
-      }
-      if (song) { window.parent.playMusicNow(song); return; }
+    if (window.parent !== window && typeof window.parent.playMusicNow === 'function' && song) {
+      window.parent.playMusicNow(song); return;
     }
   } catch (e) {}
   let wrap = document.getElementById('crGlobalMusicWrap');
   if (!wrap) {
     wrap = document.createElement('div');
     wrap.id = 'crGlobalMusicWrap';
-    wrap.style.cssText = 'position:fixed;top:calc(max(34px, env(safe-area-inset-top, 0px)) + 48px);left:0;right:0;z-index:999;display:none;align-items:center;gap:8px;background:var(--surface,#1e1e1e);padding:0 12px;height:36px;box-shadow:0 2px 8px rgba(0,0,0,0.25);border-bottom:1px solid var(--border,#333);';
+    wrap.style.cssText = 'position:fixed;top:calc(max(34px, env(safe-area-inset-top, 0px)) + 48px);left:0;right:0;z-index:999;display:none;align-items:center;gap:8px;background:var(--surface,#1e1e1e);padding:0 12px;height:40px;box-shadow:0 2px 8px rgba(0,0,0,0.25);border-bottom:1px solid var(--border,#333);';
 
     const playBtn = document.createElement('button');
     playBtn.id = 'crMusicPlayBtn';
-    playBtn.textContent = '⏸';
+    playBtn.textContent = '▶';
     playBtn.style.cssText = 'background:none;border:none;font-size:16px;cursor:pointer;color:var(--text,#eee);padding:0 4px;line-height:1;flex-shrink:0;';
+
+    const cover = document.createElement('img');
+    cover.id = 'crMusicCover';
+    cover.style.cssText = 'width:32px;height:32px;border-radius:6px;object-fit:cover;flex-shrink:0;background:#2a2a2a;display:none;';
+
+    const info = document.createElement('div');
+    info.style.cssText = 'display:flex;flex-direction:column;min-width:0;flex-shrink:0;max-width:30vw;overflow:hidden;';
+    const title = document.createElement('div');
+    title.id = 'crMusicTitle';
+    title.style.cssText = 'font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    const sub = document.createElement('div');
+    sub.id = 'crMusicSub';
+    sub.style.cssText = 'font-size:10px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    info.appendChild(title); info.appendChild(sub);
 
     const bar = document.createElement('input');
     bar.id = 'crMusicBar';
@@ -664,18 +682,50 @@ function crPlayMusicOnline(songId) {
     closeBtn.onclick = () => { audio.pause(); audio.currentTime = 0; audio.src = ''; wrap.style.display = 'none'; bar.value = 0; };
 
     wrap.appendChild(playBtn);
+    wrap.appendChild(cover);
+    wrap.appendChild(info);
     wrap.appendChild(bar);
     wrap.appendChild(volWrap);
     wrap.appendChild(audio);
     wrap.appendChild(closeBtn);
     document.body.appendChild(wrap);
   }
-  const audio = document.getElementById('crMusicAudio');
-  audio.src = '/api/music/stream/' + songId;
-  wrap.style.display = 'flex';
-  document.getElementById('crMusicBar').value = 0;
-  document.getElementById('crMusicPlayBtn').textContent = '⏸';
-  audio.play().catch(() => {});
+  // 取播放条 DOM（无论是否刚创建，用 getElementById 安全引用）
+  const coverEl = document.getElementById('crMusicCover');
+  const titleEl = document.getElementById('crMusicTitle');
+  const subEl = document.getElementById('crMusicSub');
+  const barEl = document.getElementById('crMusicBar');
+  const audioEl = document.getElementById('crMusicAudio');
+  const playBtnEl = document.getElementById('crMusicPlayBtn');
+  const fillSong = function(s) {
+    if (s && s.cover) { coverEl.src = s.cover; coverEl.style.display = ''; }
+    else { coverEl.style.display = 'none'; }
+    titleEl.textContent = (s && s.name) || '未知歌曲';
+    subEl.textContent = (s && s.artist) || '';
+  };
+  const startPlay = function() {
+    audioEl.src = '/api/music/stream/' + songId;
+    wrap.style.display = 'flex';
+    barEl.value = 0; playBtnEl.textContent = '⏸';
+    audioEl.play().catch(function() {});
+  };
+  if (song) {
+    fillSong(song);
+    startPlay();
+  } else {
+    // 刷新后卡片数据尚未就绪，fallback 查详情
+    titleEl.textContent = '加载中…';
+    subEl.textContent = '';
+    wrap.style.display = 'flex';
+    api('GET', '/api/music/detail/' + songId).then(function(d) {
+      if (d && d.id) { fillSong(d); }
+    }).catch(function() {
+      titleEl.textContent = '歌曲 #' + songId;
+    });
+    audioEl.src = '/api/music/stream/' + songId;
+    barEl.value = 0; playBtnEl.textContent = '⏸';
+    audioEl.play().catch(function() {});
+  }
 }
 
 function crEnqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "") {

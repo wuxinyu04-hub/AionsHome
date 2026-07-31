@@ -100,6 +100,27 @@ def get_tts_provider() -> str:
 STEP_SLEEP_INSTRUCTION = "用自然的声音说话"
 
 
+# ── 阶跃 Realtime 语音引擎配置（临时方案，默认关闭）─────────────────────────
+def get_voice_realtime_config() -> dict:
+    """返回阶跃 StepAudio 2.5 Realtime 语音引擎配置。
+
+    enabled=False 时 voice.get_voice() 返回原 voice.py 半双工引擎（可随时回退）。
+    采样率无 session 字段，输入/输出固定为模型默认（OpenAI 兼容 = 24000）。
+    """
+    s = SETTINGS
+    model = (s.get("voice_realtime_model", "") or "stepaudio-2.5-realtime").strip()
+    ws_url = (s.get("voice_realtime_ws_url", "") or "").strip()
+    return {
+        "enabled": bool(s.get("voice_realtime_enabled", False)),
+        "model": model,
+        # 官方 realtime 音色列表只列 wenrounansheng/qingchunshaonv/... ；
+        # cixingnansheng（哄睡枕边音色）session.update 会被接受但可能静默回退，留作可试配置项。
+        "voice": (s.get("voice_realtime_voice", "") or "wenrounansheng").strip(),
+        "ws_url": ws_url or f"wss://api.stepfun.com/v1/realtime?model={model}",
+        "sample_rate": int(s.get("voice_realtime_sample_rate", 24000) or 24000),
+    }
+
+
 def get_sentinel_config() -> dict:
     """
     返回哨兵/前置模型的配置。

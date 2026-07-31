@@ -26,8 +26,10 @@ from config import BASE_DIR, PUBLIC_DIR, UPLOADS_DIR, SONGS_DIR, CODEX_UPLOADS_D
 from database import init_db, get_db
 from ws import manager
 from camera import cam
-from voice import voice
+from voice import get_voice
 from schedule import schedule_mgr
+
+voice = get_voice()
 
 from routes import chat, cam as cam_routes, files, settings, memories
 from routes import voice as voice_routes

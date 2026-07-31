@@ -412,3 +412,19 @@ class VoiceWakeup:
 
 # 全局单例
 voice = VoiceWakeup()
+
+# ── 语音引擎工厂 ──────────────────────────────────
+# settings.json 的 voice_realtime_enabled=True 时返回阶跃 Realtime 引擎（voice_realtime.py），
+# 否则返回原有半双工 VoiceWakeup（默认，逐字节不变，可随时回退）。
+_realtime_voice = None
+
+
+def get_voice():
+    """按配置选择语音引擎。voice_realtime_enabled 默认关 → 返回原 voice。"""
+    global _realtime_voice
+    from config import get_voice_realtime_config
+    if get_voice_realtime_config()["enabled"]:
+        if _realtime_voice is None:
+            from voice_realtime import voice as _realtime_voice
+        return _realtime_voice
+    return voice
