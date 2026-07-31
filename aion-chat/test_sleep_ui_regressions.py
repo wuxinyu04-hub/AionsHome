@@ -150,6 +150,15 @@ class SleepBookLayoutTests(unittest.TestCase):
                 bad, self.html.replace(" ", ""), "书名不能用竖排文字"
             )
 
+    def test_sheet_layer_above_mini_player(self):
+        """操作抽屉（含删除/重命名）必须在迷你播放器上方（z-index > 60）。"""
+        match = re.search(r"\.sheet\s*\{[^}]*z-index:\s*(\d+)", self.html)
+        self.assertIsNotNone(match, "找不到 .sheet 的 z-index 定义")
+        z = int(match.group(1))
+        self.assertGreater(
+            z, 60, "抽屉 z-index 必须大于 60（迷你播放器 z-index: 60），否则会被底部播放条挡住"
+        )
+
 
 class SleepCacheBustTests(unittest.TestCase):
     """改 sleep.js 必须 bump sleep.html 的 ?v=，否则 F5 拿到旧代码。"""
