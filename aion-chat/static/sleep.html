@@ -191,7 +191,8 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .lt{flex:0 0 auto;padding:7px 16px;border-radius:18px;border:1px solid var(--line);background:none;font-size:12px;color:var(--muted);cursor:pointer;font-family:var(--sans);transition:all .25s}
 .lt.on{border-color:rgba(224,180,120,.5);color:var(--amber);background:var(--amber-dim)}
 .l-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 26px calc(36px + env(safe-area-inset-bottom))}
-.lg-name{font-size:11px;letter-spacing:.22em;color:var(--muted);margin:8px 0 12px}
+.lg-name{grid-column:1/-1;margin-top:16px;font-size:11px;letter-spacing:.22em;color:var(--muted)}
+.l-grid .lg-name:first-child{margin-top:0}
 /* 书库竖向列表（一本书=一行）——横滑时书名被压成 nowrap 读不全，改成书封在左、书名横排正读 */
 .album-row{display:flex;flex-direction:column;gap:10px;padding-bottom:14px;margin-bottom:6px}
 .alb{display:flex;align-items:center;gap:14px;cursor:pointer;padding:10px 12px;border-radius:16px;
@@ -508,7 +509,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
     <div class="l-tabs" id="libTabs">
       <button class="lt on" data-c="all">全部</button>
       <button class="lt" data-c="reading">书库</button>
-      <button class="lt" data-c="boyfriend">晚安</button>
       <button class="lt" data-c="meditation">冥想</button>
       <button class="lt" data-c="fairytale">童话</button>
       <button class="lt" data-c="asmr">耳语</button>
@@ -519,6 +519,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
         <div class="album-row" id="albumRow"></div>
       </div>
       <div class="l-grid" id="libGrid"></div>
+      <button class="preload" id="coverBtn" style="margin-top:12px">🎨 补封面<small>书库每本 + 有音频的故事 · 免费模型画</small></button>
       <button class="preload" id="preloadBtn">⇣ 睡前预载最近 3 篇<small>下载到手机 · 关电脑断网都能播</small></button>
     </div>
   </div>
@@ -589,6 +590,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
-<script src="/static/sleep.js?v=album-20260731f"></script>
+<script src="/static/sleep.js?v=cover-20260731"></script>
 </body>
 </html>

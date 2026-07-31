@@ -62,9 +62,8 @@
     showScreen(id);
     document.title = (id === 'player' ? '播放中 ' : id === 'album' ? '故事 ' : '') + (id === 'player' ? $('pTitle').textContent : '');
   }
-  function popScreen() {
+  function popScreen(cb) {
     if (navStack.length <= 1) {
-      // 回到入口后，再按返回 = 退出回到主页
       try { top.location.href = '/'; } catch { location.href = '/'; }
       return;
     }
@@ -72,6 +71,7 @@
     const prev = navStack[navStack.length - 1];
     showScreen(prev);
     document.title = '晚安，小语';
+    if (cb) try { cb(); } catch {}
   }
   function setScreen(id) {
     showScreen(id);
@@ -313,6 +313,7 @@
     decorateDownloads();
     renderModeChips();       // 冥想 chips 依赖 items
     if (bookState.books) renderShelf(); // 讲书"上次听到"标记依赖 items
+    refreshCoverPending();   // 补封面按钮文案跟着库变
   }
 
   function statusLine(it) {
@@ -340,6 +341,10 @@
     bits.push(it.has_audio && it.duration_sec ? fmtTime(it.duration_sec) : statusLine(it));
     return bits.join(' · ');
   }
+  // 网格卡片元信息：仅保留时长/状态，去除 voice + play_count
+  function cardMeta(it) {
+    return it.has_audio && it.duration_sec ? fmtTime(it.duration_sec) : statusLine(it);
+  }
   function cardHtml(it) {
     const busy = it.status === 'generating' || it.status === 'synthesizing';
     return `
@@ -350,7 +355,7 @@
         </div>
         <div class="inf">
           <div class="t">${esc(it.title)}</div>
-          <div class="d"><span>${esc(metaLine(it))}</span><span class="dl" data-dlid="${esc(it.id)}"></span></div>
+          <div class="d"><span>${esc(cardMeta(it))}</span><span class="dl" data-dlid="${esc(it.id)}"></span></div>
           <button class="lmore" data-more="${esc(it.id)}">⋯</button>
         </div>
       </div>`;
@@ -408,16 +413,26 @@
     const gen = items.filter(i => i.source === 'ai_generated').sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
     const preset = CAT_ORDER.flatMap(c => items.filter(i => i.source === 'preset' && i.category === c));
     items = [...gen, ...preset];
-    const grid = $('libGrid');
-    grid.innerHTML = items.length ? items.map(cardHtml).join('')
-      : (showAlbums ? '' : '<div class="l-empty">这个分类还没有故事</div>');
-    grid.querySelectorAll('.lc').forEach(c => c.onclick = () => {
-      const it = state.items.find(x => x.id === c.dataset.id);
-      if (it) onItemClick(it);
+
+    // 构建 HTML：全部 tab 按分类加 section header，卡片元信息精简为时长
+    const useSections = libTab === 'all';
+    const seenCats = new Set();
+    let html = '';
+    items.forEach(it => {
+      if (useSections && !seenCats.has(it.category)) {
+        seenCats.add(it.category);
+        const label = CAT_NAMES[it.category] || it.category;
+        html += `<div class="lg-name">${esc(label)}</div>`;
+      }
+      html += cardHtml(it);
     });
-    grid.querySelectorAll('.lmore').forEach(b => b.onclick = (e) => {
-      e.stopPropagation();
-      openItemSheet(b.dataset.more);
+    const grid = $('libGrid');
+    grid.innerHTML = html || (showAlbums ? '' : '<div class="l-empty">这个分类还没有故事</div>');
+    grid.querySelectorAll('.lc').forEach(c => {
+      c.onclick = () => { const it = state.items.find(x => x.id === c.dataset.id); if (it) onItemClick(it); };
+    });
+    grid.querySelectorAll('.lmore').forEach(b => {
+      b.onclick = (e) => { e.stopPropagation(); openItemSheet(b.dataset.more); };
     });
   }
 
@@ -1048,6 +1063,52 @@
     decorateDownloads(); updateCounts(); renderResume();
   };
 
+  // ── 批量补封面：书库每本 + 有音频的故事，免费模型后台跑 ──
+  let coverBtnBusy = false;
+  async function refreshCoverPending() {
+    if (coverBtnBusy) return;
+    const btn = $('coverBtn');
+    try {
+      const r = await fetch('/api/sleep/covers/pending');
+      const d = await r.json();
+      const n = d.pending || 0;
+      btn.textContent = n ? `🎨 给 ${n} 篇补封面` : '🎨 封面都齐了';
+      btn.disabled = !n;
+    } catch { }
+  }
+  async function startCoverBatch() {
+    if (coverBtnBusy) return;
+    const btn = $('coverBtn');
+    let pending = 0;
+    try { pending = (await (await fetch('/api/sleep/covers/pending')).json()).pending || 0; } catch { }
+    if (!pending) { toast('封面都齐了'); refreshCoverPending(); return; }
+    if (!navigator.onLine) { toast('联网才能生成'); return; }
+    const mins = Math.max(1, Math.ceil(pending * 18 / 60));
+    if (!window.confirm(`给 ${pending} 篇补封面？约需 ${mins} 分钟左右，后台跑，可随时离开页面。`)) return;
+    coverBtnBusy = true;
+    btn.disabled = true;
+    btn.textContent = '正在启动…';
+    let ok = false;
+    try { const r = await fetch('/api/sleep/covers/batch', { method: 'POST' }); ok = r.ok; } catch { }
+    if (!ok) { coverBtnBusy = false; btn.disabled = false; toast('启动失败，稍后再试'); return; }
+    const poll = setInterval(async () => {
+      let s = null;
+      try { s = await (await fetch('/api/sleep/covers/status')).json(); } catch { return; }
+      if (!s || s.running == null) return;
+      btn.textContent = s.total ? `画封面中 ${s.done}/${s.total} · ${s.current_title || ''}` : '画封面中…';
+      if (s.done % 2 === 0) loadLibrary();
+      if (!s.running) {
+        clearInterval(poll);
+        coverBtnBusy = false;
+        btn.disabled = false;
+        await loadLibrary();
+        refreshCoverPending();
+        toast(`补完 ${s.done} 张封面`);
+      }
+    }, 3000);
+  }
+  $('coverBtn').onclick = startCoverBatch;
+
   // ── 播放列表：可增删、可上下移、localStorage 持久化 ──
   function saveQueue() {
     localStorage.setItem('sleep_queue_ids', JSON.stringify(state.queue.map(i => i.id)));
@@ -1121,8 +1182,8 @@
   // ── 入口屏事件 ──
   $('goBtn').onclick = () => startGenerate($('promptInput').value);
   $('promptInput').addEventListener('keydown', e => { if (e.key === 'Enter') startGenerate($('promptInput').value); });
-  $('openLib').onclick = () => setScreen('library');
-  $('libBack').onclick = () => { setScreen('home'); renderResume(); };
+  $('openLib').onclick = () => pushScreen('library');
+  $('libBack').onclick = () => popScreen(renderResume);
   // 旧的静态 .mood 绑定已由 renderModeChips 接管
 
   // ── 启动 ──

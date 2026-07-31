@@ -1068,8 +1068,9 @@ async def increment_play(item_id: str) -> int:
         return int(row[0]) if row else 0
 
 
-def _cover_prompt(item: dict, extra: str) -> str:
+def _cover_prompt(item: dict, extra: str = "", title_override: str = "") -> str:
     """按条目内容拼封面生图 prompt：温暖深夜插画风，和 app 视觉（深蓝+暖琥珀）一致。"""
+    subject = (title_override or "").strip() or item.get("title")
     cat_scene = {
         "reading": "床头一盏暖灯，摊开的书，翻起的书页",
         "meditation": "月光下平静的水面与云",
@@ -1079,27 +1080,39 @@ def _cover_prompt(item: dict, extra: str) -> str:
     }.get(item.get("category") or "", "温暖的深夜房间")
     hint = extra.strip() or item.get("summary") or ""
     return (
-        f"为一段深夜哄睡音频画一张正方形封面插画。主题：《{item.get('title')}》。{hint}\n"
+        f"为一段深夜哄睡音频画一张正方形封面插画。主题：《{subject}》。{hint}\n"
         f"场景元素参考：{cat_scene}。\n"
         "风格：手绘质感插画，深蓝夜色底 + 暖琥珀色光源，柔和低对比，安静、温暖、适合睡前。"
         "画面里不要出现任何文字。"
     )
 
 
-async def generate_cover(item_id: str, extra_prompt: str = "") -> str | None:
-    """AI 生成封面 -> 存 data/sleep_covers/{id}.{ext} -> 写 cover_path。返回 cover_path 或 None。"""
+async def generate_cover(item_id: str, extra_prompt: str = "", title_override: str = "", prefer_free: bool = False) -> str | None:
+    """AI 生成封面 -> 存 data/sleep_covers/{id}.{ext} -> 写 cover_path。返回 cover_path 或 None。
+
+    title_override 用书名代替条目全名（书库批量：给整本书的代表集画"书封面"）。
+    prefer_free=True 时优先免费生图通道（硅基 Kolors -> CPA 路由），官方 Gemini 兜底。
+    """
     from image_gen import generate_image, generate_image_custom_route, generate_image_siliconflow
     from config import UPLOADS_DIR
     item = await get_item_raw(item_id)
     if not item:
         return None
-    prompt = _cover_prompt(item, extra_prompt)
-    # 官方 Gemini（free tier 生图配额为 0 会失败）-> 自定义路由（CPA 走 CLI 授权）-> 硅基 Kolors
-    filename = await generate_image(prompt)
-    if not filename:
-        filename = await generate_image_custom_route(prompt)
-    if not filename:
+    prompt = _cover_prompt(item, extra_prompt, title_override)
+    if prefer_free:
+        # 批量补封面：免费优先，Gemini 官方兜底
         filename = await generate_image_siliconflow(prompt)
+        if not filename:
+            filename = await generate_image_custom_route(prompt)
+        if not filename:
+            filename = await generate_image(prompt)
+    else:
+        # 官方 Gemini（free tier 生图配额为 0 会失败）-> 自定义路由（CPA 走 CLI 授权）-> 硅基 Kolors
+        filename = await generate_image(prompt)
+        if not filename:
+            filename = await generate_image_custom_route(prompt)
+        if not filename:
+            filename = await generate_image_siliconflow(prompt)
     if not filename:
         return None
     src = UPLOADS_DIR / filename
@@ -1116,6 +1129,84 @@ async def generate_cover(item_id: str, extra_prompt: str = "") -> str | None:
         await db.commit()
     await _broadcast(item_id, {"cover": True})
     return cover_rel
+
+
+# ── 批量补封面：书库每本无封面书取代表集 + 非阅读无封面有音频的故事 ──
+_cover_batch: dict = {}  # {running, total, done, current_title, cancelled}
+_cover_batch_lock = asyncio.Lock()
+
+
+async def cover_targets() -> list[dict]:
+    """收集需要补封面的目标。返回 [{id, title_override, category}]。
+
+    书库：每本书按 book_id 聚合，取 chapter 最小的一集作代表集，其封面即"书封面"；
+    故事：非 reading、无封面、有音频（没音频的空条目不浪费额度）。
+    """
+    async with get_db() as db:
+        db.row_factory = __import__("aiosqlite").Row
+        cur = await db.execute(
+            "SELECT id, category, title, book_ref, audio_path, cover_path FROM sleep_items")
+        rows = await cur.fetchall()
+    books: dict[str, dict] = {}
+    for r in rows:
+        if r["category"] == "reading" and r["book_ref"]:
+            f = _book_ref_fields(r["book_ref"])
+            if not f.get("book_id"):
+                continue
+            b = books.setdefault(f["book_id"], {"rep_id": None, "rep_ch": 10 ** 9, "title": "", "has_cover": False})
+            if r["cover_path"]:
+                b["has_cover"] = True
+            ch = f.get("book_chapter", -1)
+            if ch < b["rep_ch"]:
+                b["rep_ch"], b["rep_id"] = ch, r["id"]
+                b["title"] = (r["title"] or "").split(" · ")[0]
+    targets: list[dict] = []
+    for b in books.values():
+        if not b["has_cover"] and b["rep_id"]:
+            targets.append({"id": b["rep_id"], "title_override": b["title"], "category": "reading"})
+    for r in rows:
+        if r["category"] != "reading" and not r["cover_path"] and r["audio_path"]:
+            targets.append({"id": r["id"], "title_override": "", "category": r["category"]})
+    return targets
+
+
+async def run_cover_batch() -> None:
+    """后台串行（并发 2）生成所有缺封面。免费生图优先。幂等：running 中重复调用直接返回。"""
+    async with _cover_batch_lock:
+        if _cover_batch.get("running"):
+            return
+        targets = await cover_targets()
+        _cover_batch.update({"running": True, "total": len(targets), "done": 0, "current_title": "", "cancelled": False})
+    if not targets:
+        _cover_batch["running"] = False
+        return
+    sem = asyncio.Semaphore(2)
+
+    async def work(t: dict) -> None:
+        async with sem:
+            if _cover_batch.get("cancelled"):
+                return
+            _cover_batch["current_title"] = t["title_override"] or "故事"
+            try:
+                await generate_cover(t["id"], "", t["title_override"], prefer_free=True)
+            except Exception:
+                log.exception("批量补封面失败 id=%s", t["id"])
+            _cover_batch["done"] += 1
+
+    try:
+        await asyncio.gather(*(work(t) for t in targets))
+    finally:
+        _cover_batch["running"] = False
+        _cover_batch["cancelled"] = False
+
+
+def cover_batch_status() -> dict:
+    return dict(_cover_batch)
+
+
+async def cancel_cover_batch() -> None:
+    """请求停止：跑完当前这两张就停。"""
+    _cover_batch["cancelled"] = True
 
 
 async def delete_item(item_id: str) -> bool:

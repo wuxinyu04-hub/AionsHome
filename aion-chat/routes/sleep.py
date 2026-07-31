@@ -4,6 +4,7 @@
 完全独立于主聊天，不涉及记忆库/系统/日程/摄像头。
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -75,6 +76,33 @@ async def generate_book(body: GenerateBookIn):
 async def export_audio(body: ExportIn):
     """把 ready 音频 copy 到 data/sleep_export，不重命名原缓存。"""
     return await bedtime.export_items(body.book_id)
+
+
+@router.post("/covers/batch")
+async def covers_batch():
+    """批量补封面：书库每本无封面书 + 非阅读无封面有音频的故事。后台跑，免费生图优先。"""
+    targets = await bedtime.cover_targets()
+    if not targets:
+        return {"ok": True, "total": 0}
+    asyncio.create_task(bedtime.run_cover_batch())
+    return {"ok": True, "total": len(targets)}
+
+
+@router.get("/covers/pending")
+async def covers_pending():
+    """还需补封面的数量（前端按钮文案用）。"""
+    return {"pending": len(await bedtime.cover_targets())}
+
+
+@router.get("/covers/status")
+async def covers_status():
+    return bedtime.cover_batch_status()
+
+
+@router.post("/covers/cancel")
+async def covers_cancel():
+    await bedtime.cancel_cover_batch()
+    return {"ok": True}
 
 
 @router.post("/{item_id}/synthesize")
