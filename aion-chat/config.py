@@ -80,6 +80,13 @@ def get_key(provider: str) -> str:
     return SETTINGS.get("siliconflow_key", "")
 
 
+def get_leesai_keys() -> list:
+    """LeesAiHub 生图 key 列表（OpenAI 兼容，gpt-image-2，一个 key 约 30 张额度）。
+    按配置顺序轮换，单 key 额度耗尽后自动换下一个。"""
+    keys = SETTINGS.get("leesai_keys") or []
+    return [k for k in keys if isinstance(k, str) and k.strip()]
+
+
 def get_tts_provider() -> str:
     """返回当前 TTS 服务商：siliconflow（默认）/ senseaudio / minimax / edge / fishaudio / step。
     edge 为微软 Azure 神经语音免费逆向接口，无需 API Key。

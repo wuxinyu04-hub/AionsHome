@@ -808,6 +808,12 @@ async def _generate_and_synthesize_bg(
                 (script_text, title, item_id),
             )
             await db.commit()
+        # 新故事自动配封面：fire-and-forget，不阻塞录音。讲书用书名做主题，和批量书封面风格一致
+        if book:
+            cover_title = str(book.get("book_title") or title).split(" · ")[0]
+            asyncio.create_task(generate_cover(item_id, title_override=cover_title, prefer_free=True))
+        else:
+            asyncio.create_task(generate_cover(item_id, prefer_free=True))
         _progress[item_id] = {"phase": "synthesizing", "pct": 90, "detail": "写好了，正在录音…"}
         await _broadcast(item_id, {"status": "synthesizing", "progress_pct": 90, "progress_detail": "写好了，正在录音…"})
         trigger_synthesize(item_id, script_text, voice)
@@ -1093,26 +1099,31 @@ async def generate_cover(item_id: str, extra_prompt: str = "", title_override: s
     title_override 用书名代替条目全名（书库批量：给整本书的代表集画"书封面"）。
     prefer_free=True 时优先免费生图通道（硅基 Kolors -> CPA 路由），官方 Gemini 兜底。
     """
-    from image_gen import generate_image, generate_image_custom_route, generate_image_siliconflow
+    from image_gen import (generate_image, generate_image_custom_route,
+                           generate_image_siliconflow, generate_image_leesai)
     from config import UPLOADS_DIR
     item = await get_item_raw(item_id)
     if not item:
         return None
     prompt = _cover_prompt(item, extra_prompt, title_override)
     if prefer_free:
-        # 批量补封面：免费优先，Gemini 官方兜底
-        filename = await generate_image_siliconflow(prompt)
+        # 批量补封面：LeesAiHub(gpt-image-2) 最优先 -> Kolors -> CPA，Gemini 官方兜底
+        filename = await generate_image_leesai(prompt)
+        if not filename:
+            filename = await generate_image_siliconflow(prompt)
         if not filename:
             filename = await generate_image_custom_route(prompt)
         if not filename:
             filename = await generate_image(prompt)
     else:
-        # 官方 Gemini（free tier 生图配额为 0 会失败）-> 自定义路由（CPA 走 CLI 授权）-> 硅基 Kolors
+        # 官方 Gemini（free tier 生图配额为 0 会失败）-> 自定义路由（CPA 走 CLI 授权）-> 硅基 Kolors -> LeesAiHub
         filename = await generate_image(prompt)
         if not filename:
             filename = await generate_image_custom_route(prompt)
         if not filename:
             filename = await generate_image_siliconflow(prompt)
+        if not filename:
+            filename = await generate_image_leesai(prompt)
     if not filename:
         return None
     src = UPLOADS_DIR / filename

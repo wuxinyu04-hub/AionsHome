@@ -8,8 +8,12 @@ from pathlib import Path
 
 import httpx
 
-from config import get_key, UPLOADS_DIR, PUBLIC_DIR
+from config import get_key, get_leesai_keys, UPLOADS_DIR, PUBLIC_DIR
 from ai_providers import _make_http_client, _openai_chat_completions_url
+
+# LeesAiHub：OpenAI 兼容生图站，gpt-image-2，一个 key 约 30 张额度
+LEESAI_BASE_URL = "https://leesapihome.ccwu.cc/v1"
+LEESAI_IMAGE_MODEL = "gpt-image-2"
 
 # 参考图位置（用于 SELFIE 模式）
 REFERENCE_IMAGE_PATH = PUBLIC_DIR / "生图锚点.jpg"
@@ -206,3 +210,40 @@ async def generate_image_siliconflow(prompt: str, image_size: str = "1024x1024")
     except Exception as e:
         print(f"[image_gen] Kolors 生图异常: {type(e).__name__}: {e!r}")
         return None
+
+
+async def generate_image_leesai(prompt: str) -> str | None:
+    """LeesAiHub 生图（OpenAI 兼容 /v1/images/generations，gpt-image-2）。
+
+    按 settings 里 leesai_keys 顺序轮换：当前 key 额度耗尽/失败就试下一个。
+    响应为 OpenAI 格式 data[].b64_json（PNG）。失败返回 None。
+    """
+    keys = get_leesai_keys()
+    if not keys:
+        print("[image_gen] 没配 LeesAiHub key，跳过 gpt-image-2 生图")
+        return None
+    for idx, api_key in enumerate(keys):
+        try:
+            async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT, trust_env=True) as client:
+                print(f"[image_gen] LeesAiHub 生图 (key{idx + 1}/{len(keys)})... prompt: {prompt[:80]}")
+                resp = await client.post(
+                    f"{LEESAI_BASE_URL}/images/generations",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={"model": LEESAI_IMAGE_MODEL, "prompt": prompt, "size": "1024x1024", "n": 1},
+                )
+            if resp.status_code != 200:
+                body = resp.text[:200]
+                print(f"[image_gen] LeesAiHub key{idx + 1} 失败 ({resp.status_code}): {body}，试下一个")
+                continue
+            data = resp.json()
+            b64 = (data.get("data") or [{}])[0].get("b64_json") or ""
+            if not b64:
+                print(f"[image_gen] LeesAiHub key{idx + 1} 响应里没有图，试下一个")
+                continue
+            filename = f"img_gen_{int(time.time() * 1000)}.png"
+            (UPLOADS_DIR / filename).write_bytes(base64.b64decode(b64))
+            print(f"[image_gen] LeesAiHub key{idx + 1} 生图成功: {filename}")
+            return filename
+        except Exception as e:
+            print(f"[image_gen] LeesAiHub key{idx + 1} 生图异常: {type(e).__name__}: {e!r}")
+    return None
