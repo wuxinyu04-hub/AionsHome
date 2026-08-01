@@ -11,7 +11,7 @@ import time
 import logging
 from pathlib import Path
 
-from config import DATA_DIR, STEP_SLEEP_INSTRUCTION
+from config import DATA_DIR, get_tts_provider
 from database import get_db
 from tts import split_text_for_tts, _request_tts_audio
 
@@ -44,6 +44,15 @@ def list_noise_files() -> list[str]:
         return []
 
 _SFX_PATTERN = re.compile(r'\[SFX:([^\]]+)\]')
+
+# stepaudio-2.5-tts 的 Inline Context：正文里 （压低声音）这类圆括号是给模型的句内指令，
+# 不会被念出来。其余 provider（fishaudio/edge/…）没这能力，会把括号当正文念，合成前必须剥。
+_INLINE_CUE_PATTERN = re.compile(r'（[^（）]{0,20}）')
+
+
+def _strip_inline_cues(text: str) -> str:
+    """剥掉 stepaudio 内联指令括号。只吃全角短括号，避免误伤正文里的（）补充说明。"""
+    return _INLINE_CUE_PATTERN.sub('', text)
 
 
 async def ensure_library_synced() -> None:
@@ -418,6 +427,8 @@ def _mp3_duration_sec(data: bytes) -> int:
 async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) -> list[bytes]:
     """文本块：切段 -> 段尾补省略号 -> 并发 TTS 合成（provider 由 get_tts_provider() 决定）。
     返回纯语音 mp3 bytes 列表（有序，不含静音——静音在拼装时按真实帧参数插）。"""
+    if get_tts_provider() != "step":
+        text = _strip_inline_cues(text)
     segments = split_text_for_tts(text, min_chars=300, max_chars=500)
     segments = [_tail_ellipsis(s) for s in segments if s.strip()]
     if not segments:
@@ -425,9 +436,9 @@ async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) 
 
     async def _syn(seq: int, seg: str) -> bytes:
         async with sem:
-            # prosody.speed 0.8 = 慢语速（fishaudio 等用）；instruction = 哄睡风格
-            # （provider=step 时切 stepaudio-2.5-tts，靠 instruction 控慢不靠 speed 机械降速）
-            data = await _request_tts_audio(seg, voice, seq=seq, prosody={"speed": 0.8}, instruction=STEP_SLEEP_INSTRUCTION)
+            # 不传 instruction：让 tts.py 构造与主聊天同一条（年上温润·松弛不刻意），
+            # 哄睡的逐句语气交给正文里的 （）内联指令。prosody.speed 0.8 给 fishaudio 等用。
+            data = await _request_tts_audio(seg, voice, seq=seq, prosody={"speed": 0.8})
             if not data:
                 raise RuntimeError(f"TTS segment {seq} failed")
             # 校验返回的是真 MP3：ID3v2 头("ID3")或 MPEG 帧同步(0xFF)。
@@ -573,7 +584,9 @@ def trigger_synthesize(item_id: str, script_text: str, voice: str) -> None:
 _COMMON_RULES = """- 第一人称"我"对第二人称"你"，自称"哥哥"，语气克制温柔，有命令感但不凶（爹系轻哄，年上沉稳温润）
 - 4500-5500 字，适合 20 分钟慢语速朗读
 - 轻声呢喃、气声、慢语速，像在耳边说话；多留停顿（省略号 ... 表轻停，…… 表长停，段落间空行）
-- 不要章节标题、旁白说明、动作括号、分点
+- 语气提示：在句子开头用全角圆括号写一句怎么说，如（放轻）（压低声音）（气声）（慢下来）（轻轻笑）（停一下）。
+  括号是给语音模型的指令，不会被念出来，10 字以内，全篇 15-25 处，只在语气真的变了时才写，不要每句都加
+- 不要章节标题、旁白说明、分点；除语气提示外不要用括号写动作或场景
 - 纯台词与独白，可直接朗读"""
 
 

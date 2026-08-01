@@ -766,7 +766,7 @@ async def _list_fishaudio_voices_impl(key: str) -> dict:
 
 
 # 阶跃星辰 Step TTS 精选男友向中文男声（step-tts-2 / stepaudio-2.5-tts 通用预置音色）。
-# ⭐ 标注 = 哄睡推荐（stepaudio-2.5-tts + STEP_SLEEP_INSTRUCTION 实测效果好）；主聊天音色用户自选。
+# ⭐ 标注 = 哄睡推荐（stepaudio-2.5-tts 实测效果好）；主聊天音色用户自选。
 _STEP_DEFAULT_VOICE = {"uri": "", "customName": "⭐ Step 默认声（不指定 voice_label）"}
 _STEP_CURATED_VOICES = [
     {"uri": "cixingnansheng",     "customName": "⭐ 适合哄睡（低沉磁性·男友枕边·推荐首选）"},

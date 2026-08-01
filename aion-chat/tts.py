@@ -569,7 +569,7 @@ async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None, e
         # Fish Audio：prosody 控制语速音量；emotion 靠文本内表达（S2 自然语言/括号）
         return await _request_fishaudio_tts_audio(text, voice, seq=seq, emotion=emotion, prosody=prosody)
     if provider == "step":
-        # 主聊天（无 instruction）自动构造 daily+emotion instruction；哄睡传 STEP_SLEEP_INSTRUCTION。
+        # 主聊天与哄睡共用同一条 daily+emotion instruction（哄睡不传 instruction，落到这里）。
         # 两者都走 stepaudio-2.5-tts（step-tts-2 + voice_label 已停用，_request_step_tts_audio 保留备用）。
         if not instruction:
             instruction = _build_chat_instruction(emotion)

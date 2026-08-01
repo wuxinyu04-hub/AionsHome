@@ -94,12 +94,6 @@ def get_tts_provider() -> str:
     return (SETTINGS.get("tts_provider", "") or "siliconflow").strip()
 
 
-# 哄睡 TTS instruction（stepaudio-2.5-tts 专属，自然语言描述声音风格）。
-# 哄睡合成传这条 instruction -> provider=step 时自动切 stepaudio-2.5-tts（主聊天不传，走 step-tts-2）。
-# 极简：堆情绪词/场景词会让 stepaudio 过度演绎导致失真，只保留"自然"一个方向。
-STEP_SLEEP_INSTRUCTION = "用自然的声音说话"
-
-
 # ── 阶跃 Realtime 语音引擎配置（临时方案，默认关闭）─────────────────────────
 def get_voice_realtime_config() -> dict:
     """返回阶跃 StepAudio 2.5 Realtime 语音引擎配置。
