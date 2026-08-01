@@ -3,7 +3,7 @@
 """
 
 import re
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
@@ -382,22 +382,48 @@ async def _generate_companion_comment(body: CompanionCommentRequest) -> str:
 
 
 @router.get("/api/music/stream/{song_id}")
-async def music_stream(song_id: int):
-    """代理推流：后端实时获取网易云 CDN URL 并转发音频流给前端"""
+async def music_stream(song_id: int, request: Request):
+    """代理推流：后端实时获取网易云 CDN URL 并转发音频流给前端
+
+    必须把客户端的 Range 透传给 CDN 并回传 206 + Content-Range/Content-Length：
+    否则 <audio> 拿不到时长（duration=Infinity），进度条不动也拖不了。
+    """
     import asyncio
     url = await asyncio.to_thread(get_audio_url, song_id)
     if not url:
         return Response(content='{"error":"无法获取播放地址，可能是VIP歌曲且未登录"}',
                         status_code=404, media_type="application/json")
 
+    up_headers = {
+        "Referer": "https://music.163.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+    rng = request.headers.get("range")
+    if rng:
+        up_headers["Range"] = rng
+
+    client = httpx.AsyncClient(timeout=60, follow_redirects=True)
+    req = client.build_request("GET", url, headers=up_headers)
+    try:
+        resp = await client.send(req, stream=True)
+    except Exception:
+        await client.aclose()
+        return Response(content='{"error":"上游音频源连接失败"}',
+                        status_code=502, media_type="application/json")
+
+    if resp.status_code >= 400:
+        await resp.aclose()
+        await client.aclose()
+        return Response(content='{"error":"上游音频源拒绝请求"}',
+                        status_code=502, media_type="application/json")
+
     async def _stream():
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            async with client.stream("GET", url, headers={
-                "Referer": "https://music.163.com/",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }) as resp:
-                async for chunk in resp.aiter_bytes(chunk_size=65536):
-                    yield chunk
+        try:
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
 
     # 猜测 Content-Type
     ct = "audio/mpeg"
@@ -406,7 +432,10 @@ async def music_stream(song_id: int):
     elif ".flac" in url:
         ct = "audio/flac"
 
-    return StreamingResponse(_stream(), media_type=ct, headers={
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "no-cache",
-    })
+    out = {"Accept-Ranges": "bytes", "Cache-Control": "no-cache"}
+    for h in ("content-length", "content-range"):
+        if resp.headers.get(h):
+            out[h] = resp.headers[h]
+
+    return StreamingResponse(_stream(), status_code=resp.status_code,
+                             media_type=ct, headers=out)
