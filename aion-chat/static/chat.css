@@ -355,6 +355,8 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .music-capsule { display:inline-flex; align-items:center; gap:4px; margin-top:6px; padding:4px 12px; background:linear-gradient(135deg, rgba(220,38,38,0.06), rgba(239,68,68,0.03)); border:1px solid rgba(220,38,38,0.15); border-radius:16px; font-size:12px; color:var(--text2); cursor:pointer; transition:background 0.15s; }
 .music-capsule:hover { background:linear-gradient(135deg, rgba(220,38,38,0.12), rgba(239,68,68,0.08)); color:var(--text); }
 /* ── 持久音乐播放器 mini-bar ── */
+/* z-index 必须高于 #subPageOverlay(9999)：否则打开群聊/子页时播放条被浮层盖住，
+   表现为"音乐在放但播放条没看到"。 */
 .music-bar { position:fixed; top:calc(max(34px, env(safe-area-inset-top, 0px)) + 44px); left:0; right:0; z-index:10000; display:none; align-items:center; gap:6px; padding:0 10px; height:40px; background:var(--surface,#1e1e1e); box-shadow:0 2px 10px rgba(0,0,0,0.3); border-bottom:1px solid var(--border,#333); }
 .music-bar .mb-btn { background:none; border:none; font-size:15px; line-height:1; cursor:pointer; color:var(--text,#eee); padding:0 4px; flex-shrink:0; }
 .music-bar .mb-btn:hover { color:var(--accent,#e53935); }

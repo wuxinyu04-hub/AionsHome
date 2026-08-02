@@ -2917,10 +2917,32 @@ function enqueueMusic(songs, opts) {
 
 function playMusicNow(song) {
   if (!song || song.id == null) return;
+  // 子页（群聊）可能只递一个 { id }：卡片数据还没就绪就 autoplay 了。
+  // 先用已知信息补齐，仍缺名字就异步拉详情回填，别让播放条显示"未知歌曲"。
+  const known = musicSongIndex[song.id];
+  if (known) song = Object.assign({}, known, song);
   musicSongIndex[song.id] = song;
   let idx = musicQueue.findIndex(q => q.id === song.id);
   if (idx < 0) { musicQueue.push(song); idx = musicQueue.length - 1; musicSaveQueue(); musicBroadcast({ type: 'queue_update', queue: musicQueue, index: musicIndex, tabId: musicTabId }); }
   musicPlayIndex(idx, true);
+  if (!song.name) musicBackfillSongMeta(song.id);
+}
+
+// 只有 id 的曲目：拉详情补名字/歌手/封面，回填队列并重绘播放条。
+function musicBackfillSongMeta(songId) {
+  fetch('/api/music/detail/' + songId)
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => {
+      if (!d || d.id == null) return;
+      const i = musicQueue.findIndex(q => q && q.id === songId);
+      if (i < 0) return;
+      musicQueue[i] = Object.assign({}, musicQueue[i], d);
+      musicSongIndex[songId] = musicQueue[i];
+      musicSaveQueue();
+      musicRenderBar();
+      musicBroadcast({ type: 'queue_update', queue: musicQueue, index: musicIndex, tabId: musicTabId });
+    })
+    .catch(() => {});
 }
 
 function musicPlayIndex(idx, autoplay) {
