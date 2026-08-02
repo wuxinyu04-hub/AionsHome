@@ -915,6 +915,27 @@ const remoteVoice = {
     voiceMicSource = 'remote';
   }
   $('voiceMicSource').value = voiceMicSource;
+
+  // 本机模式下开关状态存在后端内存里，后端重启会丢；按 /api/voice/status 对齐，
+  // 否则界面显示"开"而后端没在听（要手动关一次再开）。
+  // 唤醒词已落盘 settings.json，以后端返回值为准回填输入框+localStorage，
+  // 避免这台浏览器的旧 localStorage 与后端实际监听的词不一致。
+  if (!isRemoteVoice()) {
+    fetch('/api/voice/status').then(r => r.json()).then(s => {
+      const serverWw = (s.wake_word || '').trim();
+      if (serverWw && serverWw !== ww) {
+        $('voiceWakeWord').value = serverWw;
+        localStorage.setItem('aion_voice_wakeword', serverWw);
+      }
+      updateVoiceUI({
+        enabled: !!s.enabled,
+        status: s.in_call ? 'wakeup' : (s.enabled ? 'waiting' : 'off'),
+        wake_word: serverWw || ww,
+        realtime: true,
+      });
+      $('voiceToggle').checked = !!s.enabled;
+    }).catch(() => {});
+  }
 })();
 
 // ── 视频通话开关 ──
