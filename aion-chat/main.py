@@ -126,8 +126,11 @@ async def lifespan(app: FastAPI):
     try:
         import bedtime
         await bedtime.reclaim_orphaned()
+        import sleep_upload
+        from config import SETTINGS as _S
+        sleep_upload.setup_sleep_upload(_S.get("netease_music_u", ""))
     except Exception as e:
-        print(f"[Sleep] ❌ 孤儿状态清理异常: {e}")
+        print(f"[Sleep] ❌ 启动异常: {e}")
     loop = asyncio.get_running_loop()
     # 各子系统启动互相独立：任何一个失败（摄像头被占、HA 离线、配置缺字段…）
     # 都不应拖死整个应用，聊天主链路必须先活着
