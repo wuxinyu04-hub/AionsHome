@@ -613,10 +613,13 @@ function crFindSong(songId) {
 }
 function crPlayMusicOnline(songId) {
   let song = crFindSong(songId);
-  // 优先委托给父页（chat）的队列播放器：共享队列，避免双 audio 叠播
+  // 一律委托给父页（chat）的队列播放器：共享队列，避免双 audio 叠播。
+  // 卡片数据没就绪（autoplay 抢跑）也要委托——只带 id 交出去，别名/歌手让父页自己补，
+  // 否则会掉到下面的本地兜底播放条，在群聊顶部糊一条 var(--surface) 的白条。
   try {
-    if (window.parent !== window && typeof window.parent.playMusicNow === 'function' && song) {
-      window.parent.playMusicNow(song); return;
+    if (window.parent !== window && typeof window.parent.playMusicNow === 'function') {
+      window.parent.playMusicNow(song || { id: songId });
+      return;
     }
   } catch (e) {}
   let wrap = document.getElementById('crGlobalMusicWrap');

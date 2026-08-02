@@ -225,6 +225,45 @@ async def generate(body: GenerateIn):
     return {"id": item_id, "status": "generating", "title": title}
 
 
+class RegenerateIn(BaseModel):
+    voice: str = ""
+
+
+@router.post("/{item_id}/regenerate")
+async def regenerate(item_id: str, body: RegenerateIn):
+    """剧本为空的失败条目：复用原条目重写剧本再合成（保留 id/标题/分类/音色/book_ref）。
+
+    /synthesize 对空剧本只能 400，故事库里的「点击重试」以前是死路——这里补上。
+    不新建条目：避免重试一次多一条重复故事。
+    """
+    item = await bedtime.get_item_raw(item_id)
+    if not item:
+        raise HTTPException(404, "条目不存在")
+    if item.get("status") in ("synthesizing", "generating"):
+        return {"ok": True, "status": item["status"]}
+
+    voice = (body.voice or item.get("voice") or "").strip() or bedtime.default_sleep_voice()
+    if not voice:
+        raise HTTPException(400, "未选择音色，请在播放器里选一个")
+    bedtime.remember_sleep_voice(voice)
+    _require_tts_key()
+
+    title = item.get("title") or "今晚的故事"
+    category = item.get("category") or "boyfriend"
+    # 讲书条目：把原来的书和章节捞回来当底本，否则退化成按标题写
+    book = None
+    pub = bedtime.to_public(item)
+    if pub.get("book_id"):
+        book = await bedtime.load_book_chapter(pub["book_id"], pub.get("book_chapter", -1))
+    # 原始梗概没有留存，用标题当主题：至少不会完全丢上下文
+    prompt = "" if book else title.split(" · ")[-1].rstrip("…")
+
+    if not await bedtime.claim_synthesizing(item_id, voice):
+        return {"ok": True, "status": "generating"}
+    bedtime.trigger_generate(item_id, category, prompt, voice, title, book)
+    return {"ok": True, "status": "generating", "title": title}
+
+
 class TitleIn(BaseModel):
     title: str
 

@@ -79,8 +79,11 @@ _template_extracted.html
 
 # ── Agent 工作目录（settings.local.json 与 memory 里含 api_key/step_key，绝不入库） ──
 .claude/
-.workbuddy/memory/
+.workbuddy/
 
 # ── 设计稿草图与素材大二进制（十几 MB，本地留着参考就行） ──
 .tmp_figma/
 resources/background_clothing_conf/
+
+# ── 网易云歌单的专辑封面素材（13.5MB 书封 PNG，仅上传用，不入库） ──
+专辑封面/

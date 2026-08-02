@@ -915,6 +915,27 @@ const remoteVoice = {
     voiceMicSource = 'remote';
   }
   $('voiceMicSource').value = voiceMicSource;
+
+  // 本机模式下开关状态存在后端内存里，后端重启会丢；按 /api/voice/status 对齐，
+  // 否则界面显示"开"而后端没在听（要手动关一次再开）。
+  // 唤醒词已落盘 settings.json，以后端返回值为准回填输入框+localStorage，
+  // 避免这台浏览器的旧 localStorage 与后端实际监听的词不一致。
+  if (!isRemoteVoice()) {
+    fetch('/api/voice/status').then(r => r.json()).then(s => {
+      const serverWw = (s.wake_word || '').trim();
+      if (serverWw && serverWw !== ww) {
+        $('voiceWakeWord').value = serverWw;
+        localStorage.setItem('aion_voice_wakeword', serverWw);
+      }
+      updateVoiceUI({
+        enabled: !!s.enabled,
+        status: s.in_call ? 'wakeup' : (s.enabled ? 'waiting' : 'off'),
+        wake_word: serverWw || ww,
+        realtime: true,
+      });
+      $('voiceToggle').checked = !!s.enabled;
+    }).catch(() => {});
+  }
 })();
 
 // ── 视频通话开关 ──
@@ -2917,10 +2938,32 @@ function enqueueMusic(songs, opts) {
 
 function playMusicNow(song) {
   if (!song || song.id == null) return;
+  // 子页（群聊）可能只递一个 { id }：卡片数据还没就绪就 autoplay 了。
+  // 先用已知信息补齐，仍缺名字就异步拉详情回填，别让播放条显示"未知歌曲"。
+  const known = musicSongIndex[song.id];
+  if (known) song = Object.assign({}, known, song);
   musicSongIndex[song.id] = song;
   let idx = musicQueue.findIndex(q => q.id === song.id);
   if (idx < 0) { musicQueue.push(song); idx = musicQueue.length - 1; musicSaveQueue(); musicBroadcast({ type: 'queue_update', queue: musicQueue, index: musicIndex, tabId: musicTabId }); }
   musicPlayIndex(idx, true);
+  if (!song.name) musicBackfillSongMeta(song.id);
+}
+
+// 只有 id 的曲目：拉详情补名字/歌手/封面，回填队列并重绘播放条。
+function musicBackfillSongMeta(songId) {
+  fetch('/api/music/detail/' + songId)
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => {
+      if (!d || d.id == null) return;
+      const i = musicQueue.findIndex(q => q && q.id === songId);
+      if (i < 0) return;
+      musicQueue[i] = Object.assign({}, musicQueue[i], d);
+      musicSongIndex[songId] = musicQueue[i];
+      musicSaveQueue();
+      musicRenderBar();
+      musicBroadcast({ type: 'queue_update', queue: musicQueue, index: musicIndex, tabId: musicTabId });
+    })
+    .catch(() => {});
 }
 
 function musicPlayIndex(idx, autoplay) {
@@ -6567,7 +6610,7 @@ function syncSubPageMode(url) {
     try { return new URL(url, location.origin).pathname; } catch(e) { return url || ''; }
   })();
   const isHome = path === '/';
-  const isImmersive = path === '/wishes';
+  const isImmersive = path === '/wishes' || path === '/sleep';
   const ov = $('subPageOverlay');
   ov.classList.toggle('home-subpage', isHome);
   ov.classList.toggle('immersive-subpage', isImmersive);

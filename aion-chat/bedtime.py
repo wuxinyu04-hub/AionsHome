@@ -11,7 +11,7 @@ import time
 import logging
 from pathlib import Path
 
-from config import DATA_DIR, STEP_SLEEP_INSTRUCTION
+from config import DATA_DIR, get_tts_provider
 from database import get_db
 from tts import split_text_for_tts, _request_tts_audio
 
@@ -44,6 +44,15 @@ def list_noise_files() -> list[str]:
         return []
 
 _SFX_PATTERN = re.compile(r'\[SFX:([^\]]+)\]')
+
+# stepaudio-2.5-tts 的 Inline Context：正文里 （压低声音）这类圆括号是给模型的句内指令，
+# 不会被念出来。其余 provider（fishaudio/edge/…）没这能力，会把括号当正文念，合成前必须剥。
+_INLINE_CUE_PATTERN = re.compile(r'（[^（）]{0,20}）')
+
+
+def _strip_inline_cues(text: str) -> str:
+    """剥掉 stepaudio 内联指令括号。只吃全角短括号，避免误伤正文里的（）补充说明。"""
+    return _INLINE_CUE_PATTERN.sub('', text)
 
 
 async def ensure_library_synced() -> None:
@@ -100,10 +109,13 @@ def _public_fields(d: dict) -> dict:
         "voice": d.get("voice", ""),
         "progress_sec": d.get("progress_sec", 0),
         "has_audio": bool(d.get("audio_path")),
+        # 前端判断失败条目能不能直接重录：没剧本的只能重新生成（走 /regenerate）
+        "has_script": bool((d.get("script_text") or "").strip()),
         "tags": d.get("tags") or [],
         "summary": d.get("summary") or "",
         "created_at": d.get("created_at", 0),
         "play_count": d.get("play_count", 0) or 0,
+        "fail_reason": d.get("fail_reason", "") or "",
         "has_cover": bool(d.get("cover_path")),
         **_book_ref_fields(d.get("book_ref") or ""),
     }
@@ -415,34 +427,44 @@ def _mp3_duration_sec(data: bytes) -> int:
     return int(t)
 
 
-async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) -> list[bytes]:
+async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore) -> list[bytes | None]:
     """文本块：切段 -> 段尾补省略号 -> 并发 TTS 合成（provider 由 get_tts_provider() 决定）。
-    返回纯语音 mp3 bytes 列表（有序，不含静音——静音在拼装时按真实帧参数插）。"""
+
+    单段失败先退避重试 3 次；仍失败则该段返回 None（调用方用静音占位），
+    不再抛异常拖死整篇——一段超时/限流不该让 5000 字的剧本整篇作废。
+    """
+    if get_tts_provider() != "step":
+        text = _strip_inline_cues(text)
     segments = split_text_for_tts(text, min_chars=300, max_chars=500)
     segments = [_tail_ellipsis(s) for s in segments if s.strip()]
     if not segments:
         return []
 
-    async def _syn(seq: int, seg: str) -> bytes:
-        async with sem:
-            # prosody.speed 0.8 = 慢语速（fishaudio 等用）；instruction = 哄睡风格
-            # （provider=step 时切 stepaudio-2.5-tts，靠 instruction 控慢不靠 speed 机械降速）
-            data = await _request_tts_audio(seg, voice, seq=seq, prosody={"speed": 0.8}, instruction=STEP_SLEEP_INSTRUCTION)
-            if not data:
-                raise RuntimeError(f"TTS segment {seq} failed")
-            # 校验返回的是真 MP3：ID3v2 头("ID3")或 MPEG 帧同步(0xFF)。
-            # provider 偶发把错误 JSON/HTML 当 200 content 返回，不校验会静默拼进流卡死解码器。
-            if not (data[:3] == b"ID3" or data[:1] == b"\xff"):
-                raise RuntimeError(f"TTS segment {seq} 返回非 MP3（前 16 字节: {data[:16]!r}）")
-            return data
+    async def _syn(seq: int, seg: str) -> bytes | None:
+        last_error = None
+        for attempt in range(3):
+            try:
+                async with sem:
+                    # 不传 instruction：让 tts.py 构造与主聊天同一条（年上温润·松弛不刻意），
+                    # 哄睡的逐句语气交给正文里的 （）内联指令。prosody.speed 0.8 给 fishaudio 等用。
+                    data = await _request_tts_audio(seg, voice, seq=seq, prosody={"speed": 0.8})
+                if not data:
+                    raise RuntimeError("provider 返回空")
+                # 校验返回的是真 MP3：ID3v2 头("ID3")或 MPEG 帧同步(0xFF)。
+                # provider 偶发把错误 JSON/HTML 当 200 content 返回，不校验会静默拼进流卡死解码器。
+                if not (data[:3] == b"ID3" or data[:1] == b"\xff"):
+                    raise RuntimeError(f"返回非 MP3（前 16 字节: {data[:16]!r}）")
+                if attempt:
+                    log.info("sleep TTS 段 %d 第 %d 次重试成功", seq, attempt + 1)
+                return data
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)  # 1s / 2s 退避
+        log.warning("sleep TTS 段 %d 重试 3 次仍失败，用静音占位：%s", seq, last_error)
+        return None
 
-    results = await asyncio.gather(*[_syn(i, s) for i, s in enumerate(segments)], return_exceptions=True)
-    pieces: list[bytes] = []
-    for r in results:
-        if isinstance(r, Exception):
-            raise r
-        pieces.append(r)
-    return pieces
+    return await asyncio.gather(*[_syn(i, s) for i, s in enumerate(segments)])
 
 
 def _sfx_bytes(name: str, ref: dict | None) -> bytes:
@@ -466,13 +488,14 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
     """后台合成：按 [SFX:名] 切块 -> 文本块切段补省略号 -> 慢语速 prosody
     -> 从真实语音抄帧参数造静音/校验 SFX -> 字节拼接。"""
     try:
-        await _set_status(item_id, "synthesizing", voice=voice)
+        await _set_status(item_id, "synthesizing", voice=voice, fail_reason="")
         sem = asyncio.Semaphore(3)
         parts = _parse_sfx_parts(script_text)
         # 统计文本块总数（用于进度条）
         total_blocks = sum(1 for kind, val in parts if kind == "text" and val.strip())
-        # 先合成所有文本块（块内并发），再统一拼装
-        text_pieces: dict[int, list[bytes]] = {}
+        # 先合成所有文本块（块内并发），再统一拼装。
+        # 段级重试后仍失败的段是 None，拼装时用静音占位（见下）
+        text_pieces: dict[int, list[bytes | None]] = {}
         done = 0
         for idx, (kind, val) in enumerate(parts):
             if kind == "text" and val.strip():
@@ -488,17 +511,26 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
         # 不剥的话 ID3 标签散落在拼接流中间，浏览器解码器直接卡死。
         ref = None
         for idx in sorted(text_pieces):
-            if text_pieces[idx]:
-                ref = _mp3_frame_params(_strip_id3(text_pieces[idx][0]))
+            for p in text_pieces[idx]:
+                if p:
+                    ref = _mp3_frame_params(_strip_id3(p))
+                    break
+            if ref:
                 break
+        # 全篇没有一段成功：这时候拼出来只有静音，不如直接判失败让用户重试
+        total_segs = sum(len(v) for v in text_pieces.values())
+        failed_segs = sum(1 for v in text_pieces.values() for p in v if p is None)
+        if total_segs and failed_segs == total_segs:
+            raise RuntimeError(f"全部 {total_segs} 段都合成失败（TTS 不可用或音色无效）")
         sil = _silence_mp3(900, ref)
+        gap = _silence_mp3(1500, ref)  # 失败段占位：1.5s 静音，听起来像一次长停顿
         all_pieces: list[bytes] = []
         for idx, (kind, val) in enumerate(parts):
             if kind == "sfx":
                 all_pieces.append(_sfx_bytes(val, ref))
             else:
                 for p in text_pieces.get(idx, []):
-                    all_pieces.append(_strip_id3(p))
+                    all_pieces.append(_strip_id3(p) if p else gap)
                     all_pieces.append(sil)  # 段间 0.9s 停顿（Fish 不认省略号；加长强化哄睡慢节奏）
         if not any(p for p in all_pieces):
             raise RuntimeError("合成结果为空")
@@ -509,14 +541,27 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
                 out.write(piece)
         audio_rel = f"sleep_tts_cache/{item_id}.mp3"
         duration = _mp3_duration_sec(output_path.read_bytes())
-        await _set_status(item_id, "ready", audio_path=audio_rel, duration_sec=duration)
+        # 部分段落失败也算 ready（能听），但把缺口记在 fail_reason 里让前端标出来
+        note = f"有 {failed_segs}/{total_segs} 段没录上，那里是静音，可以重新合成" if failed_segs else ""
+        await _set_status(item_id, "ready", audio_path=audio_rel, duration_sec=duration, fail_reason=note)
         _progress.pop(item_id, None)
         await _broadcast(item_id, {"status": "ready", "audio_path": audio_rel})
-        log.info("sleep 合成完成 id=%s pieces=%d", item_id, len(all_pieces))
+        log.info("sleep 合成完成 id=%s pieces=%d 缺段=%d/%d", item_id, len(all_pieces), failed_segs, total_segs)
+
+        # 解耦：合成完成即丢给后台上传网易云云盘，成不成都不影响「已合成」状态
+        try:
+            # 读条目补 category/title（get_item_raw 已设 row_factory，别用裸 SQL）
+            row = await get_item_raw(item_id) or {}
+            import sleep_upload
+            asyncio.get_running_loop().run_in_executor(
+                None, sleep_upload.upload_finished_item, item_id,
+                row.get("title", ""), row.get("category", ""))
+        except Exception as e:
+            log.debug("sleep 触发上传网易云失败（不影响合成）: %s", e)
     except Exception as e:
         log.exception("sleep 合成失败 id=%s", item_id)
         _progress.pop(item_id, None)
-        await _set_status(item_id, "failed")
+        await _set_status(item_id, "failed", fail_reason=str(e)[:300])
         await _broadcast(item_id, {"status": "failed", "error": str(e)[:200]})
 
 
@@ -573,7 +618,9 @@ def trigger_synthesize(item_id: str, script_text: str, voice: str) -> None:
 _COMMON_RULES = """- 第一人称"我"对第二人称"你"，自称"哥哥"，语气克制温柔，有命令感但不凶（爹系轻哄，年上沉稳温润）
 - 4500-5500 字，适合 20 分钟慢语速朗读
 - 轻声呢喃、气声、慢语速，像在耳边说话；多留停顿（省略号 ... 表轻停，…… 表长停，段落间空行）
-- 不要章节标题、旁白说明、动作括号、分点
+- 语气提示：在句子开头用全角圆括号写一句怎么说，如（放轻）（压低声音）（气声）（慢下来）（轻轻笑）（停一下）。
+  括号是给语音模型的指令，不会被念出来，10 字以内，全篇 15-25 处，只在语气真的变了时才写，不要每句都加
+- 不要章节标题、旁白说明、分点；除语气提示外不要用括号写动作或场景
 - 纯台词与独白，可直接朗读"""
 
 
@@ -786,7 +833,7 @@ async def _generate_and_synthesize_bg(
 ) -> None:
     """后台：AI 生成剧本 -> 存 -> 触发 TTS 合成。"""
     try:
-        await _set_status(item_id, "generating", voice=voice)
+        await _set_status(item_id, "generating", voice=voice, fail_reason="")
         _progress[item_id] = {"phase": "generating", "pct": 0, "detail": "AI 正在写剧本…"}
         await _broadcast(item_id, {"status": "generating", "progress_pct": 0, "progress_detail": "AI 正在写剧本…"})
 
@@ -798,7 +845,7 @@ async def _generate_and_synthesize_bg(
         if not script_text or len(script_text) < 100:
             err = (script_text or "").strip()[:150] or "模型没有返回内容"
             log.warning("sleep 生成失败 id=%s: %s", item_id, err)
-            await _set_status(item_id, "failed")
+            await _set_status(item_id, "failed", fail_reason=err)
             _progress.pop(item_id, None)
             await _broadcast(item_id, {"status": "failed", "error": err})
             return
@@ -820,7 +867,7 @@ async def _generate_and_synthesize_bg(
     except Exception as e:
         log.exception("sleep 生成剧本失败 id=%s", item_id)
         _progress.pop(item_id, None)
-        await _set_status(item_id, "failed")
+        await _set_status(item_id, "failed", fail_reason=str(e)[:300])
         await _broadcast(item_id, {"status": "failed", "error": str(e)[:200]})
 
 

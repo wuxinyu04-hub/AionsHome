@@ -94,12 +94,6 @@ def get_tts_provider() -> str:
     return (SETTINGS.get("tts_provider", "") or "siliconflow").strip()
 
 
-# 哄睡 TTS instruction（stepaudio-2.5-tts 专属，自然语言描述声音风格）。
-# 哄睡合成传这条 instruction -> provider=step 时自动切 stepaudio-2.5-tts（主聊天不传，走 step-tts-2）。
-# 极简：堆情绪词/场景词会让 stepaudio 过度演绎导致失真，只保留"自然"一个方向。
-STEP_SLEEP_INSTRUCTION = "用自然的声音说话"
-
-
 # ── 阶跃 Realtime 语音引擎配置（临时方案，默认关闭）─────────────────────────
 def get_voice_realtime_config() -> dict:
     """返回阶跃 StepAudio 2.5 Realtime 语音引擎配置。
@@ -116,9 +110,24 @@ def get_voice_realtime_config() -> dict:
         # 官方 realtime 音色列表只列 wenrounansheng/qingchunshaonv/... ；
         # cixingnansheng（哄睡枕边音色）session.update 会被接受但可能静默回退，留作可试配置项。
         "voice": (s.get("voice_realtime_voice", "") or "wenrounansheng").strip(),
-        "ws_url": ws_url or f"wss://api.stepfun.com/v1/realtime?model={model}",
+        # step_plan 前缀 = 订阅套餐计费；/v1 标准线扣按量余额（用户明确要求全部走 step_plan）
+        "ws_url": ws_url or f"wss://api.stepfun.com/step_plan/v1/realtime?model={model}",
         "sample_rate": int(s.get("voice_realtime_sample_rate", 24000) or 24000),
     }
+
+
+def get_voice_wake_word() -> str:
+    """返回语音唤醒词（落盘在 settings.json，后端重启后不丢）。"""
+    return (SETTINGS.get("voice_wake_word", "") or "老公").strip() or "老公"
+
+
+def save_voice_wake_word(word: str) -> str:
+    """把唤醒词写进 settings.json 并同步内存 SETTINGS，返回清洗后的值。"""
+    cleaned = (word or "").strip() or "老公"
+    if SETTINGS.get("voice_wake_word") != cleaned:
+        SETTINGS["voice_wake_word"] = cleaned
+        save_settings(SETTINGS)
+    return cleaned
 
 
 def get_sentinel_config() -> dict:

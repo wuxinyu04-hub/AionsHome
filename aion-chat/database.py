@@ -855,6 +855,7 @@ async def init_db():
         for col, defn in [
             ("play_count", "INTEGER DEFAULT 0"),
             ("cover_path", "TEXT DEFAULT ''"),
+            ("fail_reason", "TEXT DEFAULT ''"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE sleep_items ADD COLUMN {col} {defn}")

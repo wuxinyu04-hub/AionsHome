@@ -3,8 +3,18 @@ Aion Chat — 入口文件
 FastAPI app 创建、lifespan、静态文件挂载、路由注册
 """
 
-import asyncio, json, logging, re
+import asyncio, json, logging, re, sys
 from contextlib import asynccontextmanager
+
+# 计划任务把 stdout 重定向到日志文件时，Windows 默认用 GBK 编码，
+# print 里的 emoji（❌ 等）会抛 UnicodeEncodeError。若它发生在 except 块里，
+# 会逃出错误处理直接掀翻 lifespan，整个应用启动失败退出（8/2 10:04 的 code 3）。
+# 强制 UTF-8 + errors="replace"：编码问题最多显示成 ?，绝不再终止进程。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -126,8 +136,19 @@ async def lifespan(app: FastAPI):
     try:
         import bedtime
         await bedtime.reclaim_orphaned()
+        import sleep_upload
+        from config import SETTINGS as _S
+        sleep_upload.setup_sleep_upload(_S.get("netease_music_u", ""))
     except Exception as e:
-        print(f"[Sleep] ❌ 孤儿状态清理异常: {e}")
+        # 这里的 print 曾因 emoji + GBK 抛 UnicodeEncodeError 逃出 except，
+        # 掀翻整个 lifespan（见文件顶部 reconfigure 注释）。双保险：不带 emoji，
+        # 且再套一层 try——错误处理本身绝不能成为致命错误。
+        try:
+            import traceback
+            print(f"[Sleep] 启动异常: {type(e).__name__}: {e}")
+            traceback.print_exc()
+        except Exception:
+            pass
     loop = asyncio.get_running_loop()
     # 各子系统启动互相独立：任何一个失败（摄像头被占、HA 离线、配置缺字段…）
     # 都不应拖死整个应用，聊天主链路必须先活着

@@ -65,8 +65,9 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 /* 故事名多是长句，单行截断基本看不出是哪篇，放到两行 */
 .resume .r-title{font-family:var(--serif);font-size:18px;line-height:1.4;margin-top:6px;font-weight:500;padding-right:56px;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* 生成提示冒出来时不要压缩「继续听」卡片 */
+.resume{flex:0 0 auto}
 .resume .r-meta{font-size:11px;color:var(--muted);margin-top:5px;display:flex;gap:8px}
-.resume .r-meta .dl{color:var(--green)}
 .resume .r-play{position:absolute;right:18px;top:50%;transform:translateY(-50%);
   width:46px;height:46px;border-radius:50%;background:var(--amber);color:#171106;
   display:grid;place-items:center;font-size:14px;box-shadow:0 6px 20px rgba(224,180,120,.35)}
@@ -109,7 +110,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .mood:active{border-color:rgba(224,180,120,.45);color:var(--amber)}
 
 /* 生成中内联提示（不再全屏挡路） */
-.gen-note{margin-top:18px;padding:15px 18px;border-radius:16px;background:var(--bg-2);border:1px solid var(--line);display:none;flex-direction:column;gap:10px}
+.gen-note{margin-top:18px;padding:15px 18px;border-radius:16px;background:var(--bg-2);border:1px solid var(--line);display:none;flex-direction:column;gap:10px;flex:0 0 auto}
 .gen-note.on{display:flex}
 .gen-note .gn-row{display:flex;align-items:center;gap:13px}
 .gen-note .pulse{width:10px;height:10px;border-radius:50%;background:var(--amber);animation:pulse 1.8s ease-in-out infinite;flex:0 0 auto}
@@ -171,7 +172,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .p-extra{display:flex;justify-content:center;align-items:center;gap:18px;margin-top:14px;font-size:12px;color:var(--fg-soft)}
 .p-extra span{cursor:pointer;display:flex;align-items:center;gap:5px;padding:9px 12px;border-radius:12px}
 .p-extra span:active{background:rgba(239,233,219,.07)}
-.p-extra .dl-done{color:var(--green)}
 .p-extra .wn-on{color:var(--amber)}
 .wn-vol{display:none;align-items:center;gap:10px;max-width:220px;margin:12px auto 0}
 .wn-vol.show{display:flex}
@@ -185,7 +185,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .l-back{background:none;border:none;color:var(--muted);font-size:17px;cursor:pointer;padding:2px 6px 2px 0}
 .l-h{font-family:var(--serif);font-size:24px;font-weight:500;margin-top:14px}
 .l-sub{font-size:12px;color:var(--muted);margin-top:6px}
-.l-sub b{color:var(--green);font-weight:400}
+.l-sub b{color:var(--amber);font-weight:400}
 .l-tabs{display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:14px 26px 4px;flex:0 0 auto}
 .l-tabs::-webkit-scrollbar{display:none}
 .lt{flex:0 0 auto;padding:7px 16px;border-radius:18px;border:1px solid var(--line);background:none;font-size:12px;color:var(--muted);cursor:pointer;font-family:var(--sans);transition:all .25s}
@@ -220,7 +220,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .lc .lmore{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:30px;height:30px;border:none;background:none;color:var(--muted);font-size:15px;cursor:pointer;line-height:1}
 .lc .t{font-family:var(--serif);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lc .d{font-size:10px;color:var(--muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap}
-.lc .d .dl{color:var(--green)}
 .preload{margin-top:28px;width:100%;padding:14px;border-radius:14px;background:none;border:1px solid rgba(224,180,120,.28);color:var(--amber);font-size:13px;cursor:pointer;font-family:var(--sans)}
 .preload small{display:block;font-size:10px;color:var(--muted);margin-top:4px}
 .l-empty{grid-column:1/-1;text-align:center;color:var(--muted);padding:36px 0;font-size:12px}
@@ -274,6 +273,11 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .q-ops button{width:30px;height:30px;border-radius:9px;border:1px solid var(--line);background:none;color:var(--muted);font-size:12px;cursor:pointer}
 .q-drag{flex:0 0 auto;width:30px;height:30px;display:grid;place-items:center;color:var(--muted);font-size:15px;cursor:grab;touch-action:none;user-select:none}
 .q-list .vo.dragging{opacity:.55;background:var(--amber-dim);border-radius:12px}
+/* 白噪音抽屉：素材行 + 空目录提示 + 关闭行 */
+.wn-ic{flex:0 0 auto;width:30px;height:30px;border-radius:9px;background:var(--amber-dim);color:var(--amber);
+  display:grid;place-items:center;font-size:13px}
+.wn-empty{font-size:12px;color:var(--muted);line-height:1.7;padding:18px 2px}
+.wn-off .wn-ic{background:rgba(239,233,219,.07);color:var(--muted)}
 
 .toast{position:fixed;top:max(20px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);background:var(--bg-2);color:var(--fg);
   padding:10px 20px;border-radius:12px;font-size:13px;z-index:100;opacity:0;transition:opacity .3s;pointer-events:none;border:1px solid var(--line);max-width:86%;text-align:center}
@@ -303,6 +307,9 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .app.has-mini #library,
 .app.has-mini #album{padding-bottom:74px}
 .app.has-mini #home{padding-bottom:82px}
+
+/* 播放/暂停符号在 Android 上被 Noto Color Emoji 渲成彩色——强制单色 */
+#pPlay, #miniPause, .r-play, .al-play, .pc{font-variant-emoji:text;font-family:system-ui,Segoe UI Emoji,Segoe UI Symbol,sans-serif}
 </style>
 </head>
 <body>
@@ -407,7 +414,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
       <div class="resume" id="resumeCard">
         <div class="r-label">继 续 听</div>
         <div class="r-title" id="resumeTitle"></div>
-        <div class="r-meta"><span id="resumeMeta"></span><span class="dl" id="resumeDl"></span></div>
+        <div class="r-meta"><span id="resumeMeta"></span></div>
         <div class="r-play">▶</div>
         <div class="r-bar" id="resumeBar"></div>
       </div>
@@ -488,7 +495,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
         </div>
         <p class="p-timer-hint" id="timerHint"></p>
         <div class="p-extra">
-          <span id="pDlBtn">⇣ 离线保存</span>
           <span id="wnBtn">♪ 白噪音</span>
         </div>
         <div class="wn-vol" id="wnVol">
@@ -520,7 +526,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
       </div>
       <div class="l-grid" id="libGrid"></div>
       <button class="preload" id="coverBtn" style="margin-top:12px">🎨 补封面<small>书库每本 + 有音频的故事 · 免费模型画</small></button>
-      <button class="preload" id="preloadBtn">⇣ 睡前预载最近 3 篇<small>下载到手机 · 关电脑断网都能播</small></button>
     </div>
   </div>
 
@@ -585,11 +590,19 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
     </div>
   </div>
 
+  <div class="sheet" id="wnSheet">
+    <div class="mask" data-close="wnSheet"></div>
+    <div class="panel">
+      <div class="s-h">白噪音</div>
+      <div class="s-sub">素材放在 data/sleep_noise/ 目录，重进页面就出现</div>
+      <div class="s-list q-list" id="wnList"></div>
+    </div>
+  </div>
+
 </div>
 
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
-<script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
-<script src="/static/sleep.js?v=cover-20260731"></script>
+<script src="/static/sleep.js?v=nxoff-20260801"></script>
 </body>
 </html>
