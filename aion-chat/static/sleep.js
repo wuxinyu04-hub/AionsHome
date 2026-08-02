@@ -1,11 +1,10 @@
 // 晚安，小语 · 方案 B「插画房间」重构
-// 三屏：入口（继续听+一句话生成）/ 播放（全屏场景+逐句字幕+定时渐弱+白噪音）/ 故事库（分组+离线标记+预载）
-// 离线策略：Cache API 显式下载音频+剧本；sw.js 音频 cache-first。缓存名须与 sw.js 一致。
+// 三屏：入口（继续听+一句话生成）/ 播放（全屏场景+逐句字幕+定时渐弱+白噪音）/ 故事库（分组+听过进度）
+// 合成完的 mp3 自动上传网易云云盘，关机后用网易云客户端听（不再走 Cache API 离线）。
 (function () {
   const $ = (id) => document.getElementById(id);
   const appEl = document.querySelector('.app');
   const audio = $('audio');
-  const CACHE = 'aion-sleep-v4'; // 与 sw.js SLEEP_CACHE 保持一致
 
   const CAT_NAMES = { reading: '他讲的书', boyfriend: '他的晚安', meditation: '助眠冥想', fairytale: '睡前童话', asmr: '白噪与耳语' };
   const CAT_ORDER = ['reading', 'boyfriend', 'meditation', 'fairytale', 'asmr'];
@@ -293,10 +292,7 @@
       const r = await fetch('/api/sleep/library');
       const d = await r.json();
       items = d.items || [];
-      localStorage.setItem('sleep_lib_snapshot', JSON.stringify(items));
-    } catch {
-      try { items = JSON.parse(localStorage.getItem('sleep_lib_snapshot') || 'null'); } catch { }
-    }
+    } catch { }
     if (!items) { $('libGrid').innerHTML = '<div class="l-empty">加载失败，检查网络后重试</div>'; return; }
     state.items = items;
     // 恢复上次的播放列表（手动排过的顺序）
@@ -310,8 +306,7 @@
     renderLibrary();
     renderResume();
     updateCounts();
-    decorateDownloads();
-    renderModeChips();       // 冥想 chips 依赖 items
+    renderModeChips();     // 冥想 chips 依赖 items
     if (bookState.books) renderShelf(); // 讲书"上次听到"标记依赖 items
     refreshCoverPending();   // 补封面按钮文案跟着库变
   }
@@ -320,7 +315,8 @@
     if (it.has_audio) return fmtTime(it.duration_sec) === '0:00' ? '已合成' : fmtTime(it.duration_sec);
     if (it.status === 'generating') return '在写了…';
     if (it.status === 'synthesizing') return '在录音…';
-    if (it.status === 'failed') return '出错了，点击重试';
+    // 没剧本的失败条目只能重写（点重录会被后端 400 挡回来）
+    if (it.status === 'failed') return it.has_script ? '出错了，点击重录' : '出错了，点击重新生成';
     return '未合成 · 点击生成语音';
   }
 
@@ -341,9 +337,25 @@
     bits.push(it.has_audio && it.duration_sec ? fmtTime(it.duration_sec) : statusLine(it));
     return bits.join(' · ');
   }
-  // 网格卡片元信息：仅保留时长/状态，去除 voice + play_count
+  // 已听进度：播过没听完显示百分比，听完显示"已听完"
+  function playedPct(it) {
+    if (!it.has_audio || !it.duration_sec) return '';
+    const p = it.progress_sec || 0, d = it.duration_sec;
+    if (p < 5) return '';
+    if (p >= d - 30) return '已听完';
+    const pct = Math.round(p / d * 100);
+    return pct > 0 ? `已听 ${pct}%` : '';
+  }
+  // 网格卡片元信息：听过次数 + 已听进度 + 时长/状态
   function cardMeta(it) {
-    return it.has_audio && it.duration_sec ? fmtTime(it.duration_sec) : statusLine(it);
+    const bits = [];
+    if ((it.play_count || 0) > 0) bits.push(`听过 ${it.play_count} 次`);
+    const pp = playedPct(it);
+    if (pp) bits.push(pp);
+    bits.push(it.has_audio && it.duration_sec ? fmtTime(it.duration_sec) : statusLine(it));
+    // 部分段落没录上：能听但有静音缺口，标出来提示可以重录
+    if (it.has_audio && it.fail_reason) bits.push('有缺口');
+    return bits.join(' · ');
   }
   function cardHtml(it) {
     const busy = it.status === 'generating' || it.status === 'synthesizing';
@@ -355,7 +367,7 @@
         </div>
         <div class="inf">
           <div class="t">${esc(it.title)}</div>
-          <div class="d"><span>${esc(cardMeta(it))}</span><span class="dl" data-dlid="${esc(it.id)}"></span></div>
+          <div class="d"><span>${esc(cardMeta(it))}</span></div>
           <button class="lmore" data-more="${esc(it.id)}">⋯</button>
         </div>
       </div>`;
@@ -450,6 +462,7 @@
       const ch = (e.book_chapter ?? -1) >= 0 ? `第 ${e.book_chapter + 1} 章` : '';
       const nm = (e.title || '').split(' · ')[1] || e.title;
       const meta = [ch, (e.play_count || 0) > 0 ? `听过 ${e.play_count} 次` : '',
+        playedPct(e),
         e.has_audio && e.duration_sec ? fmtTime(e.duration_sec) : statusLine(e)].filter(Boolean).join(' · ');
       return `
         <div class="al-ep" data-id="${esc(e.id)}">
@@ -482,7 +495,6 @@
   $('alNext').onclick = () => {
     const a = albumGroups().find(x => x.book_id === albumBid);
     if (!a) return;
-    if (!navigator.onLine) { toast('联网才能生成'); return; }
     if (!state.voice) { openVoiceSheet(() => $('alNext').onclick()); return; }
     const res = bookResume(a.book_id);
     const next = res ? (res.done ? res.chapter + 1 : res.chapter) : ((a.eps[a.eps.length - 1].book_chapter ?? -1) + 1);
@@ -500,7 +512,6 @@
   $('alBatch').onclick = async () => {
     const a = albumGroups().find(x => x.book_id === albumBid);
     if (!a) return;
-    if (!navigator.onLine) { toast('联网才能生成'); return; }
     if (!state.voice) { openVoiceSheet(() => $('alBatch').onclick()); return; }
     let pending = null;
     try {
@@ -560,7 +571,6 @@
   function refreshLibViews() {
     renderLibrary(); renderResume();
     if (albumBid && $('album').classList.contains('on')) openAlbum(albumBid);
-    decorateDownloads();
   }
   $('isRename').onclick = async () => {
     const it = state.items.find(x => x.id === sheetItemId);
@@ -584,7 +594,6 @@
     const it = state.items.find(x => x.id === sheetItemId);
     closeSheet('itemSheet');
     if (!it) return;
-    if (!navigator.onLine) { toast('联网才能画封面'); return; }
     const extra = (window.prompt('封面想要什么画面？（留空让他自己画）', '') || '').trim();
     toast('在画封面了，大概半分钟…', 5000);
     try {
@@ -629,10 +638,11 @@
 
   function updateCounts() {
     const total = state.items.length;
-    isDownloadedMany(state.items.filter(i => i.has_audio).map(i => i.id)).then(n => {
-      $('libCount').textContent = total ? `${total} 篇故事 · ${n} 篇可离线听` : '还没有存下的故事';
-      $('libSub').innerHTML = total ? `${total} 篇 · <b>${n} 篇已离线，断网也能听</b>` : '';
-    });
+    const ready = state.items.filter(i => i.has_audio);
+    const heard = ready.filter(i => (i.play_count || 0) > 0).length;
+    $('libCount').textContent = total ? `${total} 篇故事 · ${ready.length} 篇能听` : '还没有存下的故事';
+    $('libSub').innerHTML = total
+      ? `${total} 篇 · ${ready.length} 篇能听 · <b>听过 ${heard} 篇</b>` : '';
   }
 
   // ── 继续听卡片 ──
@@ -644,9 +654,9 @@
     card.classList.add('show');
     $('resumeTitle').textContent = it.title;
     const p = it.progress_sec || 0, d = it.duration_sec || 0;
-    $('resumeMeta').textContent = p > 5 ? `上次到 ${fmtTime(p)}` : '从头开始';
-    $('resumeBar').style.width = (d > 0 ? Math.min(100, p / d * 100) : 0) + '%';
-    isDownloaded(it.id).then(ok => { $('resumeDl').textContent = ok ? '✓ 已离线' : ''; });
+    const pct = d > 0 ? Math.min(100, Math.round(p / d * 100)) : 0;
+    $('resumeMeta').textContent = p > 5 ? `上次到 ${fmtTime(p)} · ${pct}%` : '从头开始';
+    $('resumeBar').style.width = pct + '%';
     card.onclick = () => playItem(it, readyQueue());
   }
   function readyQueue() { return state.items.filter(i => i.has_audio); }
@@ -654,7 +664,6 @@
   // ── 条目点击 ──
   function onItemClick(it) {
     if (it.has_audio) { playItem(it, readyQueue()); return; }
-    if (!navigator.onLine) { toast('离线中，只能听已下载的'); return; }
     if (it.status === 'generating' || it.status === 'synthesizing') {
       showGenNote(it.status === 'generating' ? '在写这一篇了，先躺好' : '写好了，正在录音…',
         it.progress_pct, it.progress_detail);
@@ -664,14 +673,25 @@
     }
     // 未合成 / 失败：触发 TTS 合成
     if (!state.voice) { openVoiceSheet(() => onItemClick(it)); return; }
+    // 失败且没剧本：重录会被后端 400 挡回来，只能重写剧本（保留原条目和标题）
+    if (it.status === 'failed' && !it.has_script) { regenerateItem(it); return; }
     synthesizeItem(it);
+  }
+  async function regenerateItem(it) {
+    if (!window.confirm(`「${it.title}」当时剧本没写出来，需要重新写一遍。\n\n会按这个名字重新生成，原来的名字和设置都留着。`)) return;
+    try {
+      const r = await fetch('/api/sleep/' + it.id + '/regenerate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice: state.voice }),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); toast(e.detail || '重新生成失败'); return; }
+      showGenNote('在重写《' + it.title + '》…', 0);
+      setScreen('home');
+      pollStatus(it.id);
+    } catch { toast('网络错误'); }
   }
   async function synthesizeItem(it) {
     try {
-      // 重合成前清掉旧音频缓存：SW 音频 cache-first，不清则重合成后仍播旧音色
-      if ('caches' in window) {
-        try { await (await caches.open(CACHE)).delete('/api/sleep/' + it.id + '/audio'); } catch {}
-      }
       const r = await fetch('/api/sleep/' + it.id + '/synthesize', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ voice: state.voice }),
@@ -691,7 +711,6 @@
     if (!prompt && !withBook && state.mode !== 'meditation') {
       toast(state.mode === 'reading' ? '先在书架选一本，或写个书名' : '写一句话吧'); return;
     }
-    if (!navigator.onLine) { toast('离线不能生成，请联网'); return; }
     if (!state.voice) { openVoiceSheet(() => startGenerate(prompt)); return; }
     doGenerate(prompt);
   }
@@ -754,9 +773,10 @@
         await loadLibrary();
         const fresh = state.items.find(x => x.id === id) || it;
         playItem(fresh, readyQueue());
-        cacheItem(id).then(ok => { if (ok) { decorateDownloads(); updateCounts(); updateDlBtn(); } }); // 自动落离线
       } else if (it.status === 'failed') {
-        hideGenNote(); toast('出错了，稍后再试'); loadLibrary();
+        hideGenNote();
+        toast(it.fail_reason ? '出错了：' + it.fail_reason : '出错了，稍后再试', 6000);
+        loadLibrary();
       }
     }, 2500);
   }
@@ -771,8 +791,7 @@
     saveQueue();
     state.currentId = it.id;
     localStorage.setItem('sleep_last_id', it.id);
-    // 播放计数（离线不报，回本地乐观 +1）
-    if (navigator.onLine) fetch('/api/sleep/' + it.id + '/played', { method: 'POST' }).catch(() => { });
+    fetch('/api/sleep/' + it.id + '/played', { method: 'POST' }).catch(() => { });
     it.play_count = (it.play_count || 0) + 1;
     $('pTitle').textContent = it.title || '今晚的故事';
     $('pMid').classList.remove('expanded');
@@ -801,7 +820,6 @@
     };
     audio.addEventListener('loadedmetadata', onMeta);
     setupMediaSession(it);
-    updateDlBtn();
     renderQueueSheet();
   }
 
@@ -913,7 +931,7 @@
 
   let _st = null;
   function saveProgressThrottled() {
-    if (state.currentId == null || _st || !navigator.onLine) return;
+    if (state.currentId == null || _st) return;
     _st = setTimeout(() => {
       _st = null;
       if (state.currentId == null) return;
@@ -968,29 +986,45 @@
     try { const r = await fetch('/api/sleep/noise'); const d = await r.json(); wn.files = d.files || []; }
     catch { wn.files = []; }
   }
+  const WN_ICON = { 雨: '☂', 雷: '⚡', 篝火: '🔥', 火: '🔥', 噪音: '≋', 虫: '🌿', 海: '🌊', 湖: '🌊' };
+  function wnName(f) { return (f || '').replace(/\.[^.]+$/, ''); }
+  function wnIcon(f) {
+    for (const k in WN_ICON) if (f.includes(k)) return WN_ICON[k];
+    return '♪';
+  }
   function renderWn() {
     const btn = $('wnBtn');
-    if (wn.on) {
-      btn.classList.add('wn-on');
-      btn.textContent = '♪ ' + (wn.files[wn.idx] || '').replace(/\.[^.]+$/, '');
-      $('wnVol').classList.add('show');
-    } else {
-      btn.classList.remove('wn-on');
-      btn.textContent = '♪ 白噪音';
-      $('wnVol').classList.remove('show');
-    }
+    btn.classList.toggle('wn-on', wn.on);
+    btn.textContent = wn.on ? wnIcon(wn.files[wn.idx] || '') + ' ' + wnName(wn.files[wn.idx]) : '♪ 白噪音';
+    $('wnVol').classList.toggle('show', wn.on);
   }
-  async function wnToggle() {
-    await wnLoad();
-    if (!wn.files.length) { toast('还没有素材——把 mp3 放进 data/sleep_noise 就有了'); return; }
-    // 点击循环：关 -> 素材1 -> 素材2 -> … -> 关
-    wn.idx++;
-    if (wn.idx >= wn.files.length) { wnStop(); wn.idx = -1; return; }
+  // 抽屉里选素材：原来是盲点循环，六个素材要连点五次才知道有什么
+  function renderWnSheet() {
+    const list = $('wnList');
+    if (!wn.files.length) {
+      list.innerHTML = '<div class="wn-empty">还没有素材——把 mp3 / ogg / wav 放进 data/sleep_noise 目录，回来刷新就有了</div>';
+      return;
+    }
+    list.innerHTML = wn.files.map((f, i) => `
+      <div class="vo ${wn.on && i === wn.idx ? 'sel' : ''}" data-wi="${i}">
+        <span class="wn-ic">${wnIcon(f)}</span>
+        <span class="n">${esc(wnName(f))}</span>
+        <span class="chk">✓</span>
+      </div>`).join('')
+      + (wn.on ? '<div class="vo wn-off" data-wi="-1"><span class="wn-ic">✕</span><span class="n">关掉白噪音</span></div>' : '');
+    list.querySelectorAll('[data-wi]').forEach(el => el.onclick = () => {
+      const i = parseInt(el.dataset.wi, 10);
+      if (i < 0) wnStop(); else wnPlay(i);
+      closeSheet('wnSheet');
+    });
+  }
+  function wnPlay(i) {
+    wn.idx = i;
     wn.on = true;
-    wnAudio.src = '/api/sleep/noise/' + encodeURIComponent(wn.files[wn.idx]);
+    wnAudio.src = '/api/sleep/noise/' + encodeURIComponent(wn.files[i]);
     wnAudio.volume = state.wnVol / 100;
     wnAudio.play().catch(() => { });
-    localStorage.setItem('sleep_wn_file', wn.files[wn.idx]);
+    localStorage.setItem('sleep_wn_file', wn.files[i]);
     renderWn();
   }
   function wnStop() {
@@ -998,69 +1032,16 @@
     wn.on = false;
     renderWn();
   }
-  $('wnBtn').onclick = wnToggle;
+  $('wnBtn').onclick = async () => {
+    await wnLoad();
+    renderWnSheet();
+    $('wnSheet').classList.add('on');
+  };
   $('wnRange').value = state.wnVol;
   $('wnRange').oninput = () => {
     state.wnVol = parseInt($('wnRange').value, 10);
     localStorage.setItem('sleep_wn_vol', String(state.wnVol));
     wnAudio.volume = state.wnVol / 100;
-  };
-
-  // ── 离线：显式下载音频+剧本进 Cache ──
-  async function cacheItem(id) {
-    if (!('caches' in window)) return false;
-    try {
-      const c = await caches.open(CACHE);
-      for (const path of ['/api/sleep/' + id + '/audio', '/api/sleep/' + id + '/script']) {
-        const hit = await c.match(path);
-        if (hit) continue;
-        const resp = await fetch(path);
-        if (!resp.ok) throw new Error('fetch ' + path + ' ' + resp.status);
-        await c.put(path, resp.clone());
-      }
-      return true;
-    } catch (e) { console.warn('离线下载失败', id, e); return false; }
-  }
-  async function isDownloaded(id) {
-    if (!('caches' in window)) return false;
-    try { return !!(await (await caches.open(CACHE)).match('/api/sleep/' + id + '/audio')); } catch { return false; }
-  }
-  async function isDownloadedMany(ids) {
-    let n = 0;
-    for (const id of ids) if (await isDownloaded(id)) n++;
-    return n;
-  }
-  async function decorateDownloads() {
-    for (const it of state.items) {
-      if (!it.has_audio) continue;
-      const el = document.querySelector(`.dl[data-dlid="${CSS.escape(it.id)}"]`);
-      if (el) el.textContent = (await isDownloaded(it.id)) ? '✓ 已离线' : '';
-    }
-  }
-  async function updateDlBtn() {
-    const btn = $('pDlBtn');
-    if (!state.currentId) { btn.textContent = '⇣ 离线保存'; btn.classList.remove('dl-done'); return; }
-    const ok = await isDownloaded(state.currentId);
-    btn.textContent = ok ? '✓ 已离线' : '⇣ 离线保存';
-    btn.classList.toggle('dl-done', ok);
-  }
-  $('pDlBtn').onclick = async () => {
-    if (!state.currentId) return;
-    if (await isDownloaded(state.currentId)) { toast('已经存好了'); return; }
-    toast('下载中…');
-    const ok = await cacheItem(state.currentId);
-    toast(ok ? '存好了，断网也能听' : '下载失败，稍后再试');
-    updateDlBtn(); decorateDownloads(); updateCounts();
-  };
-  $('preloadBtn').onclick = async () => {
-    if (!navigator.onLine) { toast('联网后才能预载'); return; }
-    const targets = readyQueue().sort((a, b) => (b.created_at || 0) - (a.created_at || 0)).slice(0, 3);
-    if (!targets.length) { toast('还没有已合成的故事'); return; }
-    toast('预载中…');
-    let ok = 0;
-    for (const it of targets) if (await cacheItem(it.id)) ok++;
-    toast(`预载完成 ${ok}/${targets.length} 篇，断网也能听`);
-    decorateDownloads(); updateCounts(); renderResume();
   };
 
   // ── 批量补封面：书库每本 + 有音频的故事，免费模型后台跑 ──
@@ -1082,7 +1063,6 @@
     let pending = 0;
     try { pending = (await (await fetch('/api/sleep/covers/pending')).json()).pending || 0; } catch { }
     if (!pending) { toast('封面都齐了'); refreshCoverPending(); return; }
-    if (!navigator.onLine) { toast('联网才能生成'); return; }
     const mins = Math.max(1, Math.ceil(pending * 18 / 60));
     if (!window.confirm(`给 ${pending} 篇补封面？约需 ${mins} 分钟左右，后台跑，可随时离开页面。`)) return;
     coverBtnBusy = true;
@@ -1156,16 +1136,27 @@
     document.addEventListener('pointerup', up);
     document.addEventListener('pointercancel', up);
   }
+  function queueLabel(it) {
+    // 讲书条目带章节号：标题前标「第 N 章」，名字太长也不会丢集数
+    if ((it.book_chapter ?? -1) >= 0) {
+      const nm = (it.title || '').split(' · ')[1] || it.title;
+      return `第 ${it.book_chapter + 1} 章 · ${nm}`;
+    }
+    return it.title || '今晚的故事';
+  }
   function renderQueueSheet() {
     const list = $('queueList');
     $('queueSub').textContent = state.queue.length ? state.queue.length + ' 篇 · 按住 ≡ 拖动排序' : '空的 · 去故事库 ⋯ 里加进来';
-    list.innerHTML = state.queue.map((it, i) => `
+    list.innerHTML = state.queue.map((it, i) => {
+      const d = i === state.qIdx ? '▶ 在念' : [playedPct(it), fmtTime(it.duration_sec)].filter(Boolean).join(' · ');
+      return `
       <div class="vo ${i === state.qIdx ? 'sel' : ''}" data-i="${i}">
         <span class="q-drag" data-i="${i}">≡</span>
-        <span class="n">${esc(it.title || '今晚的故事')}</span>
-        <span class="d">${i === state.qIdx ? '▶ 在念' : fmtTime(it.duration_sec)}</span>
+        <span class="n">${esc(queueLabel(it))}</span>
+        <span class="d">${d}</span>
         <span class="q-ops"><button data-op="del">✕</button></span>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     list.querySelectorAll('.vo').forEach(el => {
       const i = parseInt(el.dataset.i, 10);
       el.onclick = () => {
@@ -1176,8 +1167,14 @@
       el.querySelector('.q-drag').addEventListener('pointerdown', (e) => _startQueueDrag(el, e));
       el.querySelector('[data-op="del"]').onclick = (e) => { e.stopPropagation(); queueRemove(i); };
     });
+    scrollQueueToCurrent();
   }
-  $('pQueueBtn').onclick = () => { renderQueueSheet(); $('queueSheet').classList.add('on'); };
+  function scrollQueueToCurrent() {
+    // 打开列表时把正在念的一行滚到可见：长列表不用手翻找
+    const sel = $('queueSheet').querySelector('.vo.sel');
+    if (sel && $('queueSheet').classList.contains('on')) sel.scrollIntoView({ block: 'center', behavior: 'auto' });
+  }
+  $('pQueueBtn').onclick = () => { renderQueueSheet(); $('queueSheet').classList.add('on'); requestAnimationFrame(scrollQueueToCurrent); };
 
   // ── 入口屏事件 ──
   $('goBtn').onclick = () => startGenerate($('promptInput').value);
