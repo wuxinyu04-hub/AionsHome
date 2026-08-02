@@ -8,20 +8,24 @@
     setup_sleep_upload(music_u)                     # 应用启动时调用一次
     upload_finished_item(item_id, title, voice, ...)  # _synthesize_bg 成功后调用
 """
-import hashlib, json, logging, time
+import hashlib, json, logging, sqlite3, time
 from pathlib import Path
 from datetime import datetime
 
-from pyncm.apis.login import LoginViaCookie
+from pyncm.apis.login import LoginViaCookie, GetCurrentLoginStatus
 from pyncm.apis.cloud import (
     GetNosToken, SetUploadObject, GetCheckCloudUpload,
     SetUploadCloudInfo, SetPublishCloudResource,
 )
+from pyncm.apis.playlist import SetCreatePlaylist, SetManipulatePlaylistTracks
+from pyncm.apis.user import GetUserPlaylists
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 SETTINGS_PATH = DATA_DIR / "settings.json"
-LEDGER_PATH = DATA_DIR / "netease_uploaded.json"
+# 独立台账：旧 CLI 工具 upload_to_netease_cloud.py 用 netease_uploaded.json，
+# key 是目录路径；这里 key 是 item_id。共用一个文件会让两套 key 混在一起互相误判。
+LEDGER_PATH = DATA_DIR / "sleep_netease_uploaded.json"
 LOG_PATH = DATA_DIR / "sleep_upload_log.jsonl"
 AUDIO_DIR = DATA_DIR / "sleep_tts_cache"
 
@@ -79,6 +83,78 @@ def _save_ledger(led: dict) -> None:
         LEDGER_PATH.write_text(json.dumps(led, ensure_ascii=False, indent=1), encoding="utf-8")
     except Exception as e:
         log.warning("写上传台账失败: %s", e)
+
+
+def _clean_book_title(t: str) -> str:
+    """书名去掉 elib.cc 之类的下载站后缀，太长的截断。同步自 sleep_playlists.py"""
+    import re
+    t = re.sub(r"[（(][^（）()]*elib\.cc[^（）()]*[）)]", "", t or "")
+    t = re.sub(r"[（(][^（）()]{12,}[）)]", "", t)
+    t = t.strip(" ·（）()")
+    if len(t) > 20:
+        t = re.split(r"[：:—－\-]", t)[0].strip() or t[:20]
+        t = t[:20]
+    return t or "未命名"
+
+
+def _get_playlist_name(item_id: str, category: str) -> str:
+    """从 DB 推导歌单名，讲书条目按书分组，其余按分类。"""
+    try:
+        db = sqlite3.connect(DATA_DIR / "chat.db")
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            "SELECT COALESCE(book_ref,'') br FROM sleep_items WHERE id=?", (item_id,)
+        ).fetchone()
+        if not row:
+            return _CAT_NAME.get(category, "助眠精选")
+        book_ref = row["br"]
+        if book_ref:
+            import json as j
+            book_id = j.loads(book_ref).get("book_id")
+            if book_id:
+                br = db.execute("SELECT title FROM books WHERE book_id=?", (book_id,)).fetchone()
+                if br:
+                    db.close()
+                    return _clean_book_title(br["title"])
+        db.close()
+    except Exception as e:
+        log.debug("_get_playlist_name 查 DB 失败: %s", e)
+    return _CAT_NAME.get(category, "助眠精选")
+
+
+def _add_to_playlist(item_id: str, song_id: str, category: str) -> None:
+    """把刚传的歌加到对应歌单（按书/分类归组）。失败不报错，只记日志。"""
+    name = _get_playlist_name(item_id, category)
+    uid = GetCurrentLoginStatus().get("profile", {}).get("userId")
+    if not uid:
+        raise RuntimeError("GetCurrentLoginStatus 未拿到 userId")
+
+    # 找或建歌单
+    existing = {}
+    for p in GetUserPlaylists(uid, limit=200).get("playlist", []):
+        existing.setdefault(p.get("name"), p.get("id"))
+    pid = existing.get(name)
+    if not pid:
+        r = SetCreatePlaylist(name, privacy=False)
+        pid = r.get("id")
+        if not pid:
+            raise RuntimeError(f"SetCreatePlaylist 失败: {str(r)[:110]}")
+        time.sleep(0.5)
+
+    # 查已有，避免重复加歌
+    from pyncm.apis.playlist import GetPlaylistAllTracks
+    try:
+        have = {str(t.get("id")) for t in
+                (GetPlaylistAllTracks(pid, limit=1000).get("songs") or [])}
+    except Exception:
+        have = set()
+    if song_id in have:
+        return  # 已在歌单里，跳过
+
+    time.sleep(0.6)
+    a = SetManipulatePlaylistTracks([song_id], pid, op="add", imme=True, e_r=True)
+    if a.get("code") not in (200, None):
+        raise RuntimeError(f"SetManipulatePlaylistTracks: {str(a)[:110]}")
 
 
 def upload_finished_item(
@@ -172,6 +248,12 @@ def upload_finished_item(
         led[item_id] = pub_id
         _save_ledger(led)
         _log_event(item_id, "ok", f"songId={pub_id}")
+        # 顺手归歌单：进云盘只能在「云盘」里翻，归了歌单才好找。
+        # 失败不影响上传结果，隔阵子跑 sleep_playlists.py 能补齐。
+        try:
+            _add_to_playlist(item_id, pub_id, category)
+        except Exception as e:
+            _log_event(item_id, "playlist-fail", str(e)[:160])
         return {"ok": True, "song_id": pub_id, "err": ""}
 
     except Exception as e:
