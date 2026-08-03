@@ -164,6 +164,7 @@ async def save_diary_entry(
         "source_start_ts": source_start_ts,
         "source_end_ts": source_end_ts,
         "created_at": now,
+        "seen": 0,
     }
     async with get_db() as db:
         await db.execute(

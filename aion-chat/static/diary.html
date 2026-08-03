@@ -17,6 +17,7 @@
 .diary-empty { padding:48px 16px; text-align:center; color:var(--text3); font-size:14px; line-height:1.8; }
 .diary-card { position:relative; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-bottom:10px; cursor:pointer; }
 .diary-card:hover { box-shadow:0 2px 8px rgba(0,0,0,0.06); }
+.diary-card.unread::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:4px; border-radius:0 3px 3px 0; background:linear-gradient(180deg,#6b5cff,#8d2ddf); }
 .diary-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding-right:88px; margin-bottom:6px; }
 .diary-author { font-size:12px; font-weight:700; color:var(--accent); }
 .diary-time { font-size:11px; color:var(--text3); font-family:monospace; }
@@ -380,6 +381,7 @@ function renderList() {
     const id = String(item.id);
     const idAttr = escHtml(id);
     const expanded = expandedDiaryIds.has(id);
+    const unread = item.author !== 'user' && !item.seen;
     const d = new Date(item.created_at * 1000);
     const timeStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
     const authorName = nameMap[item.author] || item.author;
@@ -388,7 +390,7 @@ function renderList() {
     const source = formatSource(item);
     const ttsAction = item.author === 'user' ? '' :
       `<button class="diary-action diary-tts" data-id="${idAttr}" title="播放语音" aria-label="播放语音">🔊</button>`;
-    html += `<div class="diary-card ${expanded ? 'expanded' : ''}" data-id="${idAttr}" data-author="${escHtml(item.author || '')}" tabindex="0" role="button" aria-expanded="${expanded}">
+    html += `<div class="diary-card ${expanded ? 'expanded' : ''} ${unread ? 'unread' : ''}" data-id="${idAttr}" data-author="${escHtml(item.author || '')}" tabindex="0" role="button" aria-expanded="${expanded}">
       <div class="diary-actions">
         ${ttsAction}
         <button class="diary-action diary-edit" data-id="${idAttr}" title="编辑">✎</button>
@@ -451,6 +453,12 @@ function toggleDiary(id) {
     expandedDiaryIds.delete(id);
   } else {
     expandedDiaryIds.add(id);
+    // 展开未读的 AI/Connor 日记 → 乐观标已读并通知后端（不可逆，收起不取消）
+    const item = allItems.find(i => String(i.id) === id);
+    if (item && item.author !== 'user' && !item.seen) {
+      item.seen = 1;
+      api('POST', `/api/diaries/${encodeURIComponent(id)}/seen`).catch(() => {});
+    }
   }
   renderList();
 }
@@ -647,11 +655,7 @@ function connectDiaryWS() {
   await initNames();
   await loadDiaries();
   connectDiaryWS();
-  // 进入日记页即标记已读（清未读角标）
-  fetch('/api/diaries/mark-read', { method: 'POST' }).catch(() => {});
 })();
-// 离开日记页标记已读（清期间看的消息，避免误报）
-window.addEventListener('pagehide', () => { try { navigator.sendBeacon('/api/diaries/mark-read'); } catch(e) {} });
 </script>
 </body>
 </html>

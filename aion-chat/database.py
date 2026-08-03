@@ -252,6 +252,19 @@ async def init_db():
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_diary_entries_created ON diary_entries(created_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_diary_entries_author ON diary_entries(author, created_at DESC)")
+        # ── 日记单篇已读（per-entry seen，替代全局锚点的"每篇看没看过"）──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS diary_seen (
+                entry_id TEXT PRIMARY KEY,
+                seen_at  REAL NOT NULL,
+                FOREIGN KEY (entry_id) REFERENCES diary_entries(id) ON DELETE CASCADE
+            )
+        """)
+        # 老数据回填：历史 AI/Connor 日记默认视为已读，避免升级后角标爆 99+。user 不进 seen 表。
+        await db.execute(
+            "INSERT OR IGNORE INTO diary_seen (entry_id, seen_at) "
+            "SELECT id, 0 FROM diary_entries WHERE author IN ('aion','connor')"
+        )
         # ── 书籍表 ──
         await db.execute("""
             CREATE TABLE IF NOT EXISTS books (

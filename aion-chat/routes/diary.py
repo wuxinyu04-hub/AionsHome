@@ -69,11 +69,25 @@ async def _load_diary(entry_id: str):
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT id, author, title, content, mood, source_type, source_ref, "
-            "source_start_ts, source_end_ts, created_at FROM diary_entries WHERE id=?",
+            "SELECT d.id, d.author, d.title, d.content, d.mood, d.source_type, d.source_ref, "
+            "d.source_start_ts, d.source_end_ts, d.created_at, "
+            "(s.entry_id IS NOT NULL) AS seen "
+            "FROM diary_entries d LEFT JOIN diary_seen s ON s.entry_id = d.id WHERE d.id=?",
             (entry_id,),
         )
         return await cur.fetchone()
+
+
+def _entry_to_dict(row) -> dict:
+    """统一 diary_entries 行输出。user 日记视为已读（不进 seen 表，查不到 seen 行时兜底 1）。"""
+    entry = dict(row)
+    if "seen" not in entry:
+        entry["seen"] = 1 if entry.get("author") == "user" else 0
+    else:
+        entry["seen"] = int(entry["seen"] or 0)
+        if entry.get("author") == "user":
+            entry["seen"] = 1
+    return entry
 
 
 @router.get("")
@@ -87,43 +101,65 @@ async def list_diaries(
     where = ""
     params: list[object] = []
     if author:
-        where = "WHERE author=?"
+        where = "WHERE d.author=?"
         params.append(author)
 
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
-        cur = await db.execute(f"SELECT COUNT(*) as cnt FROM diary_entries {where}", params)
+        cur = await db.execute(f"SELECT COUNT(*) as cnt FROM diary_entries d {where}", params)
         total = (await cur.fetchone())["cnt"]
         cur = await db.execute(
-            "SELECT id, author, title, content, mood, source_type, source_ref, "
-            "source_start_ts, source_end_ts, created_at "
-            f"FROM diary_entries {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT d.id, d.author, d.title, d.content, d.mood, d.source_type, d.source_ref, "
+            "d.source_start_ts, d.source_end_ts, d.created_at, "
+            "(s.entry_id IS NOT NULL) AS seen "
+            f"FROM diary_entries d LEFT JOIN diary_seen s ON s.entry_id = d.id "
+            f"{where} ORDER BY d.created_at DESC LIMIT ? OFFSET ?",
             [*params, page_size, offset],
         )
         rows = await cur.fetchall()
 
-    return {"items": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
+    return {"items": [_entry_to_dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/unread")
 async def check_diary_unread():
-    """统计未读日记条目数（created_at > 最后已读锚点）。"""
+    """统计未读日记条目数 = 未单篇已读的 aion/connor 条数（user 不计）。"""
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
-        row = await (await db.execute("SELECT last_read_at FROM diary_read_anchor WHERE id=1")).fetchone()
-        last_read = row["last_read_at"] if row else 0
-        cur = await db.execute("SELECT COUNT(*) as cnt FROM diary_entries WHERE created_at > ?", (last_read,))
+        cur = await db.execute(
+            "SELECT COUNT(*) as cnt FROM diary_entries d "
+            "WHERE d.author IN ('aion','connor') "
+            "AND NOT EXISTS (SELECT 1 FROM diary_seen s WHERE s.entry_id = d.id)"
+        )
         cnt = (await cur.fetchone())["cnt"]
     return {"unread": cnt}
 
 
 @router.post("/mark-read")
 async def mark_diary_read():
+    """批量把所有 aion/connor 日记标记为已读（手动"一键已读"用，前端不再自动调）。"""
     now = time.time()
     async with get_db() as db:
-        await db.execute("INSERT OR REPLACE INTO diary_read_anchor (id, last_read_at) VALUES (1, ?)", (now,))
+        await db.execute(
+            "INSERT OR IGNORE INTO diary_seen (entry_id, seen_at) "
+            "SELECT id, ? FROM diary_entries WHERE author IN ('aion','connor')",
+            (now,),
+        )
         await db.commit()
     return {"ok": True}
+
+
+@router.post("/{entry_id}/seen")
+async def mark_diary_seen(entry_id: str):
+    """标记单篇日记已读。幂等，不可逆。user 日记无需标记。"""
+    now = time.time()
+    async with get_db() as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO diary_seen (entry_id, seen_at) VALUES (?, ?)",
+            (entry_id, now),
+        )
+        await db.commit()
+    return {"ok": True, "seen": True}
 
 
 @router.post("/{entry_id}/tts")
@@ -214,6 +250,7 @@ async def create_diary(body: DiaryCreate):
         "source_start_ts": None,
         "source_end_ts": None,
         "created_at": now,
+        "seen": 1,
     }
     async with get_db() as db:
         await db.execute(
@@ -233,26 +270,20 @@ async def create_diary(body: DiaryCreate):
 
 @router.put("/{entry_id}")
 async def update_diary(entry_id: str, body: DiaryUpdate):
-    """编辑一篇日记的标题、正文和心情。"""
+    """编辑一篇日记的标题、正文和心情。编辑不重置已读状态。"""
     content = body.content.strip()
     if not content:
         return {"error": "内容不能为空"}
     async with get_db() as db:
-        db.row_factory = aiosqlite.Row
         await db.execute(
             "UPDATE diary_entries SET title=?, content=?, mood=? WHERE id=?",
             (body.title.strip(), content, body.mood.strip(), entry_id),
         )
         await db.commit()
-        cur = await db.execute(
-            "SELECT id, author, title, content, mood, source_type, source_ref, "
-            "source_start_ts, source_end_ts, created_at FROM diary_entries WHERE id=?",
-            (entry_id,),
-        )
-        row = await cur.fetchone()
+    row = await _load_diary(entry_id)
     if not row:
         return {"error": "日记不存在"}
-    entry = dict(row)
+    entry = _entry_to_dict(row)
     _delete_diary_tts_cache(entry_id)
     await manager.broadcast({"type": "diary_updated", "data": entry})
     return entry
@@ -260,9 +291,10 @@ async def update_diary(entry_id: str, body: DiaryUpdate):
 
 @router.delete("/{entry_id}")
 async def delete_diary(entry_id: str):
-    """删除一篇日记。"""
+    """删除一篇日记。同步清理单篇已读记录（SQLite 默认不级联，手动清）。"""
     async with get_db() as db:
         await db.execute("DELETE FROM diary_entries WHERE id=?", (entry_id,))
+        await db.execute("DELETE FROM diary_seen WHERE entry_id=?", (entry_id,))
         await db.commit()
     _delete_diary_tts_cache(entry_id)
     return {"ok": True}
