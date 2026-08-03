@@ -6610,7 +6610,7 @@ function syncSubPageMode(url) {
     try { return new URL(url, location.origin).pathname; } catch(e) { return url || ''; }
   })();
   const isHome = path === '/';
-  const isImmersive = path === '/wishes' || path === '/sleep';
+  const isImmersive = path === '/wishes' || path === '/sleep' || path === '/chatroom';
   const ov = $('subPageOverlay');
   ov.classList.toggle('home-subpage', isHome);
   ov.classList.toggle('immersive-subpage', isImmersive);
