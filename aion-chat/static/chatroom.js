@@ -290,6 +290,39 @@ function crNotifyVoiceCallTTSEnd() {
   }
 }
 
+// 全局音频互斥：任一通道开播前调一次，停掉其它正在响的通道，避免新消息自动播放与手动播放重叠
+function crStopOtherAudio(except) {
+  // 直播 TTS 引擎
+  if (except !== 'tts' && typeof _ttsEngine !== 'undefined' && _ttsEngine && _ttsEngine.playing) {
+    _ttsEngine.stop();
+  }
+  // 重听 TTS
+  if (except !== 'replay' && typeof crReplayAudio !== 'undefined' && crReplayAudio && !crReplayAudio.paused && !crReplayAudio.ended) {
+    crReplayAudio.pause(); crReplayAudio.src = '';
+    crReplayChunks = []; crReplayIdx = 0;
+    crReplayToken++;
+    crReplayDiscoverPromise = null;
+    document.querySelectorAll('.tts-replay-btn.playing').forEach(b => b.classList.remove('playing'));
+  }
+  // 语音消息条
+  if (except !== 'voice' && _crVoiceAudio) {
+    _crVoiceAudio.pause(); _crVoiceAudio = null;
+    document.querySelectorAll('.voice-bubble.playing').forEach(b => {
+      b.classList.remove('playing');
+      const vb = b.querySelector('.vb-play'); if (vb) vb.textContent = '▶';
+    });
+  }
+  // 音乐播放条（不清 src，保留进度便于续播）
+  if (except !== 'music') {
+    const m = document.getElementById('crMusicAudio');
+    if (m && !m.paused) m.pause();
+  }
+  // 生成歌曲播放器
+  if (except !== 'song' && crGeneratedSongAudio) {
+    crCloseGeneratedSongPlayer();
+  }
+}
+
 // TTS 播放引擎：Audio 使用本地对象（可靠播放），离开页面时移交给 parent（尽力续播）
 const _ttsEngine = (function() {
   // 在 parent 上预建一个 handoff audio，用于离开页面后续播当前片段
@@ -350,6 +383,7 @@ const _ttsEngine = (function() {
 	        _stopRequested = false;
 	        clearResumeTimer();
 	        crAmbientPauseForTts();
+	        crStopOtherAudio('tts'); // 新消息 TTS 自动播前，停掉语音条/重听/音乐/歌曲，避免重叠
 	        const myId = ++_cbId;
 	        const seq = q.nextPlay;
 	        let startNotified = false;
@@ -707,6 +741,7 @@ function crPlayMusicOnline(songId) {
     subEl.textContent = (s && s.artist) || '';
   };
   const startPlay = function() {
+    crStopOtherAudio('music'); // 播音乐前，停掉 TTS/语音条/重听/歌曲
     audioEl.src = '/api/music/stream/' + songId;
     wrap.style.display = 'flex';
     barEl.value = 0; playBtnEl.textContent = '⏸';
@@ -725,6 +760,7 @@ function crPlayMusicOnline(songId) {
     }).catch(function() {
       titleEl.textContent = '歌曲 #' + songId;
     });
+    crStopOtherAudio('music');
     audioEl.src = '/api/music/stream/' + songId;
     barEl.value = 0; playBtnEl.textContent = '⏸';
     audioEl.play().catch(function() {});
@@ -838,6 +874,7 @@ async function crReplayTTS(msgId, triggerBtn = null) {
   crReplayIdx = 0;
   if (btn) btn.classList.add('playing');
   crAmbientPauseForTts();
+  crStopOtherAudio('replay'); // 重听某条 TTS 前，停掉直播 TTS/语音条/音乐/歌曲
 
   // 先在用户点击同步链路里立刻播放 s0，避免多次 HEAD 后丢失浏览器播放许可。
   _crPlayReplayChunk(btn, token);
@@ -5389,6 +5426,7 @@ function crOpenGeneratedSongPlayer(key) {
   const item = crGeneratedSongPlayerStore[key];
   if (!item || !item.url) return;
   crCloseGeneratedSongPlayer();
+  crStopOtherAudio('song'); // 播生成歌曲前，停掉 TTS/语音条/重听/音乐
 
   const title = item.title || 'AI 生成歌曲';
   const model = item.model || 'lyria-3-pro-preview';
@@ -6106,6 +6144,7 @@ function crPlayVoice(el, url) {
     el.classList.remove('playing'); el.querySelector('.vb-play').textContent = '▶';
     return;
   }
+  crStopOtherAudio('voice'); // 手动播语音条前，停掉 TTS/重听/音乐/歌曲
   document.querySelectorAll('.voice-bubble.playing').forEach(b => {
     b.classList.remove('playing'); b.querySelector('.vb-play').textContent = '▶';
   });
