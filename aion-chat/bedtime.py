@@ -1147,15 +1147,18 @@ async def generate_cover(item_id: str, extra_prompt: str = "", title_override: s
     prefer_free=True 时优先免费生图通道（硅基 Kolors -> CPA 路由），官方 Gemini 兜底。
     """
     from image_gen import (generate_image, generate_image_custom_route,
-                           generate_image_siliconflow, generate_image_leesai)
+                           generate_image_siliconflow, generate_image_leesai,
+                           generate_image_jiurelay)
     from config import UPLOADS_DIR
     item = await get_item_raw(item_id)
     if not item:
         return None
     prompt = _cover_prompt(item, extra_prompt, title_override)
     if prefer_free:
-        # 批量补封面：LeesAiHub(gpt-image-2) 最优先 -> Kolors -> CPA，Gemini 官方兜底
-        filename = await generate_image_leesai(prompt)
+        # 批量补封面：JiuRelay(免费/每小时3张) 最优先 -> LeesAiHub(gpt-image-2) -> Kolors -> CPA，Gemini 官方兜底
+        filename = await generate_image_jiurelay(prompt)
+        if not filename:
+            filename = await generate_image_leesai(prompt)
         if not filename:
             filename = await generate_image_siliconflow(prompt)
         if not filename:

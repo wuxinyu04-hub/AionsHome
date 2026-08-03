@@ -11,6 +11,13 @@ import httpx
 from config import get_key, get_leesai_keys, UPLOADS_DIR, PUBLIC_DIR
 from ai_providers import _make_http_client, _openai_chat_completions_url
 
+# JiuRelay：免费公共生图站，私有端点（非 OpenAI 兼容），直接返回 PNG 二进制。
+# 站方声明每 IP 每小时 3 张（/api/image/config 的 limits.perIpPerHour，前端并不消费该字段）。
+JIURELAY_IMAGE_URL = "https://jiurelay.com/api/image/generate"
+JIURELAY_HOURLY_QUOTA = 3
+_jiurelay_window_start = 0.0  # 当前计数窗口起点（epoch 秒）
+_jiurelay_used = 0            # 本窗口已发出的请求数
+
 # LeesAiHub：OpenAI 兼容生图站，gpt-image-2，一个 key 约 30 张额度
 LEESAI_BASE_URL = "https://leesapihome.ccwu.cc/v1"
 LEESAI_IMAGE_MODEL = "gpt-image-2"
@@ -209,6 +216,53 @@ async def generate_image_siliconflow(prompt: str, image_size: str = "1024x1024")
             return filename
     except Exception as e:
         print(f"[image_gen] Kolors 生图异常: {type(e).__name__}: {e!r}")
+        return None
+
+
+async def generate_image_jiurelay(prompt: str, ratio: str = "1:1", style: str = "illustration") -> str | None:
+    """JiuRelay 免费生图（私有端点 /api/image/generate，直接回 image/png 二进制）。
+
+    不需要 API Key——该端点不校验 Authorization。但有两个坑：
+    1. 每 IP 每小时仅 3 张，所以本地自己数着，发满就在窗口内直接跳过，
+       免得每次都先吃一个 429 再降级、白白给后续通道加一次往返延迟。
+    2. 站方前端带 Cloudflare Turnstile 逻辑（当前开关是关的），一旦开启这里会
+       直接失败。私有端点无契约，随时可能改路径或改字段，失败一律静默降级。
+    """
+    global _jiurelay_window_start, _jiurelay_used
+    now = time.time()
+    if now - _jiurelay_window_start >= 3600:
+        _jiurelay_window_start, _jiurelay_used = now, 0
+    if _jiurelay_used >= JIURELAY_HOURLY_QUOTA:
+        left = int(3600 - (now - _jiurelay_window_start))
+        print(f"[image_gen] JiuRelay 本小时额度已用完（{JIURELAY_HOURLY_QUOTA} 张），{left}s 后重置，跳过")
+        return None
+    _jiurelay_used += 1
+    try:
+        async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT, trust_env=True) as client:
+            print(f"[image_gen] JiuRelay 生图 ({_jiurelay_used}/{JIURELAY_HOURLY_QUOTA})... prompt: {prompt[:80]}")
+            resp = await client.post(
+                JIURELAY_IMAGE_URL,
+                headers={"Content-Type": "application/json",
+                         "Accept": "image/*, application/json",
+                         "Referer": "https://jiurelay.com/image"},
+                json={"model": "image2", "prompt": prompt, "ratio": ratio,
+                      "style": style, "quality": "standard"},
+            )
+        if resp.status_code != 200:
+            print(f"[image_gen] JiuRelay 失败 ({resp.status_code}): {resp.text[:200]}")
+            return None
+        if not resp.headers.get("content-type", "").startswith("image/"):
+            print(f"[image_gen] JiuRelay 没返回图片: {resp.text[:200]}")
+            return None
+        if not resp.content:
+            print("[image_gen] JiuRelay 返回空图片")
+            return None
+        filename = f"img_gen_{int(time.time() * 1000)}.png"
+        (UPLOADS_DIR / filename).write_bytes(resp.content)
+        print(f"[image_gen] JiuRelay 生图成功: {filename}")
+        return filename
+    except Exception as e:
+        print(f"[image_gen] JiuRelay 生图异常: {type(e).__name__}: {e!r}")
         return None
 
 
