@@ -36,6 +36,14 @@ _NOISE_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".aac"}
 _progress: dict[str, dict] = {}
 _book_batch_lock = asyncio.Lock()
 
+# 生成→合成两阶段的真实进度区间：AI 写剧本 0-40，TTS 录音 40-99。
+# 录音是耗时大头（几分钟慢速 TTS），占更宽的区间；两段内部都按真实工作量推
+# （字数 / 已合成段数），不再用 90 当写死的切换点——以前 ASMR 单文本块时
+# 整段录音进度都卡在 90% 不动，看起来像卡死。
+_GEN_PCT_TOP = 40
+_SYN_PCT_BOTTOM = 40
+_SYN_PCT_TOP = 99
+
 
 def list_noise_files() -> list[str]:
     try:
@@ -429,7 +437,7 @@ def _mp3_duration_sec(data: bytes) -> int:
 
 async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore,
                                  prosody: dict | None = None, instruction: str = "",
-                                 tail_ellipsis: bool = True) -> list[bytes | None]:
+                                 tail_ellipsis: bool = True, progress_cb=None) -> list[bytes | None]:
     """文本块：切段 -> （可选题尾省略号）-> 并发 TTS 合成（provider 由 get_tts_provider() 决定）。
 
     单段失败先退避重试 3 次；仍失败则该段返回 None（调用方用静音占位），
@@ -437,6 +445,7 @@ async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore,
     prosody/instruction 透传给 tts.py；prosody 缺省 {"speed":0.8}（哄睡慢速）。
     tail_ellipsis=False 用于 ASMR 剧情演绎：不补段尾省略号，避免每段拖尾把吵架节奏压平，
     停顿交给剧本自带的 …… 和 （停一下） 指令。
+    progress_cb(seq)：每合成完一段（成功或最终失败都算）调一次，用于按真实段数推进录音进度条。
     """
     if get_tts_provider() != "step":
         text = _strip_inline_cues(text)
@@ -450,6 +459,7 @@ async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore,
 
     async def _syn(seq: int, seg: str) -> bytes | None:
         last_error = None
+        result = None
         for attempt in range(3):
             try:
                 async with sem:
@@ -467,13 +477,21 @@ async def _synthesize_text_block(text: str, voice: str, sem: asyncio.Semaphore,
                     raise RuntimeError(f"返回非 MP3（前 16 字节: {data[:16]!r}）")
                 if attempt:
                     log.info("sleep TTS 段 %d 第 %d 次重试成功", seq, attempt + 1)
-                return data
+                result = data
+                break
             except Exception as exc:
                 last_error = exc
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)  # 1s / 2s 退避
-        log.warning("sleep TTS 段 %d 重试 3 次仍失败，用静音占位：%s", seq, last_error)
-        return None
+        if result is None:
+            log.warning("sleep TTS 段 %d 重试 3 次仍失败，用静音占位：%s", seq, last_error)
+        # 进度回调放在重试循环外：回调异常只记日志，不能把一段拖进重试/丢结果
+        if progress_cb:
+            try:
+                await progress_cb(seq)
+            except Exception:
+                log.exception("sleep 录音进度回调异常 seq=%d", seq)
+        return result
 
     return await asyncio.gather(*[_syn(i, s) for i, s in enumerate(segments)])
 
@@ -510,22 +528,32 @@ async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
         tts_tail = not is_drama
         sem = asyncio.Semaphore(3)
         parts = _parse_sfx_parts(script_text)
-        # 统计文本块总数（用于进度条）
-        total_blocks = sum(1 for kind, val in parts if kind == "text" and val.strip())
+        text_parts = [(idx, val) for idx, (kind, val) in enumerate(parts) if kind == "text" and val.strip()]
+        # 预计算总段数（split_text_for_tts 是纯函数，与 _synthesize_text_block 内的切分一致）。
+        # 录音进度按「已合成段数/总段数」真实推进——以前按文本块推进，ASMR 剧本没有 [SFX]
+        # 就是单块，整段几分钟的录音进度都卡在写死的 90% 不动，看起来像卡死。
+        est_total_segs = sum(len([s for s in split_text_for_tts(v, min_chars=300, max_chars=500) if s.strip()])
+                             for _, v in text_parts)
+        seg_done = 0
+
+        async def _on_seg_done(_seq: int) -> None:
+            nonlocal seg_done
+            seg_done += 1
+            if est_total_segs <= 0:
+                return
+            pct = min(_SYN_PCT_BOTTOM + int(seg_done / est_total_segs * (_SYN_PCT_TOP - _SYN_PCT_BOTTOM)),
+                      _SYN_PCT_TOP)
+            detail = f"正在录音… {seg_done}/{est_total_segs} 段"
+            _progress[item_id] = {"phase": "synthesizing", "pct": pct, "detail": detail}
+            await _broadcast(item_id, {"status": "synthesizing", "progress_pct": pct, "progress_detail": detail})
+
         # 先合成所有文本块（块内并发），再统一拼装。
         # 段级重试后仍失败的段是 None，拼装时用静音占位（见下）
         text_pieces: dict[int, list[bytes | None]] = {}
-        done = 0
-        for idx, (kind, val) in enumerate(parts):
-            if kind == "text" and val.strip():
-                text_pieces[idx] = await _synthesize_text_block(
-                    val, voice, sem, prosody=tts_prosody, instruction=tts_instruction, tail_ellipsis=tts_tail)
-                done += 1
-                if total_blocks > 0:
-                    pct = 90 + int(done / total_blocks * 10)
-                    detail = f"正在录音… {done}/{total_blocks} 段"
-                    _progress[item_id] = {"phase": "synthesizing", "pct": pct, "detail": detail}
-                    await _broadcast(item_id, {"status": "synthesizing", "progress_pct": pct, "progress_detail": detail})
+        for idx, val in text_parts:
+            text_pieces[idx] = await _synthesize_text_block(
+                val, voice, sem, prosody=tts_prosody, instruction=tts_instruction,
+                tail_ellipsis=tts_tail, progress_cb=_on_seg_done)
         # 从第一段真实语音抄帧参数（采样率/码率/声道），静音与 SFX 全部对齐它。
         # 先剥 ID3 再读帧参数——Step TTS 每个 segment 返回完整 MP3（带 ID3v2），
         # 不剥的话 ID3 标签散落在拼接流中间，浏览器解码器直接卡死。
@@ -644,20 +672,23 @@ _COMMON_RULES = """- 第一人称"我"对第二人称"你"，自称"哥哥"，�
 - 纯台词与独白，可直接朗读"""
 
 
-# ── ASMR 剧情演绎（category=asmr）：不是哄睡陪伴，是"演一场戏" ──
-_DRAMA_RULES = """- 第一人称"我"对"你"，自称"哥哥"，年上温润（温叙远人设），吵架/冷战也不说重话、不吼
+# ── ASMR 剧情演绎（category=asmr）：不是哄睡陪伴，是"陪对方经历一段时光" ──
+_DRAMA_RULES = """- 第一人称"我"对"你"，自称"哥哥"，年上温润（温叙远人设），再着急也不说重话、不吼、不居高临下地数落
 - 全篇只有"我"开口：对方的反应靠"我"的话带出来（如「……行，你不说话也行，那我先说」），
   回合空档用（停顿）（等对方回应）这类指令制造一来一回的节奏，不要给"你"写会被念出来的台词
 - 字数 4000-5200，适合 15-20 分钟
-- 结构：开场氛围 -> 铺垫 -> 情绪高点 -> 软化/破冰 -> 收尾（让"你"安心），不要平铺直叙
-- 语气随剧情真实起伏，不全程慢语速；语气变了才写全角圆括号指令（10 字以内，全篇 15-25 处），
-  括号是给语音模型的，不会被念出来。可用：叹气/声音发颤/哽咽/冷下来/放轻/压低声音/急/苦笑/温柔下来/哄着说/沉默片刻/停一下
+- 忠于用户给的主题，不要凭空升级矛盾：主题是安静陪伴/一起做事（如工作陪伴、看书、做饭），
+  就写成温暖安静的真实陪伴——递杯水、搭把手、几句贴心话，重点是"我陪在身边"的感觉；
+  只有主题明确提到吵架、冷战、矛盾、闹脾气，才写冲突戏
+- 陪伴类场景不需要戏剧化高潮，平实、贴心、让人安心比"精彩"更重要；语气随内容自然变化
+- 语气变了才写全角圆括号指令（10 字以内，全篇 15-25 处），括号是给语音模型的，不会被念出来。
+  可用：叹气/声音发颤/哽咽/冷下来/放轻/压低声音/急/苦笑/温柔下来/哄着说/沉默片刻/停一下/轻轻笑
 - 不要章节标题、旁白、分点；动作/场景用台词带出，不要用括号写动作
 - 纯台词与独白，可直接朗读"""
 
 _DRAMA_SCENE_RULES = {
-    "argument": """- 场景：刚吵完架的高冲突。可以急、可以气、可以哽咽，情绪真实起伏，节奏偏快、停顿少
-- 结尾必须是和解："我"先把姿态放软，把你的情绪接住，哪怕只是「先回屋里来」""",
+    "argument": """- 场景：刚吵完架的高冲突，这是明确要吵的一场戏。可以急、可以气、可以哽咽，情绪真实起伏，节奏偏快、停顿少
+- 结构：开场氛围 -> 铺垫 -> 情绪高点 -> 软化 -> 收尾和解；结尾"我"先把姿态放软，把你的情绪接住""",
     "coldwar": """- 场景：冷战（如生理期），低气压。压着说而不是凶，沉默和长停顿多
 - "你"始终不开口，全靠"我"一点一点破冰；收尾是和解的松动，不彻底和好也行""",
     "daily": """- 场景：普通日常的晚上。松弛温暖，正常偏慢语速，小日常、轻笑声、叹气、打趣
@@ -665,8 +696,8 @@ _DRAMA_SCENE_RULES = {
 }
 
 # stepaudio 剧情演绎的 instruction 基线：真情绪、正常语速，逐句语气交给正文 （） 指令。
-# 与 _COMMON_RULES 的哄睡 instruction（年上温润·松弛不刻意）不同，剧情要有张力、不刻意放慢。
-_DRAMA_INSTRUCTION = "自然说话，年上温润的男性嗓音，语气有真实的生活起伏，像在跟很亲近的人演一段戏，情绪真实有张力，不要播音腔，不要刻意放慢。"
+# 与 _COMMON_RULES 的哄睡 instruction（年上温润·松弛不刻意）不同，剧情自然有起伏、不刻意放慢。
+_DRAMA_INSTRUCTION = "自然说话，年上温润的男性嗓音，语气有真实的生活起伏，像在跟很亲近的人面对面说话，情绪跟着内容自然流动，不要播音腔，不要刻意放慢。"
 
 
 async def load_book_chapter(book_id: str, chapter_index: int) -> dict | None:
@@ -746,9 +777,9 @@ def build_script_prompt(category: str, prompt: str, book: dict | None = None, sc
 直接输出引导词正文。"""
     if category == "asmr":
         scene_rules = _DRAMA_SCENE_RULES.get(scene or "", "").strip()
-        focus = f"主题/梗概：{prompt}" if prompt else "主题/梗概：一个普通的深夜，两个人窝在家里的日常"
+        focus = f"主题/场景：{prompt}" if prompt else "主题/场景：一个普通的深夜，两个人窝在家里的日常"
         req = scene_rules + "\n" + _DRAMA_RULES if scene_rules else _DRAMA_RULES
-        return f"""你是温叙远，深夜对着身边的对方，正在演一段只有你们两个人的剧情。写一段 ASMR 剧情演绎剧本（不是哄睡陪伴，是"演一场戏"）。
+        return f"""你是温叙远，深夜陪在对方身边。根据下面的主题，写一段 ASMR 剧情演绎剧本：把"我陪在对方身边、一起经历这段时光"的感觉写出来（不是单向哄睡陪伴）。
 
 要求：
 {req}
@@ -848,10 +879,10 @@ async def generate_script(category: str, prompt: str, book: dict | None = None,
                 if chunk.startswith(CLI_STATUS_PREFIX):
                     continue
                 full += chunk
-                # 每 ~300 字回调一次进度
+                # 每 ~300 字回调一次进度（按真实字数推进，到 _GEN_PCT_TOP 即写完）
                 if progress_callback and len(full) - last_cb >= 300:
                     last_cb = len(full)
-                    pct = min(int(len(full) / TARGET * 90), 89)
+                    pct = min(int(len(full) / TARGET * _GEN_PCT_TOP), _GEN_PCT_TOP)
                     await progress_callback("generating", pct, f"AI 正在写剧本… 已写 {len(full)} 字")
         except Exception as e:
             log.warning("sleep 剧本生成异常 model=%s: %s", mk, e)
@@ -864,7 +895,7 @@ async def generate_script(category: str, prompt: str, book: dict | None = None,
         if len(full) >= _SCRIPT_MIN_CHARS:
             log.info("sleep 剧本生成成功 model=%s len=%d", mk, len(full))
             if progress_callback:
-                await progress_callback("generating", 90, f"剧本写好了，{len(full)} 字，开始录音…")
+                await progress_callback("generating", _GEN_PCT_TOP, f"剧本写好了，{len(full)} 字，开始录音…")
             return full
         # 过短 = 模型偷懒/被截断（如 Flash 输出到 215 字就停），记录换下一个模型
         log.warning("sleep 剧本生成过短 model=%s len=%d content=%r", mk, len(full), full[:200])
@@ -926,8 +957,8 @@ async def _generate_and_synthesize_bg(
             asyncio.create_task(generate_cover(item_id, title_override=cover_title, prefer_free=True))
         else:
             asyncio.create_task(generate_cover(item_id, extra_prompt=scene_hint, prefer_free=True))
-        _progress[item_id] = {"phase": "synthesizing", "pct": 90, "detail": "写好了，正在录音…"}
-        await _broadcast(item_id, {"status": "synthesizing", "progress_pct": 90, "progress_detail": "写好了，正在录音…"})
+        _progress[item_id] = {"phase": "synthesizing", "pct": _SYN_PCT_BOTTOM, "detail": "写好了，正在录音…"}
+        await _broadcast(item_id, {"status": "synthesizing", "progress_pct": _SYN_PCT_BOTTOM, "progress_detail": "写好了，正在录音…"})
         trigger_synthesize(item_id, script_text, voice)
     except Exception as e:
         log.exception("sleep 生成剧本失败 id=%s", item_id)
