@@ -10,8 +10,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#050923">
-<link rel="stylesheet" href="/static/chatroom.css?v=bubble-font-mobile-14-20260707">
+<link rel="stylesheet" href="/static/chatroom.css?v=bubble-align-chat-15-400-20260803-md">
 <link rel="stylesheet" href="/static/voice-call.css?v=voice-call-polish-20260704g">
+<link rel="stylesheet" href="/static/vendor/atom-one-dark.min.css?v=1">
 </head>
 <body>
   <div class="app">
@@ -434,7 +435,23 @@
     </div>
   </div>
 
-  <script src="/static/chatroom.js?v=audio-mutex-20260803"></script>
+<!-- MD 渲染三件套（顺序：DOMPurify → hljs → langs → marked；chatroom.js 里 escWithImages 用） -->
+  <script src="/static/vendor/purify.min.js?v=1"></script>
+  <script src="/static/vendor/highlight.min.js?v=1"></script>
+  <script src="/static/vendor/lang-bash.min.js?v=1"></script>
+  <script src="/static/vendor/lang-css.min.js?v=1"></script>
+  <script src="/static/vendor/lang-go.min.js?v=1"></script>
+  <script src="/static/vendor/lang-java.min.js?v=1"></script>
+  <script src="/static/vendor/lang-javascript.min.js?v=1"></script>
+  <script src="/static/vendor/lang-json.min.js?v=1"></script>
+  <script src="/static/vendor/lang-markdown.min.js?v=1"></script>
+  <script src="/static/vendor/lang-python.min.js?v=1"></script>
+  <script src="/static/vendor/lang-sql.min.js?v=1"></script>
+  <script src="/static/vendor/lang-typescript.min.js?v=1"></script>
+  <script src="/static/vendor/lang-xml.min.js?v=1"></script>
+  <script src="/static/vendor/lang-yaml.min.js?v=1"></script>
+  <script src="/static/vendor/marked.min.js?v=1"></script>
+  <script src="/static/chatroom.js?v=audio-mutex-20260803-md-unreadjump"></script>
   <script src="/static/voice-call.js?v=voice-call-polish-20260704g"></script>
 </body>
 </html>

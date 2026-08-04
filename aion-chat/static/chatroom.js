@@ -2725,10 +2725,22 @@ function crBubbleParts(raw, isUser = false) {
   const splitText = text.replace(/(\[转账(?:给[^\uff1a:]+?)?[：:]\s*-?\d+(?:\.\d+)?\s*元\])/g, isUser ? '\n$1\n' : '\n\n$1\n\n');
   if (isUser) return splitText.split(/\n+/).filter(p => p.trim());
 
-  const singleLineParts = splitText.split(/\n+/).map(p => p.trim()).filter(Boolean);
-  if (singleLineParts.length < 2) return singleLineParts;
-  if (singleLineParts.some(p => CR_STRUCTURED_LINE_RE.test(p))) return splitText.split(/\n{2,}/).filter(p => p.trim());
-  return singleLineParts;
+  // AI 消息走 MD：先抽出 ``` 代码块整体占位（内部可能含空行），
+  // 避免下面按空行/单行拆分把代码块切断，marked 无法识别。
+  const codeBlocks = [];
+  const protectedText = splitText.replace(/```[\s\S]*?```/g, (m) => {
+    codeBlocks.push(m);
+    return `@@AION_CB${codeBlocks.length - 1}@@`;
+  });
+  const restore = (s) => s.replace(/@@AION_CB(\d+)@@/g, (_, i) => codeBlocks[+i] || '');
+
+  const singleLineParts = protectedText.split(/\n+/).map(p => p.trim()).filter(Boolean);
+  if (singleLineParts.length < 2) return singleLineParts.map(restore);
+  // 有代码块（已被抽占位）或检测到结构化行 → 按空行拆，别退化成单行拆切断连续段落
+  if (codeBlocks.length || singleLineParts.some(p => CR_STRUCTURED_LINE_RE.test(p))) {
+    return protectedText.split(/\n{2,}/).map(restore).filter(p => p.trim());
+  }
+  return singleLineParts.map(restore);
 }
 
 function crMessageContentItems(raw, isUser = false) {
@@ -5906,6 +5918,26 @@ function esc(str) {
   return div.innerHTML;
 }
 
+// ── MD 渲染初始化 ──
+// marked v12 + hljs：注册 code 渲染器调 hljs.highlight（与 chat.js 一致）
+if (window.marked && window.hljs) {
+  marked.use({
+    renderer: {
+      code(code, lang) {
+        const language = (lang || '').match(/\S*/)[0];
+        let body;
+        try {
+          body = language && hljs.getLanguage(language)
+            ? hljs.highlight(code, { language, ignoreIllegals: true }).value
+            : hljs.highlightAuto(code).value;
+        } catch (_) { body = esc(code); }
+        return `<pre><code class="hljs language-${language}">${body}</code></pre>`;
+      }
+    }
+  });
+  marked.setOptions({ breaks: true, gfm: true, pedantic: false });
+}
+
 function crRenderInnerMonologues(html) {
   return String(html || '').replace(/\[心里嘀咕[：:]\s*([^\]]+?)\]/g, (_, content) =>
     `<span class="inner-monologue">${content.trim()}</span>`
@@ -5946,26 +5978,49 @@ function escWithTransfer(str) {
   return crRenderInnerMonologues(renderTransferCards(esc(str)));
 }
 
-/** 将文本中的 [[image:...]] 标记渲染为 <img>，[转账：N元] 渲染为卡片，其余部分转义 */
+/** AI 消息：Markdown 渲染流水线（对齐私聊 formatMsg）。
+ *  esc → 占位(转账卡片/[[image:...]]) → marked.parse → 还原占位 → DOMPurify → 心里嘀咕
+ */
 function escWithImages(str) {
   if (!str) return '';
+  const blocks = [];
+  const reserve = (html) => {
+    blocks.push(html);
+    return `\n\n<!--AIONBLOCK${blocks.length - 1}-->\n\n`;
+  };
+
+  let text = esc(str);
+
+  // 转账卡片 → 占位（避免被 marked 当普通文本或破坏 MD 块结构）
+  const transferRe = /\[转账(?:给([^：:]+?))?[：:]\s*(-?\d+(?:\.\d+)?)\s*元\]/g;
+  text = text.replace(transferRe, (m) => reserve(renderTransferCards(m)));
+
+  // [[image:...]] → 占位
   const imgRe = /\[\[image:(\S+?)\]\]/g;
-  let result = '';
-  let lastIdx = 0;
-  let match;
-  while ((match = imgRe.exec(str)) !== null) {
-    const before = str.slice(lastIdx, match.index);
-    if (before) result += esc(before);
+  text = text.replace(imgRe, (m, url) => {
     // Connor 端 /uploads/ 在聊天室对应 /cr-uploads/
-    let imgUrl = match[1];
+    let imgUrl = url;
     if (imgUrl.startsWith('/uploads/')) imgUrl = '/cr-uploads/' + imgUrl.slice('/uploads/'.length);
-    const safeUrl = esc(imgUrl);
-    result += `<img class="cr-inline-img" src="${safeUrl}" ${imageInteractionAttrs()} loading="lazy">`;
-    lastIdx = imgRe.lastIndex;
+    return reserve(`<img class="cr-inline-img" src="${esc(imgUrl)}" ${imageInteractionAttrs()} loading="lazy">`);
+  });
+
+  // MD 渲染
+  let html = window.marked ? marked.parse(text) : text.replace(/\n/g, '<br>');
+
+  // 占位还原
+  html = html.replace(/<!--AIONBLOCK(\d+)-->/g, (_, i) => blocks[+i] || '');
+
+  // XSS 兜底
+  if (window.DOMPurify) {
+    html = DOMPurify.sanitize(html, {
+      ADD_ATTR: ['onclick', 'loading'],
+      ADD_TAGS: ['svg', 'path', 'line', 'circle', 'mark'],
+      FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'style'],
+      FORBID_ATTR: ['onerror', 'onload'],
+    });
   }
-  const tail = str.slice(lastIdx);
-  if (tail) result += esc(tail);
-  return crRenderInnerMonologues(renderTransferCards(result));
+
+  return crRenderInnerMonologues(html);
 }
 
 // ══════════════════════════════════════════════════
