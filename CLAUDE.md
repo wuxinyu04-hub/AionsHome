@@ -13,6 +13,7 @@ FastAPI 后端 + 原生 JS 前端的个人 AI 伴侣项目。后端在 `aion-cha
 
     config.py            ai_providers.py       tts.py
     routes/settings.py   static/settings.html  main.py
+    static/chat.js
 
 `static/chat.html:313` 的 `?v=` 尤其危险。改 `chat.js` 必须同步 bump 它，
 但两个窗口同时 bump 同一行，后一个会把前一个的 chat.js 改动锁在旧缓存里，
@@ -38,3 +39,7 @@ Write 整文件覆盖，会静默吃掉别人的改动。改动尽量走 Edit。
 
 功能验证 OK 后立刻按主题 commit，不等积攒（并行时干净的树打架成本低很多）。
 `git commit` 由用户决定时机，不要自动提交。
+
+commit 时必须按文件名精确 `git add <file>...`，禁止 `git add -A` / `git add .`——
+别的窗口未提交的改动会被一起扫进来（2026-08-04 音乐修复就这样被另一窗口的
+未读功能 commit 卷走了）。同一文件混了两个主题的改动时，用 `git add -p` 按 hunk 挑。
