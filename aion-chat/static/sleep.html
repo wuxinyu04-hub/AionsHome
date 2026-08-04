@@ -163,8 +163,12 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .pc{background:none;border:none;color:var(--fg-soft);font-size:14px;cursor:pointer;font-family:var(--sans);
   min-width:52px;min-height:52px;border-radius:50%;display:grid;place-items:center}
 .pc:active{background:rgba(239,233,219,.07)}
-.pc.main{width:68px;height:68px;border-radius:50%;background:var(--amber);color:#171106;font-size:23px;display:grid;place-items:center;box-shadow:0 8px 28px rgba(224,180,120,.3)}
+.pc.main{width:68px;height:68px;border-radius:50%;background:var(--amber);color:#171106;font-size:23px;display:grid;place-items:center;box-shadow:0 8px 28px rgba(224,180,120,.3);position:relative}
 .pc.main:active{background:var(--amber)}
+.pc.main .pg{display:grid}
+.pc.main.playing .pg{display:none}
+.pc.main.playing::before,.pc.main.playing::after{content:'';position:absolute;top:50%;left:50%;width:6px;height:14px;border-radius:1.5px;background:currentColor;transform:translate(-50%,-50%) translateX(-4px)}
+.pc.main.playing::after{transform:translate(-50%,-50%) translateX(4px)}
 .p-timer{display:flex;justify-content:center;gap:9px;margin-top:24px}
 .tm{padding:9px 15px;border-radius:16px;border:1px solid rgba(239,233,219,.14);background:rgba(11,14,24,.5);color:var(--muted);font-size:11px;cursor:pointer;font-family:var(--sans)}
 .tm.on{border-color:rgba(224,180,120,.5);color:var(--amber);background:var(--amber-dim)}
@@ -300,7 +304,11 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .mini-prog-track{width:100%;height:3px;border-radius:2px;background:rgba(239,233,219,.12);overflow:hidden;position:relative}
 .mini-prog-fill{position:absolute;left:0;top:0;height:100%;width:0%;background:var(--amber);border-radius:2px;transition:width .3s linear}
 .mini-pause{flex:0 0 auto;width:36px;height:36px;border:none;background:rgba(224,180,120,.15);color:var(--amber);
-  border-radius:50%;font-size:15px;cursor:pointer;display:grid;place-items:center;transition:background .15s}
+  border-radius:50%;font-size:15px;cursor:pointer;display:grid;place-items:center;transition:background .15s;position:relative}
+.mini-pause .pg{display:grid}
+.mini-pause.playing .pg{display:none}
+.mini-pause.playing::before,.mini-pause.playing::after{content:'';position:absolute;top:50%;left:50%;width:3px;height:9px;border-radius:1px;background:currentColor;transform:translate(-50%,-50%) translateX(-2px)}
+.mini-pause.playing::after{transform:translate(-50%,-50%) translateX(2px)}
 
 /* 底部留白只在迷你播放器真的浮起来时才占位，否则各屏底部会空一大条 */
 .app.has-mini #player,
@@ -415,7 +423,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
         <div class="r-label">继 续 听</div>
         <div class="r-title" id="resumeTitle"></div>
         <div class="r-meta"><span id="resumeMeta"></span></div>
-        <div class="r-play">▶</div>
+        <div class="r-play">▶&#xFE0E;</div>
         <div class="r-bar" id="resumeBar"></div>
       </div>
 
@@ -485,7 +493,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
         </div>
         <div class="p-ctrl">
           <button class="pc" id="pRew">↺15</button>
-          <button class="pc main" id="pPlay">▶</button>
+          <button class="pc main" id="pPlay"><span class="pg">▶︎</span></button>
           <button class="pc" id="pFwd">15↻</button>
         </div>
         <div class="p-timer" id="timerRow">
@@ -538,7 +546,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
       <h2 class="al-title" id="alTitle"></h2>
       <p class="al-meta" id="alMeta"></p>
       <div class="al-actions">
-        <button class="al-play" id="alPlay">▶ 继续听</button>
+        <button class="al-play" id="alPlay">▶&#xFE0E; 继续听</button>
         <button class="al-next" id="alNext">✨ 读下一章</button>
         <button class="al-next" id="alBatch">▣ 整本生成</button>
       </div>
@@ -555,7 +563,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
         <div class="mini-prog-track"><div class="mini-prog-fill" id="miniProgFill"></div></div>
       </div>
     </div>
-    <button class="mini-pause" id="miniPause">⏸</button>
+    <button class="mini-pause" id="miniPause"><span class="pg">▶︎</span></button>
   </div>
 
   <!-- ═══ 抽屉（必须在 .app 内，inset:0 才铺满 app）═══ -->
@@ -604,6 +612,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
-<script src="/static/sleep.js?v=nxoff-20260804-back"></script>
+<script src="/static/sleep.js?v=pause-20260804"></script>
 </body>
 </html>

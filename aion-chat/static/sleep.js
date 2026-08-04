@@ -118,7 +118,7 @@
       const it = state.items.find(x => x.id === state.currentId) || { title: $('pTitle').textContent || '今晚的故事', id: state.currentId };
       $('miniTitle').textContent = it.title || '—';
       renderMiniCover(it.id);
-      $('miniPause').textContent = audio.paused ? '▶' : '⏸';
+      $('miniPause').classList.toggle('playing', !audio.paused);
       const d = audio.duration;
       $('miniProgFill').style.width = (isFinite(d) && d > 0 ? audio.currentTime / d * 100 : 0) + '%';
       miniPlayer.classList.add('show');
@@ -230,7 +230,7 @@
       });
     } else if (state.mode === 'meditation') {
       const meds = state.items.filter(i => i.category === 'meditation' && i.source === 'preset');
-      box.innerHTML = meds.map(i => `<button class="mood" data-id="${esc(i.id)}">▶ ${esc(i.title)}</button>`).join('')
+      box.innerHTML = meds.map(i => `<button class="mood" data-id="${esc(i.id)}">▶︎ ${esc(i.title)}</button>`).join('')
         + '<button class="mood" data-new="1">✨ 生成一段新的</button>';
       box.querySelectorAll('.mood').forEach(b => b.onclick = () => {
         if (b.dataset.new) { startGenerate(''); return; }
@@ -921,7 +921,7 @@
   }
 
   // 控制
-  function updatePlayUi() { $('pPlay').textContent = audio.paused ? '▶' : '⏸'; }
+  function updatePlayUi() { $('pPlay').classList.toggle('playing', !audio.paused); }
   $('pPlay').onclick = () => { if (!audio.src) return; if (audio.paused) audio.play().catch(() => { }); else audio.pause(); };
   $('pRew').onclick = () => { audio.currentTime = Math.max(0, audio.currentTime - 15); };
   $('pFwd').onclick = () => { audio.currentTime = Math.min(audio.duration || 1e9, audio.currentTime + 15); };
@@ -965,7 +965,7 @@
     // 迷你播放器进度同步
     if (miniPlayer.classList.contains('show')) {
       $('miniProgFill').style.width = (audio.currentTime / audio.duration * 100) + '%';
-      $('miniPause').textContent = audio.paused ? '▶' : '⏸';
+      $('miniPause').classList.toggle('playing', !audio.paused);
     }
     updateCaptions();
     saveProgressThrottled();
