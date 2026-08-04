@@ -806,7 +806,8 @@
     let n = 0;
     state.pollTimer = setInterval(async () => {
       // 放弃时必须 clearInterval：只 return 的话定时器还在，会一直 2.5s 打一次 /status
-      if (++n > 150) { clearInterval(state.pollTimer); state.pollTimer = null; hideGenNote(); toast('等太久了，稍后去故事库看看'); return; }
+      // 上限 150 次(6.25min)太短——ASMR 长剧本录音常超 6 分钟，轮询中途放弃会让卡片停在"在录音…"
+      if (++n > 300) { clearInterval(state.pollTimer); state.pollTimer = null; hideGenNote(); toast('等太久了，稍后去故事库看看'); return; }
       let it = null;
       try { const r = await fetch('/api/sleep/' + id + '/status'); it = await r.json(); } catch { return; }
       if (!it || !it.status) return;
