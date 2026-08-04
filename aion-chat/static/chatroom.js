@@ -13,6 +13,10 @@ let isReplyOnce = false;
 let chatroomModels = [];
 let pendingAttachments = [];  // [{url, type, name}]
 let crMessagesById = {};
+// ── 微信式「跳到未读」悬浮条 ──
+let crUnreadAnchor = null;       // 进页时的全局锚点快照（last_read_at）
+let crCurrentUnread = null;      // {first_unread_msg_id, unread_count} 当前房间
+let crUnreadBarTimer = null;
 let memSourceMemId = null;
 let memSourceMessages = [];
 let chatroomMemoryCache = [];
@@ -1034,6 +1038,79 @@ function scrollToBottom(force = false) {
   if (force || isNearBottom()) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
+}
+
+// ── 微信式「跳到未读」悬浮条 ─────────────────────────────
+function _crUnreadBarEl() {
+  let el = document.getElementById('crUnreadJumpBar');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'crUnreadJumpBar';
+    el.className = 'unread-jump-bar';
+    el.onclick = jumpCrUnread;
+    messagesEl.parentNode.insertBefore(el, messagesEl.nextSibling);
+  }
+  return el;
+}
+
+function _crPositionUnreadBar() {
+  const el = _crUnreadBarEl();
+  const composer = document.getElementById('composer') || document.querySelector('.composer');
+  if (composer) {
+    el.style.bottom = Math.max(8, window.innerHeight - composer.getBoundingClientRect().top + 10) + 'px';
+  }
+}
+
+function showCrUnreadBar(count) {
+  const el = _crUnreadBarEl();
+  _crPositionUnreadBar();
+  el.textContent = `↓ ${count} 条未读`;
+  el.classList.add('show');
+}
+
+function hideCrUnreadBar() {
+  const el = document.getElementById('crUnreadJumpBar');
+  if (el) el.classList.remove('show');
+}
+
+function maybeShowCrUnreadBar() {
+  crCurrentUnread = null;
+  if (!crUnreadAnchor || !currentRoom) { hideCrUnreadBar(); return; }
+  // 锚点全局，只统计当前房间内的未读 AI 消息
+  const msgs = Object.values(crMessagesById);
+  let first = null, count = 0;
+  for (const m of msgs) {
+    if ((m.sender === 'aion' || m.sender === 'connor') && m.created_at > crUnreadAnchor) {
+      count++;
+      if (!first || m.created_at < first.created_at) first = m;
+    }
+  }
+  if (!first || count === 0) { hideCrUnreadBar(); return; }
+  crCurrentUnread = { first_unread_msg_id: first.id, unread_count: count };
+  // 目标必须在已加载页（loadMessages 取最近 100 条，通常足够）
+  if (!document.querySelector(`[data-msg-id="${first.id}"]`)) { hideCrUnreadBar(); return; }
+  showCrUnreadBar(count);
+}
+
+function flashCrUnreadRow(row) {
+  if (!row) return;
+  row.classList.add('flash-unread');
+  if (crUnreadBarTimer) clearTimeout(crUnreadBarTimer);
+  crUnreadBarTimer = setTimeout(() => {
+    row.classList.remove('flash-unread');
+    crUnreadBarTimer = null;
+  }, 1600);
+}
+
+function jumpCrUnread() {
+  const info = crCurrentUnread;
+  if (!info || !info.first_unread_msg_id) { hideCrUnreadBar(); return; }
+  const row = document.querySelector(`[data-msg-id="${info.first_unread_msg_id}"]`);
+  if (row) {
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    flashCrUnreadRow(row);
+  }
+  hideCrUnreadBar();
 }
 
 // 滚动到顶部时自动加载更早的消息
@@ -2233,6 +2310,7 @@ async function selectRoom(roomId) {
   updateHeaderActions();
   resetChatSearch();
   await loadMessages();
+  maybeShowCrUnreadBar();
   crAmbientSyncRunning();
   closeSidebar();
 }
@@ -6775,8 +6853,10 @@ function crToyCloseEditor() { document.getElementById('crToyEditorOverlay').clas
 // ══════════════════════════════════════════════════
 
 (async function init() {
-  // 进入聊天室页即标记已读（清未读角标）
-  fetch('/api/chatroom/mark-read', { method: 'POST' }).catch(() => {});
+  // 进入聊天室页：先拿未读锚点快照、再标记已读（锚点只有旧值才跳得准）
+  api('/api/chatroom/unread-info').then(info => { crUnreadAnchor = info?.last_read_at ?? null; })
+    .catch(() => {})
+    .finally(() => fetch('/api/chatroom/mark-read', { method: 'POST' }).catch(() => {}));
   // Start independent Cloudflare requests together. Only the message request
   // must wait for the room list, reducing startup from many round trips to two.
   const configPromise = api('/config');

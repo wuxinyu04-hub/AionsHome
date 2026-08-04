@@ -2047,6 +2047,44 @@ async def check_chatroom_unread():
     return {"unread": cnt}
 
 
+@router.get("/unread-info")
+async def chatroom_unread_info(room_id: str = ""):
+    """返回群聊未读锚点与未读数，可选限定房间返回该房间最早未读消息 id。
+
+    供进入会话后跳转到未读（锚点是全局单行的，限定房间才能定位到当前房间）。
+    """
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute(
+            "SELECT last_read_at FROM chatroom_read_anchor WHERE id=1"
+        )).fetchone()
+        last_read = row["last_read_at"] if row else 0
+        if not last_read:  # 无锚点视为已读（对齐 chat 语义），先落锚点=now
+            last_read = time.time()
+            await db.execute(
+                "INSERT OR REPLACE INTO chatroom_read_anchor (id, last_read_at) VALUES (1, ?)",
+                (last_read,),
+            )
+            await db.commit()
+        cnt = (await (await db.execute(
+            "SELECT COUNT(*) as cnt FROM chatroom_messages WHERE sender IN ('aion','connor') AND created_at > ?",
+            (last_read,),
+        )).fetchone())["cnt"]
+        first_id = None
+        if room_id:
+            frow = await (await db.execute(
+                "SELECT id FROM chatroom_messages WHERE room_id=? AND sender IN ('aion','connor') "
+                "AND created_at > ? ORDER BY created_at ASC LIMIT 1",
+                (room_id, last_read),
+            )).fetchone()
+            first_id = frow["id"] if frow else None
+    return {
+        "last_read_at": last_read,
+        "unread_count": cnt,
+        "first_unread_msg_id": first_id,
+    }
+
+
 @router.post("/mark-read")
 async def mark_chatroom_read():
     now = time.time()

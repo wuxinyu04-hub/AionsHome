@@ -3302,7 +3302,7 @@ body[data-theme="light"] .toast {
   }
   .bubble {
     font-size: 14px;
-    line-height: 1.55;
+    line-height: 1.6;
   }
   .system-event-msg {
     align-self: stretch;

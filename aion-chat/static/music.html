@@ -378,8 +378,10 @@ body.music-page[data-theme="dark"] { background:var(--bg); color:var(--t1); }
    关闭音乐子页时把播放权交回父页 bar（handoff），音乐不断。
    $ / api / escHtml 由 common.js 提供。 */
 const QKEY = 'aion_music_queue_v1', SKEY = 'aion_music_state_v1';
-let queue = [], index = -1, repeat = 'off', shuffle = false;
-let audio = null, lastCover = null, fullOpen = false, lyricsOpen = false, curTab = 'home';
+// 队列/索引/音频/leader 用 var 声明，挂到 window：聊天页 closeSubPage 时经 contentWindow
+// 同步读取并接管播放（let 不进 window，同源也读不到；WebView 下 handoff 不可靠，必须同步接管）
+var queue = [], index = -1; let repeat = 'off', shuffle = false;
+var audio = null; let lastCover = null, fullOpen = false, lyricsOpen = false, curTab = 'home';
 let lyricsData = [], lyricsIdx = -1, lastSongId = null;
 const likedIds = new Set(), songIdx = {};
 let cpSongId = null, cpComment = '', cpTimer = null, cpHideTimer = null;  // 驻场评论状态
@@ -507,7 +509,7 @@ async function loadWorldbook() {
 
 /* ── 与聊天页播放条联动：加入 aion-music 频道，leader 播→父页 bar 镜像；父页 leader→本页镜像 ── */
 const MUSIC_LEADER_KEY = 'aion_music_leader_v1';
-let musBC = null, musIsLeader = false, musMirror = null;
+let musBC = null; var musIsLeader = false; var musMirror = null;
 let musTabId = 'mus_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 let musMirrorPos = 0, musMirrorAt = 0, _musBcTs = 0, _musHbTs = 0;
 
@@ -589,6 +591,9 @@ function musInit() {
   window.addEventListener('beforeunload', () => { if (musIsLeader) musHandoff(); });
   // 父页关闭音乐子页：handoff 给聊天页 bar，音乐不断
   window.addEventListener('message', e => { if (e.data && e.data.type === 'aionMusicSubpageClose') musHandoff(); });
+  // 本页刚加载：主动问一句"谁在放"。聊天页 leader 会回一条 state，本页镜像续播，
+  // 避免聊天页在播时本页却显示静音的假播放条（"再进去会停"的感知）
+  musBroadcast({ type: 'request_state' });
 }
 
 function init() {

@@ -821,6 +821,42 @@ async def check_chat_unread():
     return {"unread": cnt}
 
 
+@router.get("/api/chat/unread-info")
+async def chat_unread_info(conv_id: str = ""):
+    """返回某会话最早未读 AI 消息与未读数，供进入会话后跳转到未读。
+
+    无锚点先落锚点=now（与 /api/chat/unread 语义一致，避免历史消息全算未读）。
+    """
+    if not conv_id:
+        return {"last_read_at": None, "first_unread_msg_id": None, "unread_count": 0}
+    now = time.time()
+    async with get_db() as db:
+        db.row_factory = __import__('aiosqlite').Row
+        await db.execute(
+            "INSERT OR IGNORE INTO chat_conv_read_anchor (conv_id, last_read_at) VALUES (?, ?)",
+            (conv_id, now),
+        )
+        await db.commit()
+        row = await (await db.execute(
+            "SELECT last_read_at FROM chat_conv_read_anchor WHERE conv_id=?", (conv_id,)
+        )).fetchone()
+        last_read = row["last_read_at"] if row else None
+        # COUNT(*) OVER () 在同一条窗口查询里带出最早未读 id 和总数
+        cur = await db.execute(
+            "SELECT id, COUNT(*) OVER () AS total FROM messages "
+            "WHERE conv_id=? AND role='assistant' AND created_at > "
+            "COALESCE((SELECT last_read_at FROM chat_conv_read_anchor WHERE conv_id=?), 0) "
+            "ORDER BY created_at ASC LIMIT 1",
+            (conv_id, conv_id),
+        )
+        first = await cur.fetchone()
+    return {
+        "last_read_at": last_read,
+        "first_unread_msg_id": first["id"] if first else None,
+        "unread_count": first["total"] if first else 0,
+    }
+
+
 @router.post("/api/chat/mark-read")
 async def mark_chat_read(conv_id: str = ""):
     """标记某会话已读（更新该会话锚点为当前时间）。"""

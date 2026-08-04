@@ -21,6 +21,10 @@ let poiSearchMsgId = null;
 let poiSearchCategories = null;
 let chatroomConfig = {};
 
+// ── 微信式「跳到未读」悬浮条 ──
+let currentUnreadInfo = null;  // {first_unread_msg_id, unread_count} 进入会话时的未读快照
+let unreadBarTimer = null;
+
 // 客户端唯一 ID（持久化）— 不用 crypto.randomUUID() 因为 WebView 非安全上下文不支持
 const _clientId = localStorage.getItem('aion_client_id') || (() => {
   const a = new Uint8Array(16); crypto.getRandomValues(a);
@@ -2107,6 +2111,81 @@ function scrollBottom() {
   requestAnimationFrame(() => el.scrollTop = el.scrollHeight);
 }
 
+// ── 微信式「跳到未读」悬浮条 ─────────────────────────────
+function _unreadBarEl() {
+  let el = document.getElementById('unreadJumpBar');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'unreadJumpBar';
+    el.className = 'unread-jump-bar';
+    el.onclick = jumpToUnread;
+    const msgEl = $("messages");
+    msgEl.parentNode.insertBefore(el, msgEl.nextSibling);
+  }
+  return el;
+}
+
+function _positionUnreadBar() {
+  const el = _unreadBarEl();
+  const inputArea = document.querySelector('.input-area');
+  if (inputArea) {
+    el.style.bottom = Math.max(8, window.innerHeight - inputArea.getBoundingClientRect().top + 10) + 'px';
+  }
+}
+
+function showUnreadBar(count) {
+  const el = _unreadBarEl();
+  _positionUnreadBar();
+  el.textContent = `↓ ${count} 条未读`;
+  el.classList.add('show');
+}
+
+function hideUnreadBar() {
+  const el = document.getElementById('unreadJumpBar');
+  if (el) el.classList.remove('show');
+}
+
+function maybeShowUnreadBar(info) {
+  currentUnreadInfo = info && info.first_unread_msg_id ? info : null;
+  if (!currentUnreadInfo) { hideUnreadBar(); return; }
+  // 目标不在已加载页（>50 条未读）不显示，保持简单
+  if (!document.getElementById('m_' + currentUnreadInfo.first_unread_msg_id)) { hideUnreadBar(); return; }
+  showUnreadBar(currentUnreadInfo.unread_count || 1);
+}
+
+function flashUnreadRow(row) {
+  if (!row) return;
+  row.classList.add('flash-unread');
+  if (unreadBarTimer) clearTimeout(unreadBarTimer);
+  unreadBarTimer = setTimeout(() => {
+    row.classList.remove('flash-unread');
+    unreadBarTimer = null;
+  }, 1600);
+}
+
+async function jumpToUnread() {
+  const info = currentUnreadInfo;
+  if (!info || !info.first_unread_msg_id) { hideUnreadBar(); return; }
+  let row = document.getElementById('m_' + info.first_unread_msg_id);
+  if (!row && currentConvId) {
+    // 目标不在已加载页：走 messages-around 拉窗口再跳
+    try {
+      const around = await api("GET", `/api/conversations/${currentConvId}/messages-around/${info.first_unread_msg_id}?limit=25`);
+      if (around && around.length) {
+        setCurrentMessages(around);
+        hasMoreMessages = true;  // 跳进中部，更早的仍可加载
+        renderMessages();
+        row = document.getElementById('m_' + info.first_unread_msg_id);
+      }
+    } catch (e) { console.warn('[chat] jump to unread around load failed:', e); }
+  }
+  if (row) {
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    flashUnreadRow(row);
+  }
+  hideUnreadBar();
+}
+
 function renderDebugBar(msgId) {
   // 不再在聊天气泡下方渲染，改为写入系统日志
   const d = msgDebugData[msgId];
@@ -2762,7 +2841,11 @@ function musicOnBCMessage(msg) {
     }
   } else if (msg.type === 'handoff') {
     // 音乐子页关闭时把播放权交回聊天页 bar：接管并续播
-    if (!musicClosed) {
+    // music.html 明确在播（songId 非空）就接管：历史"已关闭"标志是用户上次在聊天页点 ✕ 留的，
+    // 不代表现在想停。同步接管路径已绕开本分支，这里作非 WebView 浏览器的兜底加固。
+    if (msg.songId != null) {
+      try { localStorage.removeItem(MUSIC_CLOSED_KEY); } catch (e) {}
+      musicClosed = false;
       if (Array.isArray(msg.queue) && msg.queue.length) {
         musicQueue = msg.queue;
         musicSaveQueue();
@@ -2784,6 +2867,9 @@ function musicOnBCMessage(msg) {
   } else if (msg.type === 'request_play') {
     // 其他标签/子页请求在此播放
     if (musicIsLeader && msg.song) { playMusicNow(msg.song); }
+  } else if (msg.type === 'request_state') {
+    // 音乐子页刚加载，问当前谁在放。本标签是 leader 就回一条 state，让它镜像续播
+    if (musicIsLeader) musicBroadcastState();
   } else if (msg.type === 'close') {
     // 任意标签关闭了播放器:全员同步关闭
     musicClosed = true;
@@ -2801,6 +2887,46 @@ function musicOnBCMessage(msg) {
     const wrap = document.getElementById('globalMusicWrap');
     if (wrap) wrap.style.display = 'none';
   }
+}
+
+// 音乐子页(iframe)关闭时，聊天页同步直接从 iframe 接管播放权。
+// WebView(AionApp)下 iframe 的 beforeunload 不保证触发、postMessage 是异步的会在
+// src='about:blank' 卸载前丢失，handoff 广播收不到。这里同源直读 contentWindow 状态、
+// 直调其函数，在 ✕ 的 click 用户激活栈里同步续播，绕开 autoplay 策略。
+function musicTakeoverFromFrame(frame) {
+  if (!frame) return false;
+  const w = frame.contentWindow;
+  if (!w) return false;
+  // music.html 正在持有播放权并出声才接管；否则交回旧逻辑（postMessage / 无操作）
+  const leading = !!(w.musIsLeader && w.audio && w.audio.src);
+  if (!leading) return false;
+  // 读 music.html 当前队列/曲目/进度（同源，直读全局变量）
+  const mq = Array.isArray(w.queue) ? w.queue.slice() : [];
+  const mi = (typeof w.index === 'number') ? w.index : -1;
+  const pos = (w.audio && w.audio.currentTime) || 0;
+  const song = (mi >= 0 && mi < mq.length) ? mq[mi] : null;
+  if (!song || song.id == null) return false;
+
+  // 1) 先停 music iframe 的声，避免与聊天页接管后双声；并释放它的 leader 身份
+  try { w.audio.pause(); } catch (e) {}
+  try { if (w.musRelease) w.musRelease(); } catch (e) {}
+
+  // 2) 聊天页接管：清关门标志 → 抢 leader → 续播
+  try { localStorage.removeItem(MUSIC_CLOSED_KEY); } catch (e) {}
+  musicClosed = false;
+  musicQueue = mq; musicSaveQueue();
+  musicQueue.forEach(s => { if (s && s.id != null) musicSongIndex[s.id] = s; });
+  musicIndex = mi; musicSaveState();
+  musicClaimLeader();             // 设 musicIsLeader、广播 leader_claim（让别处让权）
+  musicEnsureBar();
+  musicAudio.src = '/api/music/stream/' + song.id;
+  musicAudio.play().then(() => {
+    try { if (pos > 0 && musicAudio.duration) musicAudio.currentTime = pos; } catch (e) {}
+  }).catch(() => {});
+  musicRenderBar();               // 立即显示播放条
+  musicReportNowPlaying(true);
+  if (musicPlayerOverlay) { musicPlayerRender(); loadMusicLyrics(song.id); }
+  return true;
 }
 
 function musicFmt(sec) {
@@ -3582,7 +3708,9 @@ async function newConversation() {
 async function selectConv(id) {
   currentConvId = id;
   localStorage.setItem('aion_last_conv', id);
-  fetch(`/api/chat/mark-read?conv_id=${encodeURIComponent(id)}`, { method: 'POST' }).catch(() => {});
+  // 先拿未读快照、再标记已读：锚点只有旧值才跳得准（mark-read 会当场清掉）
+  const unreadP = api("GET", `/api/chat/unread-info?conv_id=${encodeURIComponent(id)}`).catch(() => null);
+  unreadP.then(() => fetch(`/api/chat/mark-read?conv_id=${encodeURIComponent(id)}`, { method: 'POST' }).catch(() => {}));
   msgDebugData = {};
   _heartWhisperMsgIds.clear();
   Object.keys(_heartWhisperContent).forEach(k => delete _heartWhisperContent[k]);
@@ -3594,10 +3722,11 @@ async function selectConv(id) {
     $("modelSelect").value = conv.model;
   }
   // 消息 / 心语 / 记忆三者互相无依赖，并行加载；renderMessages 前三者都已就绪
-  const [msgs, hwList, mrList] = await Promise.all([
+  const [msgs, hwList, mrList, unreadInfo] = await Promise.all([
     api("GET", `/api/conversations/${id}/messages?limit=${MSG_PAGE_SIZE}`),
     api("GET", `/api/heart-whispers/by-conv/${id}`).catch(e => { console.warn('加载心语失败:', e); return null; }),
     api("GET", `/api/memories/by-conv/${id}`).catch(e => { console.warn('加载记忆记录失败:', e); return null; }),
+    unreadP,
   ]);
   setCurrentMessages(msgs);
   if (Array.isArray(hwList)) for (const hw of hwList) {
@@ -3615,6 +3744,7 @@ async function selectConv(id) {
   hasMoreMessages = currentMessages.length >= MSG_PAGE_SIZE;
   renderConvList();
   renderMessages();
+  maybeShowUnreadBar(unreadInfo);
   $("sendBtn").disabled = false;
   closeSidebar();
 }
@@ -6652,7 +6782,9 @@ function shouldNavigatePersistentSubPage(frame, url) {
 
 function isPersistentSubPage(url) {
   const path = subPagePath(url);
-  return path === '/' || path === '/chatroom' || path === '/health';
+  // /music 也持久化：音乐 App 的 iframe 常驻，退出/切换子页时不卸载，后台继续作为 leader 出声，
+  // 聊天页条镜像显示；再进入直接呈现同一存活 iframe，不会因 src 重载而停播（WebView 下 beforeunload 不可靠）
+  return path === '/' || path === '/chatroom' || path === '/health' || path === '/music';
 }
 
 function attachSubPageFrameLoad(frame) {
@@ -6694,6 +6826,9 @@ attachSubPageFrameLoad(transientSubPageFrame);
 function openSubPage(url) {
   closeSidebar();
   syncSubPageMode(url);
+  // 重新进入音乐子页：持久化 iframe 不重载、不会重发 request_state，本页是 leader 在播就主动推一条
+  // state，让音乐页立即镜像，而不是等下一个 4s 广播周期（避免"再进去像停了"的假象）
+  if (subPagePath(url) === '/music' && musicIsLeader && musicAudio && !musicAudio.paused) musicBroadcastState();
   const frame = getSubPageFrame(url);
   document.querySelectorAll('.sub-page-frame').forEach(item => {
     item.style.display = item === frame ? 'block' : 'none';
@@ -6713,9 +6848,14 @@ function closeSubPage(skipReload = false) {
   ov.classList.remove('show');
   ov.classList.remove('home-subpage');
   ov.classList.remove('immersive-subpage');
-  // 音乐子页关闭：让 iframe 把播放权交回聊天页 bar（handoff），音乐不断
+  // 音乐子页关闭：同步从 iframe 直接接管播放（WebView 下 postMessage 异步 + beforeunload
+  // 不可靠，会丢 handoff），接管失败再走 postMessage 交回（非 WebView 浏览器兜底），音乐不断。
   if (activeSubPageFrame && subPagePath(currentSubPage || '') === '/music') {
-    try { activeSubPageFrame.contentWindow?.postMessage({ type: 'aionMusicSubpageClose' }, '*'); } catch (e) {}
+    let tookOver = false;
+    try { tookOver = musicTakeoverFromFrame(activeSubPageFrame); } catch (e) { tookOver = false; }
+    if (!tookOver) {
+      try { activeSubPageFrame.contentWindow?.postMessage({ type: 'aionMusicSubpageClose' }, '*'); } catch (e) {}
+    }
   }
   if (activeSubPageFrame === transientSubPageFrame) {
     transientSubPageFrame.src = 'about:blank';
