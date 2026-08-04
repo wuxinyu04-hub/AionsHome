@@ -184,6 +184,7 @@ class GenerateIn(BaseModel):
     title: str = ""
     book_id: str = ""       # 讲书模式：共读书库的书（books 表）
     chapter_index: int = -1  # <0 = 用 books.current_chapter（同步共读进度）
+    scene: str = ""          # ASMR 剧情演绎子场景："" / argument / coldwar / daily
 
 
 @router.post("/generate")
@@ -220,8 +221,10 @@ async def generate(body: GenerateIn):
     if book:
         import json as _json
         book_ref = _json.dumps({"book_id": body.book_id, "chapter": book["ch_index"]}, ensure_ascii=False)
+    # ASMR 剧情子场景白名单，非法回退 ""（走通用剧情规则）
+    scene = body.scene if body.scene in ("", "argument", "coldwar", "daily") else ""
     item_id = await bedtime.create_generated_item(body.category, title, voice, book_ref)
-    bedtime.trigger_generate(item_id, body.category, prompt, voice, title, book)
+    bedtime.trigger_generate(item_id, body.category, prompt, voice, title, book, scene)
     return {"id": item_id, "status": "generating", "title": title}
 
 

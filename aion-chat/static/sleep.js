@@ -12,6 +12,7 @@
     boyfriend: '今天加班到十点，好累…',
     reading: '想让他边读边说点什么…（可留空）',
     meditation: '想放松的地方，比如肩颈、脑子停不下来…',
+    asmr: '想演哪一段？比如：生理期第三天，我们冷战了…',
   };
   // 封面用同一个房间 SVG 的不同取景（按 id 哈希稳定分配）
   const COVER_VIEWS = ['0 0 390 370', '40 30 260 210', '140 30 260 210', '0 60 280 200', '90 120 260 200', '52 38 200 212'];
@@ -23,6 +24,7 @@
     voice: localStorage.getItem('sleep_voice') || '',
     voiceName: localStorage.getItem('sleep_voice_name') || '',
     mode: localStorage.getItem('sleep_mode') || 'boyfriend',
+    scene: '',            // ASMR 剧情子场景：'' / argument / coldwar / daily（点场景 chip 设，改输入框清）
     items: [],
     currentId: null,
     queue: [], qIdx: 0,
@@ -60,24 +62,52 @@
     navStack.push(id);
     showScreen(id);
     document.title = (id === 'player' ? '播放中 ' : id === 'album' ? '故事 ' : '') + (id === 'player' ? $('pTitle').textContent : '');
+    // 播种一条历史，让 Android 系统返回键 / 浏览器后退手势触发 popstate -> popScreen，
+    // 否则 sleep 页作为 iframe 子页无自己的历史条目，系统返回键会直接弹原生「退出」对话框。
+    try { history.pushState({ screen: id }, ''); } catch { }
   }
   function popScreen(cb) {
     if (navStack.length <= 1) {
-      try { top.location.href = '/'; } catch { location.href = '/'; }
-      return;
+      // 回到栈底 = 入口屏，交给原生弹「退出/切换地址」对话框
+      return 'dialog';
     }
     navStack.pop();
     const prev = navStack[navStack.length - 1];
     showScreen(prev);
     document.title = '晚安，小语';
     if (cb) try { cb(); } catch {}
+    return 'handled';
   }
   function setScreen(id) {
     showScreen(id);
   }
-  window.addEventListener('popstate', popScreen);
-  // 物理返回键兜底：部分 WebView 走 hashchange，这里用 history 空态兜底
+  window.addEventListener('popstate', () => {
+    // Android 返回键 / 浏览器后退触发：复用 popScreen 的导航逻辑。
+    // history 已被 popstate 自动回退一格，不再手动 back()，只做应用内状态出栈。
+    if (navStack.length > 1) {
+      navStack.pop();
+      const prev = navStack[navStack.length - 1];
+      showScreen(prev);
+      document.title = '晚安，小语';
+    }
+  });
+  // hashchange 兜底：清掉 hash 避免产生多余历史条目
   window.addEventListener('hashchange', () => { history.replaceState(null, '', location.href.split('#')[0]); });
+
+  // Android 原生返回键回调（WebViewActivity.onBackPressed -> evaluateJavascript 调这个）。
+  // 返回 'handled' = 应用内导航已处理；'dialog' = 已到入口屏，交给原生弹「退出/切换地址」对话框。
+  window.handleNativeBack = function () {
+    if (navStack.length > 1) {
+      // 出栈 + 历史回退一格，与点应用内 ↓ 按钮一致
+      navStack.pop();
+      const prev = navStack[navStack.length - 1];
+      showScreen(prev);
+      document.title = '晚安，小语';
+      try { history.back(); } catch { }
+      return 'handled';
+    }
+    return 'dialog';
+  };
 
   // ── 底部迷你播放器（全局悬浮，播放时滑入覆盖在所有页面上方） ──
   const miniPlayer = $('miniPlayer');
@@ -183,6 +213,12 @@
     { label: '有点想哭', p: '今天有点难过，有点想哭' },
     { label: '就想听你说话', p: '没什么特别的事，就是想听你说说话' },
   ];
+  // 剧情演绎的快捷场景：点一下填好输入框 + 记住 scene（后端按 scene 写不同剧情规则）
+  const DRAMA_SCENES = [
+    { label: '生理期冷战', scene: 'coldwar', p: '生理期第三天，因为一点小事吵架，现在谁都不理谁，灯关了，背对着背。' },
+    { label: '刚吵完架', scene: 'argument', p: '我们刚大吵一架，你摔门进了卧室，我在客厅坐着，想把话好好说开。' },
+    { label: '日常碎片', scene: 'daily', p: '普普通通的一个晚上，我们窝在沙发上各干各的，偶尔说两句没营养的话，很安稳。' },
+  ];
   function renderModeChips() {
     const box = $('moodRow');
     if (state.mode === 'boyfriend') {
@@ -200,6 +236,14 @@
         if (b.dataset.new) { startGenerate(''); return; }
         const it = state.items.find(x => x.id === b.dataset.id);
         if (it) onItemClick(it);
+      });
+    } else if (state.mode === 'asmr') {
+      box.innerHTML = DRAMA_SCENES.map((s, i) => `<button class="mood" data-i="${i}">${s.label}</button>`).join('');
+      box.querySelectorAll('.mood').forEach(b => b.onclick = () => {
+        const s = DRAMA_SCENES[parseInt(b.dataset.i, 10)];
+        state.scene = s.scene;
+        $('promptInput').value = s.p;
+        startGenerate(s.p);
       });
     } else {
       box.innerHTML = '';
@@ -721,6 +765,7 @@
         : state.mode === 'meditation' ? '在写今晚的冥想引导…'
           : '在写今晚的故事了，先躺好');
     const body = { category: state.mode, prompt, voice: state.voice };
+    if (state.mode === 'asmr' && state.scene) body.scene = state.scene;
     if (withBook) {
       body.book_id = bookState.sel.book_id;
       const ch = parseInt($('bpChapter').value, 10);
@@ -824,7 +869,7 @@
   }
 
   function prepSentences(text) {
-    state.fullText = (text || '').replace(/\[SFX:[^\]]+\]/g, '').trim();
+    state.fullText = (text || '').replace(/\[SFX:[^\]]+\]|（[^（）]{0,20}）/g, '').trim();
     const parts = state.fullText.split(/(?<=[。！？!?])|(?<=……)|\n+/).map(s => s.trim()).filter(s => s.length > 1);
     state.sentences = parts.length ? parts : ['今晚好好睡。'];
     state.cum = []; let acc = 0;
@@ -1179,6 +1224,8 @@
   // ── 入口屏事件 ──
   $('goBtn').onclick = () => startGenerate($('promptInput').value);
   $('promptInput').addEventListener('keydown', e => { if (e.key === 'Enter') startGenerate($('promptInput').value); });
+  // 用户手动改输入框 = 不再是快捷场景，清掉 scene（点 chip 用 el.value= 赋值不触发 input，不会误清）
+  $('promptInput').addEventListener('input', () => { state.scene = ''; });
   $('openLib').onclick = () => pushScreen('library');
   $('libBack').onclick = () => popScreen(renderResume);
   // 旧的静态 .mood 绑定已由 renderModeChips 接管
