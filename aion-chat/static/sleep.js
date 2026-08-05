@@ -379,6 +379,7 @@
     if (it.voice) bits.push(voiceLabel(it.voice) + ' 读');
     if ((it.play_count || 0) > 0) bits.push(`听过 ${it.play_count} 次`);
     bits.push(it.has_audio && it.duration_sec ? fmtTime(it.duration_sec) : statusLine(it));
+    if (it.netease_uploaded) bits.push('☁ 网易云');
     return bits.join(' · ');
   }
   // 已听进度：播过没听完显示百分比，听完显示"已听完"
@@ -397,6 +398,8 @@
     const pp = playedPct(it);
     if (pp) bits.push(pp);
     bits.push(it.has_audio && it.duration_sec ? fmtTime(it.duration_sec) : statusLine(it));
+    // 已传网易云云盘：关机后能用网易云客户端听，标出来让用户知道这份有备份
+    if (it.netease_uploaded) bits.push('☁ 网易云');
     // 部分段落没录上：能听但有静音缺口，标出来提示可以重录
     if (it.has_audio && it.fail_reason) bits.push('有缺口');
     return bits.join(' · ');

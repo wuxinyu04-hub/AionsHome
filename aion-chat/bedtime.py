@@ -80,6 +80,7 @@ async def ensure_library_synced() -> None:
         return
     now = time.time()
     inserted = 0
+    new_ids: list[str] = []
     async with get_db() as db:
         db.row_factory = __import__("aiosqlite").Row
         for idx, item in enumerate(presets):
@@ -99,13 +100,35 @@ async def ensure_library_synced() -> None:
                    VALUES (?,?,?,?, 'preset', 'pending', ?)""",
                 (item_id, category, title, script_text, now + idx * 0.001),
             )
+            new_ids.append(item_id)
             inserted += 1
         await db.commit()
     if inserted:
         log.info("sleep 预置库同步 %d 条", inserted)
+        # 新预设自动合成，避免手动逐个点（TTS 后台跑，不阻塞）
+        voice = default_sleep_voice()
+        if voice:
+            for item_id in new_ids:
+                item = await get_item_raw(item_id)
+                if item and item.get("script_text"):
+                    trigger_synthesize(item_id, item["script_text"], voice)
+                    log.info("sleep 新预设自动合成 id=%s", item_id)
 
 
-def _public_fields(d: dict) -> dict:
+def _netease_uploaded_set() -> set:
+    """读网易云上传台账，返回已传 item_id 集合。台账缺失/解析失败返回空集（不报错）。
+    list_items/to_public 调一次给整批条目打标，避免每条都读文件。"""
+    try:
+        import json as _json
+        from sleep_upload import LEDGER_PATH
+        if not LEDGER_PATH.exists():
+            return set()
+        return set(_json.loads(LEDGER_PATH.read_text(encoding="utf-8")).keys())
+    except Exception:
+        return set()
+
+
+def _public_fields(d: dict, uploaded_set: set | None = None) -> dict:
     """对外暴露的字段（不含 script_text 全文，避免列表接口返回巨量文本）。"""
     return {
         "id": d.get("id"),
@@ -125,6 +148,9 @@ def _public_fields(d: dict) -> dict:
         "play_count": d.get("play_count", 0) or 0,
         "fail_reason": d.get("fail_reason", "") or "",
         "has_cover": bool(d.get("cover_path")),
+        # 网易云云盘上传状态：传了才标。uploaded_set 为 None（调用方没传）时
+        # 不查文件、默认 False，保持单条查询的向后兼容。
+        "netease_uploaded": (d.get("id") in uploaded_set) if uploaded_set is not None else False,
         **_book_ref_fields(d.get("book_ref") or ""),
     }
 
@@ -251,7 +277,8 @@ async def list_items(category: str = "") -> list[dict]:
         rows = await cur.fetchall()
         items = [dict(r) for r in rows]
     _enrich_preset_meta(items)
-    return [_public_fields(it) for it in items]
+    uploaded = _netease_uploaded_set()
+    return [_public_fields(it, uploaded) for it in items]
 
 
 async def get_item_raw(item_id: str) -> dict | None:
@@ -263,7 +290,7 @@ async def get_item_raw(item_id: str) -> dict | None:
 
 
 def to_public(d: dict) -> dict:
-    pub = _public_fields(d)
+    pub = _public_fields(d, _netease_uploaded_set())
     # 合并内存中的生成/合成进度（仅 generating/synthesizing 期间有值）
     if d.get("id") in _progress:
         p = _progress[d["id"]]
