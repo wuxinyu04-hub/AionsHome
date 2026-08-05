@@ -46,7 +46,16 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("cam_check", "查看监控/状态", "core", "注入 [CAM_CHECK]，让模型可以主动请求查看当前画面。"),
     CapabilityDef("schedule", "闹铃/日程/监督", "core", "注入闹铃、日程、定时监督和删除日程指令；关闭后也不注入当前日程列表。"),
     CapabilityDef("todo", "待办清单", "core", "注入 [TODO:...] 等指令，让模型可以增删改查你的待办清单；关闭后也不注入当前待办列表。"),
+    CapabilityDef("app_supervision", "应用监管", "core", "注入应用使用缓存和锁定、暂时解锁、解除锁定指令；关闭后手机计时、上报和检查点唤醒全部静默。"),
     CapabilityDef("home", "智能家居", "life", "注入 [HOME:...]，让模型可以控制或查询 Home Assistant 设备。"),
+    CapabilityDef("band_vibration", "手环呼唤", "life", "注入轻震/呼唤小纸条指令，让模型可以通过小米手环震动并显示一句话。"),
+    CapabilityDef(
+        "hug_pillow",
+        "拍拍抱枕控制",
+        "life",
+        "注入拍拍抱枕的拍打开关、调慢和调快指令。",
+        default_enabled=False,
+    ),
     CapabilityDef("activity_check", "查看活动动态", "context", "注入 [查看动态:n]，让模型可以查看近期设备活动摘要。", runtime_note="还需要活动日志页的 AI 联动开启。"),
     CapabilityDef("location_context", "位置上下文", "context", "注入当前位置/天气等上下文信息。"),
     CapabilityDef("poi_search", "周边 POI 搜索", "life", "注入 [POI_SEARCH:类型名]，仅在位置追踪开启且当前在户外时可用。", runtime_note="仅户外位置状态下注入。"),
@@ -65,6 +74,13 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("luckin", "瑞幸下单", "life", "注入 [LUCKIN:...]，让模型可以在明确要求时创建瑞幸订单。", runtime_note="还需要瑞幸 MCP 开启。"),
     CapabilityDef("health_context", "健康数据", "context", "注入近期健康摘要。", default_enabled=False, setting_key="health_share_enabled"),
     CapabilityDef("web_search", "联网搜索/网页读取", "context", "注入 [WEB_SEARCH:查询] / [WEB_EXTRACT:URL]，让模型可主动联网搜索或读取用户分享的网页。", default_enabled=True, setting_key="web_search_enabled", runtime_note="需要配置 Tavily API key。"),
+    CapabilityDef(
+        "english_corner_reminder",
+        "学习角学习提醒",
+        "context",
+        "在有正在学习的学习角卡片时注入一条克制、可关闭的自然提醒。",
+        default_enabled=False,
+    ),
     CapabilityDef("cli_file_storage", "CLI 文件保存提示", "context", "对 Gemini CLI / Antigravity CLI / Codex CLI 模型注入文件保存目录提示。"),
 ]
 
@@ -246,6 +262,24 @@ def build_cli_file_storage_text(model_key: str | None = None) -> str:
     )
 
 
+def build_band_note_ability_text(user_name: str, *, passive: bool = False) -> str:
+    """Return the shared model-visible Mi Band note instructions."""
+    if not is_capability_enabled("band_vibration"):
+        return ""
+    text = (
+        f"[BAND_NOTE_SINGLE:一句纸条] — 让{user_name}的小米手环轻震一次，并显示你写的一句纸条。"
+        f"适合想念、轻轻叫人或温柔提醒；[BAND_NOTE_CALL:一句纸条] — 连震三次并显示纸条，"
+        f"用于明确呼叫{user_name}尽快看消息。纸条只写真正想让{user_name}在手环上看到的话，"
+        "不要在自然语言正文里重复。每次回复最多使用一个；系统会隐藏并执行指令，不要解释或朗读指令本身。"
+    )
+    if passive:
+        text += (
+            f"在闹铃叫醒、监督到点、巡逻发现{user_name}长时间没有动静或疑似装睡时，"
+            "可以主动使用轻震或三连震直接催醒、催促回应。"
+        )
+    return text
+
+
 async def build_capability_prompt_items(
     user_name: str,
     *,
@@ -286,9 +320,10 @@ async def build_capability_prompt_items(
             "[ALARM:YYYY-MM-DDTHH:MM|内容] — 设置闹铃，到时间系统会主动提醒用户。日期时间用ISO格式。",
             "[REMINDER:YYYY-MM-DD|内容] — 设置日程提醒（不闹铃），你在合适时机自然提起即可。",
             (
-                f"[Monitor:YYYY-MM-DDTHH:MM|内容] — 设置定时监督。到时间后系统自动截取摄像头画面发送给你，"
+                f"[Monitor:YYYY-MM-DDTHH:MM|内容] — 设置定时监督查看。到时间后系统自动截取摄像头画面发送给你，"
                 f"你可以查看{user_name}的状态。例如检查{user_name}是否去运动了、是否关灯睡觉了、"
-                "是否在好好工作等，也可以当做下一次主动发送消息来使用，根据对话内容可以随时设定。日期时间用ISO格式。"
+                "是否在好好工作等，状态是否好，身体是否有一样等。日期时间用ISO格式。"
+                "也可以当做下一次主动发送消息来使用，根据对话内容可以随时设定。鼓励积极使用该能力，不限于主动问候，表达思念。"
             ),
             "[SCHEDULE_DEL:日程id] — 删除指定日程/闹铃/定时监控。",
         ])
@@ -301,8 +336,21 @@ async def build_capability_prompt_items(
             "[TODO_DEL:待办id] - 删除指定待办；[TODO_EDIT:待办id|新内容] - 修改待办内容。",
         ])
 
+    if is_capability_enabled("app_supervision"):
+        from app_supervision_ai import build_app_supervision_ability_text
+        supervision_text = build_app_supervision_ability_text()
+        if supervision_text:
+            abilities.append(supervision_text)
+
     if is_capability_enabled("home"):
         abilities.append(HOME_ABILITY_TEXT)
+
+    if is_capability_enabled("band_vibration"):
+        abilities.append(build_band_note_ability_text(user_name))
+
+    if is_capability_enabled("hug_pillow"):
+        from hug_pillow_commands import build_hug_pillow_ability_text
+        abilities.append(build_hug_pillow_ability_text())
 
     if include_private_whisper and is_capability_enabled("private_whisper"):
         abilities.append(
@@ -415,5 +463,21 @@ async def build_capability_prompt_items(
         luckin_text = luckin_ability_text()
         if luckin_text:
             abilities.append(luckin_text)
+
+    if is_capability_enabled("english_corner_reminder"):
+        from english_corner import get_unlearned_count
+
+        try:
+            learning_count = await get_unlearned_count()
+        except Exception:
+            learning_count = 0
+        if learning_count > 0:
+            abilities.append(
+                f"学习角目前还有 {learning_count} 张正在学习的英语卡片。这是当前正常聊天中"
+                f"的一项明确提醒任务：当前{user_name}表达无聊，没事干时，或你认为合理的时候，主动提醒"
+                f"{user_name}去学习，但不要一直说教。"
+                "先查看近期对话；如果刚提醒过就不要每轮重复，否则应找机会实际提醒。"
+                "提醒要简短、具体并符合你的人设，可以哄、逗、轻微激将，或者提出陪学，但不要说教、羞辱或制造焦虑。"
+            )
 
     return abilities

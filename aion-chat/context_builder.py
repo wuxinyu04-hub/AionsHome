@@ -22,9 +22,10 @@ from capabilities import (
     format_ability_block,
     is_capability_enabled,
 )
+from app_supervision_ai import APP_COMMAND_PATTERN
 from memory import (
     instant_digest, recall_memories, build_surfacing_memories,
-    fetch_source_details, _memory_line_with_evidence,
+    fetch_source_details, format_recalled_memories_for_prompt,
 )
 
 # ── 工具指令正则（供调用方做后处理用，集中定义） ──
@@ -42,6 +43,11 @@ POI_SEARCH_PATTERN = re.compile(r'\[POI_SEARCH:([^\]]+)\]')
 TOY_CMD_PATTERN = re.compile(r'\[TOY:(\d|STOP)\]')
 PET_CMD_PATTERN = re.compile(r'\[PET:([a-z_\-]+)\]', re.IGNORECASE)
 HOME_CMD_PATTERN = re.compile(r'\[HOME:([^\]]+)\]', re.IGNORECASE)
+BAND_VIBRATE_CMD_PATTERN = re.compile(r'\[BAND_VIBRATE:(single|call)\]', re.IGNORECASE)
+BAND_NOTE_CMD_PATTERN = re.compile(
+    r'\[BAND_NOTE_(?:SINGLE|CALL)\s*[：:]\s*[^\]]*\]',
+    re.IGNORECASE,
+)
 TRANSFER_CMD_PATTERN = re.compile(r'\[转账[：:]\s*(-?\d+(?:\.\d+)?)\s*元\]')
 PRIVATE_WHISPER_CMD_PATTERN = re.compile(r'\[悄悄话[：:]\s*([^\]]+)\]')
 VIDEO_CALL_CMD = '[视频电话]'
@@ -52,8 +58,10 @@ _ALL_CMD_PATTERNS = [
     MUSIC_CMD_PATTERN, MOMENT_CMD_PATTERN, MEMORY_CMD_PATTERN, WISH_CMD_PATTERN,
     ACTIVITY_CHECK_PATTERN, SELFIE_CMD_PATTERN, DRAW_CMD_PATTERN, SONG_CMD_PATTERN,
     POI_SEARCH_PATTERN, TOY_CMD_PATTERN, PET_CMD_PATTERN,
-    HOME_CMD_PATTERN, LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
+    HOME_CMD_PATTERN, BAND_VIBRATE_CMD_PATTERN, BAND_NOTE_CMD_PATTERN,
+    LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
     WECHAT_MESSAGE_PATTERN, WEB_SEARCH_CMD_PATTERN, WEB_EXTRACT_CMD_PATTERN,
+    APP_COMMAND_PATTERN,
 ]
 
 def strip_tool_commands(text: str) -> str:
@@ -95,17 +103,16 @@ def _timeline_display_names() -> tuple[str, str, str]:
 
 
 async def build_health_summary() -> str:
-    """当健康数据分享开关打开时，构建一行简短的身体数据摘要。"""
+    """当健康数据分享开关打开时，构建简短的身体数据摘要。"""
     if not is_capability_enabled("health_context"):
         return ""
     try:
         from health_context import category_label, classify_heart_rate, get_heart_config
+        from routes.health import build_mi_band_summary
 
-        heart_cfg = None
         async with get_db() as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM health_ring_latest WHERE id=1")
-            ring = await cur.fetchone()
+            mi_band = await build_mi_band_summary(db)
             heart_cfg = await get_heart_config(db)
             cur = await db.execute(
                 "SELECT weight_kg FROM health_weight_entries ORDER BY date DESC LIMIT 1"
@@ -117,40 +124,58 @@ async def build_health_summary() -> str:
             period_row = await cur.fetchone()
 
         parts = []
-        if ring:
-            hr = ring["heart_rate"]
-            measured_at = ring["measured_at"]
-            sys_bp = ring["systolic_bp"]
-            dia_bp = ring["diastolic_bp"]
-            spo2 = ring["spo2"]
-            hrv = ring["hrv"]
-            if hr:
-                try:
-                    age_seconds = time.time() - float(measured_at or 0)
-                    stale_minutes = int((heart_cfg or {}).get("stale_minutes") or 30)
-                    if measured_at and age_seconds <= stale_minutes * 60:
-                        cat = category_label(classify_heart_rate(int(hr), heart_cfg))
-                        parts.append(f"心率:{hr}({cat})")
-                    else:
-                        parts.append(f"心率:{hr}(数据过期，可能未佩戴/没电/未同步)")
-                except Exception:
-                    parts.append(f"心率:{hr}")
-            if sys_bp and dia_bp: parts.append(f"血压:{sys_bp}/{dia_bp}")
-            if spo2: parts.append(f"血氧:{spo2}")
-            if hrv: parts.append(f"HRV:{hrv}")
-            # 睡眠
-            deep = ring["sleep_deep_min"]
-            light = ring["sleep_light_min"]
-            rem = ring["sleep_rem_min"]
-            awake_c = ring["sleep_wake_count"]
-            awake_m = ring["sleep_wake_min"]
-            if deep or light or rem:
-                sleep_parts = []
-                if deep: sleep_parts.append(f"深睡{deep}m")
-                if light: sleep_parts.append(f"浅睡{light}m")
-                if rem: sleep_parts.append(f"REM{rem}m")
-                if awake_c: sleep_parts.append(f"清醒{awake_c}次{awake_m or 0}m")
-                parts.append(f"睡眠:{'/'.join(sleep_parts)}")
+        hr = mi_band.get("latestHeartRate")
+        measured_at = mi_band.get("latestHeartRateAt")
+        if hr:
+            try:
+                age_seconds = time.time() - float(measured_at or 0)
+                stale_minutes = int((heart_cfg or {}).get("stale_minutes") or 30)
+                if measured_at and age_seconds <= stale_minutes * 60:
+                    cat = category_label(classify_heart_rate(int(hr), heart_cfg))
+                    parts.append(f"心率:{hr}({cat})")
+                else:
+                    parts.append(f"心率:{hr}(数据过期，可能未佩戴/没电/未同步)")
+            except Exception:
+                parts.append(f"心率:{hr}")
+
+        parts.append(
+            f"今日步数:{int(mi_band.get('todaySteps') or 0)} | "
+            f"活动:{int(mi_band.get('activityMinutes') or 0)}分钟"
+        )
+        parts.append(
+            f"最近30分钟：活动{int(mi_band.get('recent30ActivityMinutes') or 0)}分钟，"
+            f"{int(mi_band.get('recent30Steps') or 0)}步"
+        )
+        parts.append(
+            f"最近60分钟：活动{int(mi_band.get('recent60ActivityMinutes') or 0)}分钟，"
+            f"{int(mi_band.get('recent60Steps') or 0)}步"
+        )
+
+        sleep = mi_band.get("sleep") or {}
+        total = int(sleep.get("totalMin") or 0)
+        deep = int(sleep.get("deepMin") or 0)
+        light = int(sleep.get("lightMin") or 0)
+        rem = int(sleep.get("remMin") or 0)
+        if deep or light or rem:
+            if total:
+                parts.append(f"睡眠:总计{total}m")
+            sessions = sleep.get("sessions") or []
+            for session in sessions:
+                start_at = session.get("startAt")
+                end_at = session.get("endAt")
+                if not start_at or not end_at:
+                    continue
+                label = "小睡" if session.get("kind") == "nap" else "主睡"
+                start_text = datetime.fromtimestamp(float(start_at)).strftime("%H:%M")
+                end_text = datetime.fromtimestamp(float(end_at)).strftime("%H:%M")
+                session_min = int(session.get("totalMin") or 0)
+                parts.append(f"{label}:{start_text}-{end_text} | {session_min}m")
+            sleep_stage_parts = []
+            if deep: sleep_stage_parts.append(f"深睡:{deep}m")
+            if light: sleep_stage_parts.append(f"浅睡:{light}m")
+            if rem: sleep_stage_parts.append(f"REM:{rem}m")
+            if sleep_stage_parts:
+                parts.append(" | ".join(sleep_stage_parts))
 
         if weight_row:
             parts.append(f"体重:{weight_row['weight_kg']}kg")
@@ -170,7 +195,7 @@ async def build_health_summary() -> str:
 
         if not parts:
             return ""
-        return f"\n\n[用户健康数据] {' '.join(parts)}"
+        return "\n\n[用户健康数据]\n" + "\n".join(parts)
     except Exception:
         return ""
 
@@ -298,20 +323,18 @@ def _build_recall_query(
     recent_messages: list[dict] = None,
     status: str = "",
 ) -> str:
-    """Build the vector-search query from a topic digest instead of a raw last message."""
+    """Prefer sentinel clues, falling back to the latest user message."""
     if isinstance(keywords, str):
         keywords = [k.strip() for k in re.split(r"[,，、\s]+", keywords) if k.strip()]
     keyword_text = " ".join(str(k).strip() for k in (keywords or []) if str(k).strip())
 
     base = str(topic or "").strip()
     base_from_keywords = False
-    if not base:
-        base = str(status or "").strip()
     if not base and keyword_text:
         base = f"当前话题：{keyword_text}"
         base_from_keywords = True
     if not base:
-        base = "当前对话的记忆线索"
+        return str(query_text or "").strip()
 
     if base_from_keywords:
         return base.strip()
@@ -344,7 +367,7 @@ async def build_memory_blocks(
       chatroom_source_fn: 可选的聊天室原文追溯函数 async (memories, keywords) -> str
       skip_digest: 跳过 instant_digest（快速模式）
       digest_result: 外部传入的 digest 结果（复用同一次调用）
-      always_include_recalled: 是否每轮都注入最高相关的摘要记忆；记忆证据仍由 require_detail 控制
+      always_include_recalled: 已弃用的兼容参数；摘要记忆现在每轮都会按相关度注入
 
     返回 dict:
       time_block: str — 当前时间 + 背景记忆文本
@@ -424,14 +447,22 @@ async def build_memory_blocks(
 
     # 背景记忆
     if surfaced:
-        unresolved_lines = [f"📌 {_memory_line_with_evidence(m)[2:]}（还没做/还没去）" for m in surfaced if m.get("unresolved")]
-        normal_lines = [_memory_line_with_evidence(m) for m in surfaced if not m.get("unresolved")]
+        unresolved_lines = [
+            f"📌 {format_recalled_memories_for_prompt([m])[2:]}（还没做/还没去）"
+            for m in surfaced
+            if m.get("unresolved")
+        ]
+        normal_lines = [
+            format_recalled_memories_for_prompt([m])
+            for m in surfaced
+            if not m.get("unresolved")
+        ]
         mem_text = "\n".join(unresolved_lines + normal_lines)
         time_block += f"\n\n[背景记忆]\n以下是你记得的近期事件和需要关注的事项，在对话中如果有关联可以自然提起：\n{mem_text}"
 
     # RAG 摘要召回；always_include_recalled 用于需要每轮主动带摘要记忆的上下文。
     recalled = []
-    if recall_query and (is_search_needed or always_include_recalled):
+    if recall_query:
         # 主记忆库
         if main_candidates:
             recalled = [r for r in main_candidates if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
@@ -445,9 +476,9 @@ async def build_memory_blocks(
             recalled = recalled[:8]
 
     if recalled:
-        mem_lines = "\n".join([_memory_line_with_evidence(m, 200) for m in recalled])
+        mem_lines = format_recalled_memories_for_prompt(recalled, limit=200)
         memory_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
-        if digest_result.get("require_detail"):
+        if is_search_needed or digest_result.get("require_detail"):
             detail_text = ""
             if use_main_memories:
                 detail_text = await fetch_source_details(
@@ -495,6 +526,40 @@ SYSTEM_MSG_CONTEXT_KEYWORDS = ('搜索了', '点歌', '点了一首', '推荐了
 # 这些标记会泄漏文件路径到 LLM 上下文，污染 instant_digest 关键词，
 # 也会触发 Gemini CLI 的 agent 模式扫描文件，必须替换为干净占位符。
 _CHATROOM_IMG_TAG_RE = re.compile(r'\[\[image:[^\]]+\]\]')
+TIMELINE_IMAGE_CONTEXT_USER_TURNS = 3
+_TIMELINE_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
+
+
+def _parse_timeline_attachments(raw) -> list:
+    """把数据库 JSON 或现成列表统一为附件列表。"""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw else []
+        except Exception:
+            return []
+    return list(raw) if isinstance(raw, list) else []
+
+
+def _is_timeline_image_attachment(attachment) -> bool:
+    """判断附件是否为可在后续用户轮次继续提供给模型的图片。"""
+    if isinstance(attachment, str):
+        url = attachment.strip()
+        type_hint = ""
+    elif isinstance(attachment, dict):
+        url = str(attachment.get("url") or "").strip()
+        type_hint = str(
+            attachment.get("type") or attachment.get("mime_type") or ""
+        ).lower().strip()
+    else:
+        return False
+
+    if not url:
+        return False
+    if type_hint == "image" or type_hint.startswith("image/"):
+        return True
+
+    clean_url = url.split("?", 1)[0].split("#", 1)[0].lower()
+    return any(clean_url.endswith(ext) for ext in _TIMELINE_IMAGE_EXTENSIONS)
 
 
 def _sanitize_timeline_content(content: str) -> str:
@@ -530,63 +595,128 @@ def _strip_style_anchors(content: str) -> str:
     return cleaned.strip()
 
 
+def _is_model_visible_timeline_message(message: dict) -> bool:
+    """Return whether render_merged_timeline can retain this transcript row."""
+    if message.get("sender") != "system":
+        return True
+    attachments = _parse_timeline_attachments(message.get("attachments", []))
+    explicitly_model_visible = any(
+        isinstance(attachment, dict)
+        and attachment.get("type") == "system_model_context"
+        for attachment in attachments
+    )
+    if explicitly_model_visible:
+        return True
+    content = _sanitize_timeline_content(message.get("content", ""))
+    return any(keyword in content for keyword in SYSTEM_MSG_CONTEXT_KEYWORDS)
+
+
 async def fetch_merged_timeline(
     who: str,
-    limit: int,
     *,
     conv_id: str = None,
     room_id: str = None,
+    since_ts: float = None,
+    until_ts: float = None,
+) -> list[tuple[str, str, str, list[str], list]]:
+    """Return the visible timeline sources and their bound filter parameters."""
+    sources = []
+
+    if who == "aion":
+        conditions = ["role IN ('user','assistant','system')"]
+        params = []
+        if conv_id:
+            conditions.append("conv_id=?")
+            params.append(conv_id)
+        if since_ts is not None:
+            conditions.append("created_at >= ?")
+            params.append(since_ts)
+        if until_ts is not None:
+            conditions.append("created_at <= ?")
+            params.append(until_ts)
+        sources.append((
+            "private", "role", "FROM messages", conditions, params,
+        ))
+    elif who == "connor":
+        conditions = ["r.type = 'connor_1v1'"]
+        params = []
+        if since_ts is not None:
+            conditions.append("m.created_at >= ?")
+            params.append(since_ts)
+        if until_ts is not None:
+            conditions.append("m.created_at <= ?")
+            params.append(until_ts)
+        sources.append((
+            "private", "m.sender", "FROM chatroom_messages m "
+            "JOIN chatroom_rooms r ON r.id = m.room_id", conditions, params,
+        ))
+
+    conditions = ["r.type = 'group'"]
+    params = []
+    if room_id:
+        conditions.append("m.room_id=?")
+        params.append(room_id)
+    if since_ts is not None:
+        conditions.append("m.created_at >= ?")
+        params.append(since_ts)
+    if until_ts is not None:
+        conditions.append("m.created_at <= ?")
+        params.append(until_ts)
+    sources.append((
+        "group", "m.sender", "FROM chatroom_messages m "
+        "JOIN chatroom_rooms r ON r.id = m.room_id", conditions, params,
+    ))
+    return sources
+
+
+async def _load_model_visible_merged_timeline(
+    who: str,
+    *,
+    conv_id: str = None,
+    room_id: str = None,
+    since_ts: float = None,
+    until_ts: float = None,
 ) -> list[dict]:
-    """
-    从私聊和群聊同时获取消息，按时间排序合并为统一时间线。
-
-    Args:
-        who: "aion" — 看到 Aion 私聊 + 群聊；"connor" — 看到 Connor 1v1 + 群聊
-        limit: 返回的最大消息总数
-        conv_id: Aion 私聊的 conv_id（可选，为 None 时自动取最近会话）
-        room_id: 群聊房间 ID（可选，为 None 时自动取最近群聊房间）
-
-    Returns:
-        按 created_at 升序排列的消息列表，每条包含:
-        source ("private"/"group"), sender, content, created_at, attachments
-    """
-    # Private chat respects conv_id when provided; group chat remains shared.
+    """Load one bounded, model-visible merged transcript without limiting it."""
     results = []
 
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
+        source_filters = {
+            source: (conditions, params)
+            for source, _, _, conditions, params in _merged_timeline_sources(
+                who,
+                conv_id=conv_id,
+                room_id=room_id,
+                since_ts=since_ts,
+                until_ts=until_ts,
+            )
+        }
 
         # ── 私聊消息 ──
         if who == "aion":
-            if conv_id:
-                cur = await db.execute(
-                    "SELECT role AS sender, content, created_at, attachments "
-                    "FROM messages "
-                    "WHERE conv_id=? AND role IN ('user','assistant','system') "
-                    "ORDER BY created_at DESC LIMIT ?",
-                    (conv_id, limit),
-                )
-            else:
-                cur = await db.execute(
-                    "SELECT role AS sender, content, created_at, attachments "
-                    "FROM messages "
-                    "WHERE role IN ('user','assistant','system') "
-                    "ORDER BY created_at DESC LIMIT ?",
-                    (limit,),
-                )
+            private_conditions, private_params = source_filters["private"]
+            cur = await db.execute(
+                "SELECT role AS sender, content, created_at, attachments "
+                "FROM messages "
+                f"WHERE {' AND '.join(private_conditions)} "
+                "ORDER BY created_at",
+                private_params,
+            )
             for r in await cur.fetchall():
                 d = dict(r)
                 d["source"] = "private"
                 results.append(d)
 
         elif who == "connor":
+            private_conditions, private_params = source_filters["private"]
             cur = await db.execute(
                 "SELECT m.sender, m.content, m.created_at, m.attachments "
                 "FROM chatroom_messages m "
                 "JOIN chatroom_rooms r ON r.id = m.room_id "
-                "WHERE r.type = 'connor_1v1' "
-                "ORDER BY m.created_at DESC LIMIT ?",
-                (limit,),
+                f"WHERE {' AND '.join(private_conditions)} "
+                "ORDER BY m.created_at",
+                private_params,
             )
             for r in await cur.fetchall():
                 d = dict(r)
@@ -594,22 +724,78 @@ async def fetch_merged_timeline(
                 results.append(d)
 
         # ── 群聊消息 ──
+        group_conditions, group_params = source_filters["group"]
         cur = await db.execute(
             "SELECT m.sender, m.content, m.created_at, m.attachments "
             "FROM chatroom_messages m "
             "JOIN chatroom_rooms r ON r.id = m.room_id "
-            "WHERE r.type = 'group' "
-            "ORDER BY m.created_at DESC LIMIT ?",
-            (limit,),
+            f"WHERE {' AND '.join(group_conditions)} "
+            "ORDER BY m.created_at",
+            group_params,
         )
         for r in await cur.fetchall():
             d = dict(r)
             d["source"] = "group"
             results.append(d)
 
-    # 按时间升序，取最近 N 条
     results.sort(key=lambda x: x["created_at"])
-    return results[-limit:] if len(results) > limit else results
+    return [
+        message
+        for message in results
+        if _is_model_visible_timeline_message(message)
+    ]
+
+
+async def fetch_merged_timeline(
+    who: str,
+    limit: int,
+    *,
+    conv_id: str = None,
+    room_id: str = None,
+    since_ts: float = None,
+    until_ts: float = None,
+) -> list[dict]:
+    """
+    从私聊和群聊同时获取最近的模型可见消息，按时间升序返回。
+
+    System-message eligibility is applied before the global latest-N limit,
+    and since/until bounds describe one stable learning-day snapshot.
+    """
+    normalized_limit = max(0, int(limit))
+    if normalized_limit == 0:
+        return []
+    results = await _load_model_visible_merged_timeline(
+        who,
+        conv_id=conv_id,
+        room_id=room_id,
+        since_ts=since_ts,
+        until_ts=until_ts,
+    )
+    return (
+        results[-normalized_limit:]
+        if len(results) > normalized_limit
+        else results
+    )
+
+
+async def count_merged_timeline(
+    who: str,
+    *,
+    conv_id: str = None,
+    room_id: str = None,
+    since_ts: float = None,
+    until_ts: float = None,
+) -> int:
+    """Count the same bounded, model-visible rows fetch_merged_timeline uses."""
+    return len(
+        await _load_model_visible_merged_timeline(
+            who,
+            conv_id=conv_id,
+            room_id=room_id,
+            since_ts=since_ts,
+            until_ts=until_ts,
+        )
+    )
 
 
 def render_merged_timeline(
@@ -628,6 +814,11 @@ def render_merged_timeline(
 
     返回 [{"role": ..., "content": ..., "attachments": ...}]
     """
+    merged = [
+        message
+        for message in merged
+        if _is_model_visible_timeline_message(message)
+    ]
     if not merged:
         return []
 
@@ -647,12 +838,16 @@ def render_merged_timeline(
     current_source = None
     pending_scene_marker = ""   # 待并入下一条消息内容的场景切换提示
 
-    # 找到最后一条用户消息索引（用于保留附件）
-    last_user_idx = None
-    for i in range(len(merged) - 1, -1, -1):
-        if merged[i]["sender"] == "user":
-            last_user_idx = i
-            break
+    # 图片按用户发言计轮：发图当轮 + 后续两次用户发言，共三轮。
+    # AI 与系统消息不会消耗图片上下文轮数。
+    user_message_indices = [
+        idx for idx, message in enumerate(merged)
+        if message.get("sender") == "user"
+    ]
+    last_user_idx = user_message_indices[-1] if user_message_indices else None
+    retained_image_user_indices = set(
+        user_message_indices[-TIMELINE_IMAGE_CONTEXT_USER_TURNS:]
+    )
 
     # 最近 N 条 AI 消息保留原文，更早的做风格去锚（见 _strip_style_anchors）
     ai_indices = [i for i, m in enumerate(merged) if m["sender"] in ("assistant", "aion", "connor")]
@@ -667,6 +862,10 @@ def render_merged_timeline(
             if stripped:  # 纯旁白消息剥完会空，此时保留原文避免时间线出现空洞
                 content = stripped
 
+        message_attachments = _parse_timeline_attachments(
+            msg.get("attachments", [])
+        )
+
         # ── 场景切换标记：不再插入 fake 应答对，仅记录下来在下一条消息前内联输出 ──
         if has_mixed and source != current_source:
             if current_source is not None:
@@ -677,8 +876,6 @@ def render_merged_timeline(
 
         # ── 说话人映射：所有历史记录都作为 user 侧 transcript 提供，避免多 assistant 污染输出格式 ──
         if sender == "system":
-            if not any(kw in content for kw in SYSTEM_MSG_CONTEXT_KEYWORDS):
-                continue
             speaker = "系统事件"
         elif sender == "user":
             speaker = user_name
@@ -706,16 +903,18 @@ def render_merged_timeline(
 
         entry = {"role": role, "content": content}
 
-        # ── 附件：只保留最后一条用户消息的附件 ──
+        # ── 附件：当前用户消息完整保留；前两轮用户消息只延续图片 ──
+        attachments = []
         if idx == last_user_idx:
-            attachments = msg.get("attachments", [])
-            if isinstance(attachments, str):
-                try:
-                    attachments = json.loads(attachments) if attachments else []
-                except Exception:
-                    attachments = []
-            if attachments:
-                entry["attachments"] = attachments
+            attachments = message_attachments
+        elif idx in retained_image_user_indices and sender == "user":
+            attachments = [
+                attachment
+                for attachment in message_attachments
+                if _is_timeline_image_attachment(attachment)
+            ]
+        if attachments:
+            entry["attachments"] = attachments
 
         history.append(entry)
 

@@ -26,6 +26,7 @@ class WeChatInbound(BaseModel):
     model: str = DEFAULT_MODEL
     connor_model: str = "Codex"
     wechat_reply: bool = False
+    mark_channel: bool = True
 
 
 def _normalize_source_type(source_type: str) -> str:
@@ -162,7 +163,7 @@ async def receive_wechat_message(body: WeChatInbound, authorization: str | None 
     if not source_type or not source_id:
         raise HTTPException(status_code=400, detail="missing target route; send source_id or trigger an outbound wechat message first")
 
-    content = build_wechat_user_content(raw_content)
+    content = build_wechat_user_content(raw_content) if body.mark_channel else raw_content
 
     if source_type == "aion_private":
         if body.auto_reply:

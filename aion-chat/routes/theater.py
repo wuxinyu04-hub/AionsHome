@@ -7,7 +7,7 @@ import json, time, asyncio, uuid
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -15,13 +15,144 @@ from config import DEFAULT_MODEL, DATA_DIR, SETTINGS, THEATER_TTS_CACHE_DIR, THE
 from database import get_db
 from ws import manager
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
+from stream_safety import (
+    THEATER_STREAM_POLICY,
+    StreamSafetyResult,
+    consume_safe_stream,
+)
 from tts import TTSStreamer
+from theater_tts_cache import delete_message_audio_files, list_message_audio_segments
 
 router = APIRouter(prefix="/api/theater", tags=["theater"])
 
 THEATER_TTS_MIN_CHARS = 300
 THEATER_TTS_MAX_CHARS = 500
 THEATER_TTS_AUDIO_PREFIX = "/api/theater/tts/audio"
+_active_theater_tts: dict[str, tuple[str, TTSStreamer]] = {}
+_deleted_theater_conversations: set[str] = set()
+
+
+async def _consume_theater_stream(source, queue, tts_streamer=None) -> StreamSafetyResult:
+    async def on_commit(chunk: str) -> None:
+        await queue.put({"type": "chunk", "content": chunk})
+        if tts_streamer:
+            await tts_streamer.feed_async(chunk)
+
+    result = await consume_safe_stream(
+        source,
+        THEATER_STREAM_POLICY,
+        on_commit,
+    )
+    if result.notice:
+        await queue.put({"type": "chunk", "content": f"\n\n[{result.notice}]"})
+    return result
+
+
+@router.get("/tts/segments/{msg_id}")
+async def list_tts_segments(msg_id: str):
+    segments = list_message_audio_segments(msg_id, THEATER_TTS_CACHE_DIR)
+    return {
+        "segments": [
+            {"seq": seq, "url": f"{THEATER_TTS_AUDIO_PREFIX}/{path.stem}"}
+            for seq, path in segments
+        ]
+    }
+
+
+def _register_theater_tts(conv_id: str, msg_id: str, streamer: TTSStreamer):
+    if conv_id in _deleted_theater_conversations:
+        streamer.cancel()
+        return False
+    _active_theater_tts[msg_id] = (conv_id, streamer)
+    return True
+
+
+def _unregister_theater_tts(msg_id: str, streamer: TTSStreamer):
+    registered = _active_theater_tts.get(msg_id)
+    if registered and registered[1] is streamer:
+        _active_theater_tts.pop(msg_id, None)
+
+
+def _cancel_theater_tts_message(msg_id: str):
+    registered = _active_theater_tts.pop(msg_id, None)
+    if registered:
+        registered[1].cancel()
+
+
+def _cancel_theater_tts_for_conversation(conv_id: str):
+    message_ids = [
+        msg_id for msg_id, (active_conv_id, _) in _active_theater_tts.items()
+        if active_conv_id == conv_id
+    ]
+    for msg_id in message_ids:
+        _cancel_theater_tts_message(msg_id)
+
+
+async def _flush_and_cleanup_theater_tts(tts_streamer: TTSStreamer, msg_id: str):
+    """Wait for every late writer, then remove audio if its message was deleted."""
+    try:
+        await tts_streamer.flush(wait_for_merge=True)
+    finally:
+        async with get_db() as db:
+            cur = await db.execute("SELECT 1 FROM theater_messages WHERE id=?", (msg_id,))
+            message_exists = await cur.fetchone() is not None
+        if not message_exists:
+            await asyncio.to_thread(
+                delete_message_audio_files, [msg_id], THEATER_TTS_CACHE_DIR
+            )
+
+
+async def _persist_theater_assistant_message(
+    conv_id: str,
+    msg_id: str,
+    content: str,
+    created_at: float,
+    reasoning_content: str = "",
+) -> bool:
+    """Atomically persist a late reply only while its conversation still exists."""
+    async with get_db() as db:
+        cur = await db.execute(
+            "INSERT INTO theater_messages "
+            "(id, conv_id, role, content, created_at, attachments, reasoning_content) "
+            "SELECT ?,?,?,?,?,?,? WHERE EXISTS "
+            "(SELECT 1 FROM theater_conversations WHERE id=?)",
+            (
+                msg_id,
+                conv_id,
+                "assistant",
+                content,
+                created_at,
+                "[]",
+                reasoning_content,
+                conv_id,
+            ),
+        )
+        persisted = cur.rowcount == 1
+        if persisted:
+            await db.execute(
+                "UPDATE theater_conversations SET updated_at=? WHERE id=?",
+                (created_at, conv_id),
+            )
+        await db.commit()
+    return persisted
+
+
+class _StreamingReasoningMeta(dict):
+    """Mirror reasoning_content assignments into the theater SSE queue."""
+
+    def __init__(self, queue: asyncio.Queue):
+        super().__init__()
+        self._queue = queue
+
+    def __setitem__(self, key, value):
+        previous = str(self.get(key) or "") if key == "reasoning_content" else ""
+        super().__setitem__(key, value)
+        if key != "reasoning_content":
+            return
+        current = str(value or "")
+        delta = current[len(previous):] if current.startswith(previous) else current
+        if delta:
+            self._queue.put_nowait({"type": "reasoning", "content": delta})
 
 # ── 角色预设文件路径 ──
 PERSONAS_PATH = DATA_DIR / "theater_personas.json"
@@ -74,6 +205,12 @@ class MsgCreate(BaseModel):
 
 class MsgUpdate(BaseModel):
     content: str
+
+
+class TheaterRegenerateRequest(BaseModel):
+    message_id: str
+    model: str
+    persona_id: str = ""
 
 
 # ══════════════════════════════════════════════════
@@ -150,6 +287,7 @@ async def create_conversation(body: ConvCreate):
         await db.commit()
     conv = {"id": conv_id, "title": body.title, "persona_id": body.persona_id,
             "model": body.model, "created_at": now, "updated_at": now}
+    _deleted_theater_conversations.discard(conv_id)
     await manager.broadcast({"type": "theater_conv_created", "data": conv})
     return conv
 
@@ -173,10 +311,22 @@ async def update_conversation(conv_id: str, body: ConvUpdate):
 
 @router.delete("/conversations/{conv_id}")
 async def delete_conversation(conv_id: str):
-    async with get_db() as db:
-        await db.execute("PRAGMA foreign_keys = ON")
-        await db.execute("DELETE FROM theater_conversations WHERE id=?", (conv_id,))
-        await db.commit()
+    _deleted_theater_conversations.add(conv_id)
+    _cancel_theater_tts_for_conversation(conv_id)
+    message_ids = []
+    try:
+        async with get_db() as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            cur = await db.execute("SELECT id FROM theater_messages WHERE conv_id=?", (conv_id,))
+            message_ids = [row[0] for row in await cur.fetchall()]
+            await db.execute("DELETE FROM theater_conversations WHERE id=?", (conv_id,))
+            await db.commit()
+    except Exception:
+        _deleted_theater_conversations.discard(conv_id)
+        raise
+    await asyncio.to_thread(
+        delete_message_audio_files, message_ids, THEATER_TTS_CACHE_DIR
+    )
     await manager.broadcast({"type": "theater_conv_deleted", "data": {"id": conv_id}})
     return {"ok": True}
 
@@ -211,14 +361,21 @@ async def list_messages(conv_id: str, limit: int = Query(50, ge=1, le=500), befo
 
 @router.delete("/messages/{msg_id}")
 async def delete_message(msg_id: str):
+    _cancel_theater_tts_message(msg_id)
+    deleted_conv_id = None
     async with get_db() as db:
         db.row_factory = __import__("aiosqlite").Row
         cur = await db.execute("SELECT conv_id FROM theater_messages WHERE id=?", (msg_id,))
         row = await cur.fetchone()
         if row:
+            deleted_conv_id = row["conv_id"]
             await db.execute("DELETE FROM theater_messages WHERE id=?", (msg_id,))
             await db.commit()
-            await manager.broadcast({"type": "theater_msg_deleted", "data": {"id": msg_id, "conv_id": row["conv_id"]}})
+    if deleted_conv_id:
+        await asyncio.to_thread(
+            delete_message_audio_files, [msg_id], THEATER_TTS_CACHE_DIR
+        )
+        await manager.broadcast({"type": "theater_msg_deleted", "data": {"id": msg_id, "conv_id": deleted_conv_id}})
     return {"ok": True}
 
 
@@ -307,8 +464,8 @@ async def send_message(conv_id: str, body: MsgCreate):
         history = prefix + history
 
     ai_msg_id = f"tm_{int(time.time() * 1000)}_ai"
-    usage_meta: dict = {}
     _q: asyncio.Queue = asyncio.Queue()
+    usage_meta: dict = _StreamingReasoningMeta(_q)
 
     tts_streamer = None
     if body.tts_enabled and body.tts_voice:
@@ -323,39 +480,45 @@ async def send_message(conv_id: str, body: MsgCreate):
             merge_segments=True,
             delete_segments_after_seconds=THEATER_TTS_SEGMENT_DELETE_DELAY_SECONDS,
             cache_max_bytes=None,
+            event_data={"conv_id": conv_id},
+            max_segments=140,
         )
+        _register_theater_tts(conv_id, ai_msg_id, tts_streamer)
 
     async def _bg_generate():
         full_text = ""
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
-            try:
+            async def content_stream():
                 async for chunk in stream_ai(history, model_key, usage_meta, temperature=temperature):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
-                    full_text += chunk
-                    await _q.put({"type": "chunk", "content": chunk})
-                    if tts_streamer:
-                        tts_streamer.feed(chunk)
-            except Exception as e:
-                error_text = f"\n[请求出错: {str(e)}]"
-                full_text += error_text
-                await _q.put({"type": "chunk", "content": error_text})
+                    yield chunk
+
+            stream_result = await _consume_theater_stream(
+                content_stream(),
+                _q,
+                tts_streamer,
+            )
+            full_text = stream_result.committed_text
+            if stream_result.notice:
+                full_text = f"{full_text}\n\n[{stream_result.notice}]"
 
             full_text = full_text.strip()
 
             now2 = time.time()
-            async with get_db() as db2:
-                await db2.execute(
-                    "INSERT INTO theater_messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-                    (ai_msg_id, conv_id, "assistant", full_text, now2, "[]"),
-                )
-                await db2.execute("UPDATE theater_conversations SET updated_at=? WHERE id=?", (now2, conv_id))
-                await db2.commit()
+            reasoning_content = str(usage_meta.get("reasoning_content") or "").strip()
+            message_persisted = await _persist_theater_assistant_message(
+                conv_id, ai_msg_id, full_text, now2, reasoning_content
+            )
+
+            if not message_persisted:
+                return
 
             ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant",
-                      "content": full_text, "created_at": now2, "attachments": []}
+                      "content": full_text, "created_at": now2, "attachments": [],
+                      "reasoning_content": reasoning_content}
             await manager.broadcast({"type": "theater_msg_created", "data": ai_msg})
 
             # debug 信息（精简版）
@@ -371,9 +534,11 @@ async def send_message(conv_id: str, body: MsgCreate):
         finally:
             if tts_streamer:
                 try:
-                    await tts_streamer.flush()
+                    await _flush_and_cleanup_theater_tts(tts_streamer, ai_msg_id)
                 except Exception:
                     pass
+                finally:
+                    _unregister_theater_tts(ai_msg_id, tts_streamer)
             await _q.put({"type": "done"})
 
     asyncio.create_task(_bg_generate())
@@ -390,14 +555,35 @@ async def send_message(conv_id: str, body: MsgCreate):
 
 # ── 重新生成 ──
 @router.post("/conversations/{conv_id}/regenerate")
-async def regenerate_message(conv_id: str, context_limit: int = 20, temperature: Optional[float] = None,
+async def regenerate_message(conv_id: str, body: TheaterRegenerateRequest,
+                             context_limit: int = 20, temperature: Optional[float] = None,
                              tts_enabled: bool = False, tts_voice: str = ""):
     async with get_db() as db:
         db.row_factory = __import__("aiosqlite").Row
         cur = await db.execute("SELECT model, persona_id FROM theater_conversations WHERE id=?", (conv_id,))
         conv = await cur.fetchone()
-        model_key = conv["model"] if conv else DEFAULT_MODEL
-        persona_id = conv["persona_id"] if conv else ""
+        if not conv:
+            raise HTTPException(status_code=404, detail="theater conversation not found")
+
+        cur = await db.execute(
+            "SELECT role FROM theater_messages WHERE id=? AND conv_id=?",
+            (body.message_id, conv_id),
+        )
+        target = await cur.fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="theater message not found")
+        if target["role"] != "assistant":
+            raise HTTPException(status_code=400, detail="only AI messages can be regenerated")
+
+        model_key = body.model.strip() or conv["model"] or DEFAULT_MODEL
+        persona_id = body.persona_id
+        now = time.time()
+        await db.execute("DELETE FROM theater_messages WHERE id=?", (body.message_id,))
+        await db.execute(
+            "UPDATE theater_conversations SET model=?, persona_id=?, updated_at=? WHERE id=?",
+            (model_key, persona_id, now, conv_id),
+        )
+        await db.commit()
 
         cur = await db.execute(
             "SELECT role, content, attachments FROM theater_messages WHERE conv_id=? AND role IN ('user','assistant') ORDER BY created_at DESC LIMIT ?",
@@ -412,6 +598,15 @@ async def regenerate_message(conv_id: str, context_limit: int = 20, temperature:
             except Exception:
                 d["attachments"] = []
             history.append(d)
+
+    _cancel_theater_tts_message(body.message_id)
+    await asyncio.to_thread(
+        delete_message_audio_files, [body.message_id], THEATER_TTS_CACHE_DIR
+    )
+    await manager.broadcast({
+        "type": "theater_msg_deleted",
+        "data": {"id": body.message_id, "conv_id": conv_id},
+    })
 
     # 只保留最后一条用户消息的附件
     last_user_idx = -1
@@ -439,8 +634,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 20, temperature:
         history = prefix + history
 
     ai_msg_id = f"tm_{int(time.time() * 1000)}_regen"
-    usage_meta: dict = {}
     _q: asyncio.Queue = asyncio.Queue()
+    usage_meta: dict = _StreamingReasoningMeta(_q)
 
     tts_streamer = None
     if tts_enabled and tts_voice:
@@ -455,39 +650,45 @@ async def regenerate_message(conv_id: str, context_limit: int = 20, temperature:
             merge_segments=True,
             delete_segments_after_seconds=THEATER_TTS_SEGMENT_DELETE_DELAY_SECONDS,
             cache_max_bytes=None,
+            event_data={"conv_id": conv_id},
+            max_segments=140,
         )
+        _register_theater_tts(conv_id, ai_msg_id, tts_streamer)
 
     async def _bg_generate():
         full_text = ""
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
-            try:
+            async def content_stream():
                 async for chunk in stream_ai(history, model_key, usage_meta, temperature=temperature):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
-                    full_text += chunk
-                    await _q.put({"type": "chunk", "content": chunk})
-                    if tts_streamer:
-                        tts_streamer.feed(chunk)
-            except Exception as e:
-                error_text = f"\n[请求出错: {str(e)}]"
-                full_text += error_text
-                await _q.put({"type": "chunk", "content": error_text})
+                    yield chunk
+
+            stream_result = await _consume_theater_stream(
+                content_stream(),
+                _q,
+                tts_streamer,
+            )
+            full_text = stream_result.committed_text
+            if stream_result.notice:
+                full_text = f"{full_text}\n\n[{stream_result.notice}]"
 
             full_text = full_text.strip()
 
             now2 = time.time()
-            async with get_db() as db2:
-                await db2.execute(
-                    "INSERT INTO theater_messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-                    (ai_msg_id, conv_id, "assistant", full_text, now2, "[]"),
-                )
-                await db2.execute("UPDATE theater_conversations SET updated_at=? WHERE id=?", (now2, conv_id))
-                await db2.commit()
+            reasoning_content = str(usage_meta.get("reasoning_content") or "").strip()
+            message_persisted = await _persist_theater_assistant_message(
+                conv_id, ai_msg_id, full_text, now2, reasoning_content
+            )
+
+            if not message_persisted:
+                return
 
             ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant",
-                      "content": full_text, "created_at": now2, "attachments": []}
+                      "content": full_text, "created_at": now2, "attachments": [],
+                      "reasoning_content": reasoning_content}
             await manager.broadcast({"type": "theater_msg_created", "data": ai_msg})
 
             await _q.put({
@@ -502,9 +703,11 @@ async def regenerate_message(conv_id: str, context_limit: int = 20, temperature:
         finally:
             if tts_streamer:
                 try:
-                    await tts_streamer.flush()
+                    await _flush_and_cleanup_theater_tts(tts_streamer, ai_msg_id)
                 except Exception:
                     pass
+                finally:
+                    _unregister_theater_tts(ai_msg_id, tts_streamer)
             await _q.put({"type": "done"})
 
     asyncio.create_task(_bg_generate())

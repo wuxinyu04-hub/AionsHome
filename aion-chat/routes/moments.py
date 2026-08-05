@@ -23,6 +23,7 @@ from chatroom import (
     _read_connor_persona, recall_chatroom_memories,
 )
 from context_builder import strip_tool_commands
+from sync_events import broadcast_synced
 
 router = APIRouter(prefix="/api/moments", tags=["moments"])
 
@@ -478,7 +479,7 @@ async def _ai_reply_to_moment(who: str, moment_id: str, target_comment_id: str =
         "id": comment_id, "moment_id": moment_id, "author": who,
         "content": comment_text, "reply_to_id": target_comment_id, "created_at": now,
     }
-    await ws_manager.broadcast({"type": "moment_comment", "data": comment_data})
+    await broadcast_synced(ws_manager, {"type": "moment_comment", "data": comment_data})
 
     if send_chat_message:
         try:
@@ -498,7 +499,7 @@ async def _ai_reply_to_moment(who: str, moment_id: str, target_comment_id: str =
                     (react_id, moment_id, who, "like", now),
                 )
                 await db.commit()
-            await ws_manager.broadcast({"type": "moment_reaction", "data": {
+            await broadcast_synced(ws_manager, {"type": "moment_reaction", "data": {
                 "id": react_id, "moment_id": moment_id, "author": who, "type": "like", "created_at": now,
             }})
         except Exception:
@@ -552,18 +553,30 @@ async def _trigger_ai_replies(moment_id: str, exclude_author: str = None):
 # ══════════════════════════════════════════════════
 
 @router.get("")
-async def list_moments(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+async def list_moments(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    before: Optional[float] = Query(None),
+):
     """分页获取朋友圈列表（按时间倒序），包含评论和反应"""
     offset = (page - 1) * page_size
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("SELECT COUNT(*) as cnt FROM moments")
         total = (await cur.fetchone())["cnt"]
-        cur = await db.execute(
-            "SELECT * FROM moments ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (page_size, offset),
-        )
-        moments = [dict(r) for r in await cur.fetchall()]
+        if before is not None:
+            cur = await db.execute(
+                "SELECT * FROM moments WHERE created_at<? ORDER BY created_at DESC LIMIT ?",
+                (before, page_size + 1),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT * FROM moments ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (page_size + 1, offset),
+            )
+        raw_moments = [dict(r) for r in await cur.fetchall()]
+        has_more = len(raw_moments) > page_size
+        moments = raw_moments[:page_size]
 
         # 评论/反应一次批量取回。原来是每条朋友圈各查 2 次（20 条 = 41 次查询）。
         ids = [m["id"] for m in moments]
@@ -591,7 +604,14 @@ async def list_moments(page: int = Query(1, ge=1), page_size: int = Query(20, ge
             m["comments"] = comments_by_moment.get(m["id"], [])
             m["reactions"] = reactions_by_moment.get(m["id"], [])
 
-    return {"items": moments, "total": total, "page": page, "page_size": page_size}
+    return {
+        "items": moments,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": has_more,
+        "next_cursor": moments[-1]["created_at"] if moments else None,
+    }
 
 
 class MomentCreate(BaseModel):
@@ -627,7 +647,7 @@ async def create_moment(body: MomentCreate):
     }
 
     # 广播新朋友圈
-    await ws_manager.broadcast({"type": "moment_new", "data": moment_data})
+    await broadcast_synced(ws_manager, {"type": "moment_new", "data": moment_data})
 
     # 异步触发两个 AI 回复
     asyncio.create_task(_trigger_ai_replies(moment_id, exclude_author="user"))
@@ -643,6 +663,7 @@ async def delete_moment(moment_id: str):
         await db.execute("DELETE FROM moment_reactions WHERE moment_id=?", (moment_id,))
         await db.execute("DELETE FROM moments WHERE id=?", (moment_id,))
         await db.commit()
+    await broadcast_synced(ws_manager, {"type": "moment_deleted", "data": {"id": moment_id}})
     return {"ok": True}
 
 
@@ -668,7 +689,7 @@ async def toggle_reaction(moment_id: str, body: ReactionBody):
                 # 取消
                 await db.execute("DELETE FROM moment_reactions WHERE id=?", (existing["id"],))
                 await db.commit()
-                await ws_manager.broadcast({"type": "moment_reaction_removed", "data": {
+                await broadcast_synced(ws_manager, {"type": "moment_reaction_removed", "data": {
                     "moment_id": moment_id, "author": body.author,
                 }})
                 return {"ok": True, "action": "removed"}
@@ -679,7 +700,7 @@ async def toggle_reaction(moment_id: str, body: ReactionBody):
                     (body.type, now, existing["id"]),
                 )
                 await db.commit()
-                await ws_manager.broadcast({"type": "moment_reaction", "data": {
+                await broadcast_synced(ws_manager, {"type": "moment_reaction", "data": {
                     "id": existing["id"], "moment_id": moment_id,
                     "author": body.author, "type": body.type, "created_at": now,
                 }})
@@ -692,7 +713,7 @@ async def toggle_reaction(moment_id: str, body: ReactionBody):
                 (react_id, moment_id, body.author, body.type, now),
             )
             await db.commit()
-            await ws_manager.broadcast({"type": "moment_reaction", "data": {
+            await broadcast_synced(ws_manager, {"type": "moment_reaction", "data": {
                 "id": react_id, "moment_id": moment_id,
                 "author": body.author, "type": body.type, "created_at": now,
             }})
@@ -763,7 +784,7 @@ async def add_comment(moment_id: str, body: CommentCreate):
         "id": comment_id, "moment_id": moment_id, "author": "user",
         "content": content, "reply_to_id": body.reply_to_id, "created_at": now,
     }
-    await ws_manager.broadcast({"type": "moment_comment", "data": comment_data})
+    await broadcast_synced(ws_manager, {"type": "moment_comment", "data": comment_data})
 
     if target_ai_authors:
         asyncio.create_task(
@@ -845,7 +866,7 @@ async def delete_comment(moment_id: str, comment_id: str):
         )
         await db.commit()
 
-    await ws_manager.broadcast({"type": "moment_comment_deleted", "data": {
+    await broadcast_synced(ws_manager, {"type": "moment_comment_deleted", "data": {
         "moment_id": moment_id, "comment_id": comment_id,
     }})
     return {"ok": True}

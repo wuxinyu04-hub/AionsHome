@@ -43,7 +43,26 @@ let hasMoreMessages = false;   // 是否还有更早的消息可加载
 let loadingMore = false;       // 防止重复加载
 let _suppressScrollBottom = false; // 星标跳转时抑制自动滚底
 const MSG_PAGE_SIZE = 50;
+const PRIVATE_SYNC_SEQ_KEY = 'aion_sync_seq_v1:chat';
+let privateSyncReplayPromise = null;
 const $ = id => document.getElementById(id);
+
+window.addEventListener('aion-client-update-ready', () => {
+  if (window.__aionClientUpdateScheduled) return;
+  window.__aionClientUpdateScheduled = true;
+  const reloadWhenIdle = () => {
+    const active = document.activeElement;
+    const editing = active && (active.matches?.('input,textarea,select,[contenteditable="true"]')
+      || active.tagName === 'IFRAME');
+    if (sending || streamingAiId || editing || voiceInCall
+        || (typeof videoCall !== 'undefined' && videoCall.active)) {
+      setTimeout(reloadWhenIdle, 1500);
+      return;
+    }
+    location.reload();
+  };
+  setTimeout(reloadWhenIdle, 800);
+});
 
 // ── 收发消息音效 ──
 const sndSend = new Audio('/public/发送消息.mp3');
@@ -192,6 +211,18 @@ function renderMsgPart(p) {
     if (item.type === 'monologue') return `<div class="inner-monologue-line">${escHtml(item.text)}</div>`;
     return `<div class="msg-bubble">${formatMsg(item.text)}</div>`;
   }).join('');
+}
+function renderBandVibrationNote(atts) {
+  const note = (Array.isArray(atts) ? atts : []).find(item =>
+    item && typeof item === 'object' && item.type === 'band_vibration'
+  );
+  if (!note) return '';
+  const fallback = note.note
+    ? `${note.pattern === 'call' ? '手环呼唤：' : '手环轻震：'}${note.note}`
+    : (note.pattern === 'call'
+      ? '手环震动：紧急呼叫！'
+      : '手环震动：轻轻想了你一下');
+  return `<div class="band-vibration-line">${escHtml(note.label || fallback)}</div>`;
 }
 function formatMsg(s) {
   // 流水线：HTML escape → 占位(转账/图片) → marked.parse → 还原占位 → DOMPurify → renderInnerMonologues
@@ -1113,7 +1144,10 @@ function bumpTTSPlaybackState() {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') refreshTTSPlaybackState();
-  else bumpTTSPlaybackState();
+  else {
+    bumpTTSPlaybackState();
+    reconcilePrivateSync();
+  }
 });
 window.addEventListener('pagehide', refreshTTSPlaybackState);
 window.addEventListener('pageshow', bumpTTSPlaybackState);
@@ -1520,11 +1554,27 @@ function dismissAlarm() {
   if (_alarmQueue.length) setTimeout(_showNextAlarm, 300);
 }
 
-async function api(method, url, body) {
-  const opts = { method, headers: {"Content-Type": "application/json"} };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(url, opts);
-  return res.json();
+async function api(method, url, body, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Number(options.timeoutMs || 15000));
+  const opts = { method, headers: {"Content-Type": "application/json"}, signal: controller.signal };
+  if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
+  try {
+    const res = await fetch(url, opts);
+    const text = await res.text();
+    let payload = null;
+    if (text) {
+      try { payload = JSON.parse(text); }
+      catch(e) { payload = { detail: text }; }
+    }
+    if (!res.ok) throw new Error(payload?.detail || payload?.error || `请求失败 (${res.status})`);
+    return payload;
+  } catch(e) {
+    if (e?.name === 'AbortError') throw new Error('网络响应超时，请稍后重试');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function _dedupeMessagesById(messages) {
@@ -1578,14 +1628,52 @@ function setCurrentMessages(messages) {
 }
 
 // ── WebSocket 同步 ──
+function rememberPrivateSyncSeq(event) {
+  const seq = Number(event?.sync_seq || 0);
+  if (!seq) return;
+  const current = Number(localStorage.getItem(PRIVATE_SYNC_SEQ_KEY) || 0);
+  if (seq > current) localStorage.setItem(PRIVATE_SYNC_SEQ_KEY, String(seq));
+}
+
+async function reconcilePrivateSync() {
+  if (privateSyncReplayPromise) return privateSyncReplayPromise;
+  privateSyncReplayPromise = (async () => {
+    let after = Number(localStorage.getItem(PRIVATE_SYNC_SEQ_KEY) || 0);
+    for (let batch = 0; batch < 20; batch++) {
+      const result = await api('GET', `/api/sync/changes?after=${after}&limit=200`, null, { timeoutMs: 10000 });
+      if (result?.reset_required) {
+        await refreshCurrentConversationFromServer();
+        const latest = Number(result.latest_seq || 0);
+        localStorage.setItem(PRIVATE_SYNC_SEQ_KEY, String(latest));
+        break;
+      }
+      const events = Array.isArray(result?.events) ? result.events : [];
+      events.forEach(event => {
+        // Replayed sync_event messages share the live event shape and dedupe by ID.
+        handleSync(event);
+        rememberPrivateSyncSeq(event);
+        after = Math.max(after, Number(event.sync_seq || 0));
+      });
+      if (!result?.has_more || !events.length) break;
+    }
+  })().catch(e => console.warn('[chat sync] reconcile failed:', e))
+    .finally(() => { privateSyncReplayPromise = null; });
+  return privateSyncReplayPromise;
+}
+
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/ws`);
   ws.onopen = () => {
     ws.send(JSON.stringify({type:'register_client',client_id:_clientId}));
     _sendTTSState();
+    reconcilePrivateSync();
   };
-  ws.onmessage = e => handleSync(JSON.parse(e.data));
+  ws.onmessage = e => {
+    const event = JSON.parse(e.data);
+    rememberPrivateSyncSeq(event);
+    handleSync(event);
+  };
   ws.onclose = () => setTimeout(connectWS, 2000);
 }
 
@@ -1639,6 +1727,10 @@ function handleSync(msg) {
 
   if (type === "avatar_changed") {
     _refreshChatAvatarVersion(data && data.kind, data && data.version);
+    return;
+  }
+  if (type === "hug_pillow_command") {
+    window.HugPillowAI?.handleCommandEvent(data);
     return;
   }
   if (type === "conv_created") {
@@ -1791,8 +1883,10 @@ function handleSync(msg) {
     showAlarmPopup(data);
   } else if (type === "monitor_alert") {
     // 定时监控即将触发，播放提示音
-    const audio = new Audio('/public/AionMonitoralart.mp3');
-    audio.play().catch(() => {});
+    if (!data.phone_camera_native_capture) {
+      const audio = new Audio('/public/AionMonitoralart.mp3');
+      audio.play().catch(() => {});
+    }
     const body = data.origin_name
       ? `【${data.origin_name}】设定的监督：${data.content || '哨兵监控即将分析'}`
       : (data.content || '哨兵监控即将分析');
@@ -1949,6 +2043,15 @@ function renderMessages() {
     if (m.role === "system") {
       const afterMsgId = systemNoticeAfterMsgId(m);
       const afterAttr = afterMsgId ? ` data-after-msg-id="${escHtml(afterMsgId)}"` : "";
+      const snapshotHtml = window.MonitorCameraSnapshot
+        ? window.MonitorCameraSnapshot.renderMonitorCameraSnapshot(
+            m.attachments,
+            {
+              escapeHtml: escHtml,
+              imageAttrs: imageInteractionAttrs(),
+            },
+          )
+        : "";
       return `
       <div class="msg-row system" id="m_${m.id}" data-msg-id="${m.id}"${afterAttr}>
         <div class="system-notice">
@@ -1958,6 +2061,7 @@ function renderMessages() {
             <button onclick="delMsg('${m.id}');closeMsgMenus()">删除</button>
           </div>
         </div>
+        ${snapshotHtml}
       </div>`;
     }
 
@@ -1975,6 +2079,7 @@ function renderMessages() {
       ${m.reasoning_content ? `<button class="msg-feedback-btn msg-reasoning-btn" onclick="openMsgReasoning(event,'${m.id}')" title="查看思考过程">💭</button>` : ''}
     </span>` : '';
     const messageAttachments = withWishFallbackAttachments(m);
+    const bandVibrationHtml = renderBandVibrationNote(messageAttachments);
     const rawDisplayContent = isUser ? (m.content || '') : (m.content || '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
     const displayContent = stripWishFulfillmentMarker(rawDisplayContent).trim();
     const hasVoiceAtt = messageAttachments.some(a => typeof a === 'object' && (a.type === 'voice' || a.type === 'video_clip'));
@@ -2021,6 +2126,7 @@ function renderMessages() {
           <div class="msg-menu" id="menu_${m.id}">${actionsHtml}</div>
         </div>
         ${bubblesHtml}
+        ${bandVibrationHtml}
       </div>
     </div>`;
   }).join("");
@@ -6755,6 +6861,29 @@ function syncSubPageMode(url) {
 const persistentSubPageFrames = new Map();
 const transientSubPageFrame = $('subPageFrame');
 let activeSubPageFrame = null;
+let _aionAppForeground = false;
+let _aionPhoneCameraCaptureActive = false;
+
+function notifySubPageLifecycle(frame, visible) {
+  if (!frame || !frame.contentWindow) return;
+  frame.dataset.aionSubPageVisible = visible ? '1' : '0';
+  try {
+    frame.contentWindow.onAionSubPageVisibilityChanged?.(!!visible);
+    frame.contentWindow.onAionAppForegroundChanged?.(_aionAppForeground);
+    frame.contentWindow.onAionPhoneCameraCaptureState?.(
+      _aionPhoneCameraCaptureActive);
+  } catch(e) {}
+}
+
+window.onAionAppForegroundChanged = function(active) {
+  _aionAppForeground = !!active;
+  notifySubPageLifecycle(activeSubPageFrame, !!activeSubPageFrame);
+};
+
+window.onAionPhoneCameraCaptureState = function(active) {
+  _aionPhoneCameraCaptureActive = !!active;
+  notifySubPageLifecycle(activeSubPageFrame, !!activeSubPageFrame);
+};
 
 function subPagePath(url) {
   try { return new URL(url, location.origin).pathname; } catch(e) { return url || ''; }
@@ -6787,9 +6916,24 @@ function isPersistentSubPage(url) {
   return path === '/' || path === '/chatroom' || path === '/health' || path === '/music';
 }
 
+function syncHealthRingPageVisibility() {
+  const overlay = $('subPageOverlay');
+  const visible = !!(overlay
+    && overlay.classList.contains('show')
+    && activeSubPageFrame
+    && subPagePath(currentSubPage) === '/health');
+  try {
+    if (window.AionRingBle
+        && typeof window.AionRingBle.setHealthPageVisible === 'function') {
+      window.AionRingBle.setHealthPageVisible(visible);
+    }
+  } catch(e) {}
+}
+
 function attachSubPageFrameLoad(frame) {
   frame.addEventListener('load', () => {
     if (frame !== activeSubPageFrame || !frame.src || frame.src === 'about:blank') return;
+    notifySubPageLifecycle(frame, true);
     requestAnimationFrame(() => {
       try { syncSubPageMode(frame.contentWindow.location.href); }
       catch(e) { syncSubPageMode(frame.src); }
@@ -6801,7 +6945,7 @@ function attachSubPageFrameLoad(frame) {
 function getSubPageFrame(url) {
   const path = subPagePath(url);
   if (!isPersistentSubPage(path)) {
-    transientSubPageFrame.src = url;
+    transientSubPageFrame.dataset.pendingSrc = url;
     return transientSubPageFrame;
   }
   let frame = persistentSubPageFrames.get(path);
@@ -6814,9 +6958,9 @@ function getSubPageFrame(url) {
     attachSubPageFrameLoad(frame);
     $('subPageFrames').appendChild(frame);
     persistentSubPageFrames.set(path, frame);
-    frame.src = url;
+    frame.dataset.pendingSrc = url;
   } else if (shouldNavigatePersistentSubPage(frame, url)) {
-    frame.src = url;
+    frame.dataset.pendingSrc = url;
   }
   return frame;
 }
@@ -6830,10 +6974,19 @@ function openSubPage(url) {
   // state，让音乐页立即镜像，而不是等下一个 4s 广播周期（避免"再进去像停了"的假象）
   if (subPagePath(url) === '/music' && musicIsLeader && musicAudio && !musicAudio.paused) musicBroadcastState();
   const frame = getSubPageFrame(url);
+  if (activeSubPageFrame && activeSubPageFrame !== frame) {
+    notifySubPageLifecycle(activeSubPageFrame, false);
+  }
   document.querySelectorAll('.sub-page-frame').forEach(item => {
     item.style.display = item === frame ? 'block' : 'none';
   });
   activeSubPageFrame = frame;
+  if (frame.dataset.pendingSrc) {
+    const pendingSrc = frame.dataset.pendingSrc;
+    delete frame.dataset.pendingSrc;
+    frame.src = pendingSrc;
+  }
+  notifySubPageLifecycle(frame, true);
   if (subPagePath(url) === '/') {
     try {
       frame.contentDocument?.getElementById('screen')?.classList.remove('navigating');
@@ -6841,6 +6994,7 @@ function openSubPage(url) {
   }
   $('subPageOverlay').classList.add('show');
   currentSubPage = url;
+  syncHealthRingPageVisibility();
 }
 function closeSubPage(skipReload = false) {
   const ov = $('subPageOverlay');
@@ -6857,12 +7011,14 @@ function closeSubPage(skipReload = false) {
       try { activeSubPageFrame.contentWindow?.postMessage({ type: 'aionMusicSubpageClose' }, '*'); } catch (e) {}
     }
   }
+  notifySubPageLifecycle(activeSubPageFrame, false);
   if (activeSubPageFrame === transientSubPageFrame) {
     transientSubPageFrame.src = 'about:blank';
   }
   if (activeSubPageFrame) activeSubPageFrame.style.display = 'none';
   activeSubPageFrame = null;
   currentSubPage = null;
+  syncHealthRingPageVisibility();
   applyAionTheme(localStorage.getItem('aion_chat_theme') || document.body.dataset.theme || 'dark');
   // 回到聊天页后重新加载消息列表（拿到后台生成完成的新消息）
   if (!skipReload && currentConvId) {

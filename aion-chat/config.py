@@ -268,6 +268,7 @@ BUILTIN_MODELS = {
     "硅基DS-v4":      {"provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V4-Pro", "vision": False},
     "官方Gemini3.5flash":  {"provider": "gemini", "model": "gemini-3.5-flash", "vision": True},
     "官方Gemini3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
+    "官Gem3.6flash":  {"provider": "gemini", "model": "gemini-3.6-flash", "vision": True},
     # ChatGPT-auth Codex does not support some Codex-only defaults, so pin a
     # model that works after account switches..
     "Codex":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
@@ -277,6 +278,7 @@ BUILTIN_MODELS = {
     # "Codex":          {"provider": "codex_cli",  "model": "gpt-5.6-terra", "vision": True},
     # "Codex-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True},
     # "Codex-Luna":     {"provider": "codex_cli",  "model": "gpt-5.6-luna", "vision": True},
+    "Codex-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True},
     "CLI-3.1pro":       {"provider": "gemini_cli", "model": "gemini-3.1-pro-preview", "vision": True},
     # Antigravity 走本地 agy OAuth 会话，复用 agy 自己保存的默认模型
     # （在 agy 里用 /model 选好默认模型后，所有 agy --print 调用都会自动复用，无需传 --model）。
@@ -315,10 +317,12 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 model_id = _clean_text(raw_model)
                 model_key = model_id
                 vision = True
+                audio = False
             elif isinstance(raw_model, dict):
                 model_id = _clean_text(raw_model.get("model") or raw_model.get("model_id"))
                 model_key = _clean_text(raw_model.get("key") or raw_model.get("name") or model_id)
                 vision = bool(raw_model.get("vision", True))
+                audio = raw_model.get("audio") is True
             else:
                 continue
             if not model_id or not model_key:
@@ -330,6 +334,7 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 "key": model_key,
                 "model": model_id,
                 "vision": vision,
+                "audio": audio,
             })
         if models:
             routes.append({
@@ -381,6 +386,7 @@ def refresh_custom_models() -> None:
                 "provider": CUSTOM_OPENAI_PROVIDER,
                 "model": item["model"],
                 "vision": bool(item.get("vision", True)),
+                "audio": item.get("audio") is True,
                 "base_url": route["base_url"],
                 "api_key": route.get("api_key", ""),
                 "route_id": route["id"],
@@ -441,7 +447,15 @@ DEFAULT_CAM_CFG = {
     "quiet_hours_enabled": False,
     "quiet_hours_start": "00:00",
     "quiet_hours_end": "09:00",
+    "wake_mode": "aion",
 }
+
+CAM_WAKE_MODES = {"aion", "connor", "smart"}
+
+
+def normalize_camera_wake_mode(value: object) -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in CAM_WAKE_MODES else "aion"
 
 def load_cam_config() -> dict:
     if CAM_CONFIG_PATH.exists():
@@ -456,6 +470,7 @@ def load_cam_config() -> dict:
             cfg.pop("auto_interval", None)
         for k, v in DEFAULT_CAM_CFG.items():
             cfg.setdefault(k, v)
+        cfg["wake_mode"] = normalize_camera_wake_mode(cfg.get("wake_mode"))
         return cfg
     return dict(DEFAULT_CAM_CFG)
 

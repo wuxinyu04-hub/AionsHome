@@ -34,6 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from config import BASE_DIR, PUBLIC_DIR, UPLOADS_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
 from database import init_db, get_db
+from active_window_state import restore_active_windows
 from ws import manager
 from camera import cam
 from voice import get_voice
@@ -67,16 +68,23 @@ from routes import seeky as seeky_routes
 from routes import wallet as wallet_routes
 from routes import connor_wallet as connor_wallet_routes
 from routes import health as health_routes
+from routes import band_commands as band_commands_routes
 from routes import phone_screen as phone_screen_routes
+from routes import phone_camera as phone_camera_routes
 from routes import search as search_routes
 from routes import autonomy as autonomy_routes
 from routes import persona_evolution as persona_evolution_routes
 from routes import wishes as wishes_routes
 from routes import xhs_lite as xhs_lite_routes
 from routes import capabilities as capabilities_routes
+from routes import english_corner as english_corner_routes
 from routes import wechat as wechat_routes
+from routes import sync as sync_routes
+from routes import app_supervision as app_supervision_routes
+from routes import homecoming as homecoming_routes
 from activity import pc_tracker, pc_display_tracker
 from memory import auto_digest
+from memory_compression import migrate_legacy_daily_capsules
 from chatroom import _connor_1v1_auto_digest_loop
 from fund import fund_scheduler
 from autonomy import idle_autonomy_mgr
@@ -84,6 +92,7 @@ from persona_evolution import main_ai_persona_evolution_loop, connor_persona_evo
 from asset_manifest import get_client_asset_manifest
 from home_assistant_events import ha_event_listener
 from wechat_openclaw_runtime import openclaw_weixin_runtime
+from wechat_mode_dispatcher import wechat_mode_dispatcher
 
 
 # ── 自动记忆总结定时任务 ──────────────────────────
@@ -149,6 +158,14 @@ async def lifespan(app: FastAPI):
             traceback.print_exc()
         except Exception:
             pass
+    await restore_active_windows()
+    migrated_legacy_capsules = await migrate_legacy_daily_capsules()
+    if migrated_legacy_capsules["main"] or migrated_legacy_capsules["chatroom"]:
+        print(
+            "[memory_compression] 旧版日常已登记为单日胶囊："
+            f"主记忆 {migrated_legacy_capsules['main']} 条，"
+            f"聊天室 {migrated_legacy_capsules['chatroom']} 条"
+        )
     loop = asyncio.get_running_loop()
     # 各子系统启动互相独立：任何一个失败（摄像头被占、HA 离线、配置缺字段…）
     # 都不应拖死整个应用，聊天主链路必须先活着
@@ -158,6 +175,10 @@ async def lifespan(app: FastAPI):
         if cam_cfg.get("monitor_enabled"):
             if cam_cfg.get("active_source") == "esp32":
                 cam.open_esp32()
+            elif cam_cfg.get("active_source") == "phone":
+                # Android camera arming is intentionally not restored after a
+                # process restart; monitoring may run and report capture failure.
+                cam.running = False
             else:
                 cam.open_camera(cam_cfg.get("camera_index", 0))
             cam.start_monitoring()
@@ -202,11 +223,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[HA] ❌ 启动异常: {e}")
     try:
+        wechat_mode_dispatcher.start()
+    except Exception as e:
+        print(f"[WechatMode] ❌ 启动异常: {e}")
+    try:
         openclaw_weixin_runtime.start()
     except Exception as e:
         print(f"[Weixin] ❌ 启动异常: {e}")
     yield
     await openclaw_weixin_runtime.stop()
+    await wechat_mode_dispatcher.stop()
     await ha_event_listener.stop()
     idle_autonomy_mgr.stop()
     connor_persona_evolution_task.cancel()
@@ -227,6 +253,7 @@ app = FastAPI(lifespan=lifespan)
 # Android app additionally uses /api/client-assets to share verified objects
 # between LAN, Tailscale, and Cloudflare origins.
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
@@ -291,6 +318,7 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheStaticMiddleware)
 app.add_middleware(AuthMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
 
 
 # ── 登录 ──────────────────────────────────────────
@@ -353,14 +381,20 @@ app.include_router(seeky_routes.router)
 app.include_router(wallet_routes.router)
 app.include_router(connor_wallet_routes.router)
 app.include_router(health_routes.router)
+app.include_router(band_commands_routes.router)
 app.include_router(phone_screen_routes.router)
+app.include_router(phone_camera_routes.router)
 app.include_router(search_routes.router)
 app.include_router(autonomy_routes.router)
 app.include_router(persona_evolution_routes.router)
 app.include_router(wishes_routes.router)
 app.include_router(xhs_lite_routes.router)
 app.include_router(capabilities_routes.router)
+app.include_router(english_corner_routes.router)
 app.include_router(wechat_routes.router)
+app.include_router(sync_routes.router)
+app.include_router(app_supervision_routes.router)
+app.include_router(homecoming_routes.router)
 
 
 @app.get("/api/client-assets")
@@ -388,6 +422,14 @@ async def settings_page():
 async def capabilities_page():
     return FileResponse(BASE_DIR / "static" / "capabilities.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
+@app.get("/english-corner")
+async def english_corner_page():
+    return FileResponse(BASE_DIR / "static" / "english-corner.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/app-supervision")
+async def app_supervision_page():
+    return FileResponse(BASE_DIR / "static" / "app-supervision.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
 @app.get("/worldbook")
 async def worldbook_page():
     return FileResponse(BASE_DIR / "static" / "worldbook.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
@@ -399,6 +441,10 @@ async def sleep_page():
 @app.get("/memory")
 async def memory_page():
     return FileResponse(BASE_DIR / "static" / "memory.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/memory-compression")
+async def memory_compression_page():
+    return FileResponse(BASE_DIR / "static" / "memory-compression.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/schedule")
 async def schedule_page():
@@ -491,6 +537,10 @@ async def xhs_lite_logs_page():
 @app.get("/health")
 async def health_page():
     return FileResponse(BASE_DIR / "static" / "health.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/hug")
+async def hug_page():
+    return FileResponse(BASE_DIR / "static" / "hug.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/pet")
 async def pet_page():

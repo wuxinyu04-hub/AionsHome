@@ -15,9 +15,10 @@ from typing import Optional, List, Any
 from config import DEFAULT_MODEL, MODELS, load_worldbook, SETTINGS, UPLOADS_DIR, CODEX_UPLOADS_DIR, PUBLIC_DIR, resolve_model_key
 from database import get_db
 from ws import manager
+from active_window_state import record_aion_private_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from xhs_chat_tool import stream_ai_with_xhs_tool, XHS_TOOL_PROMPT
-from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, _memory_line_with_evidence
+from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, _memory_line_with_evidence, format_recalled_memories_for_prompt
 from camera import cam, CAM_CHECK_CMD, perform_cam_check
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
@@ -25,11 +26,23 @@ from routes.files import export_conversation
 from routes.music import MUSIC_CMD_PATTERN, LIKE_CMD_PATTERN, PLAYLIST_NEW_PATTERN, PLAYLIST_ADD_PATTERN, _lib_drop as _music_cache_drop
 import playback
 from song_gen import SONG_CMD_PATTERN, clean_song_visible_reply
+from stream_reply import resolve_stream_failure
+from stream_safety import (
+    CHAT_STREAM_POLICY,
+    StreamSafetyResult,
+    consume_safe_stream,
+)
 from tts import TTSStreamer
 from wechat_bridge import (
     dispatch_wechat_message,
     process_wechat_outbound_commands,
     record_wechat_route,
+)
+from band_commands import process_band_vibration, with_band_vibration_attachment
+from hug_pillow_commands import process_hug_pillow_commands
+from app_supervision_ai import (
+    queue_app_supervision_reply_command,
+    broadcast_app_supervision_command,
 )
 
 MOMENT_CMD_PATTERN = re.compile(r'\[MOMENT:(.+?)(?:\|(true|false))?\]')
@@ -53,6 +66,7 @@ _SYSTEM_MSG_CONTEXT_KEYWORDS = ('查看了监控', '搜索了', '点歌', '点�
 from context_builder import (
     fetch_merged_timeline, render_merged_timeline, build_health_summary,
     build_ability_block, WISH_CMD_PATTERN, _build_recall_query, strip_tool_commands,
+    BAND_VIBRATE_CMD_PATTERN,
 )
 from music import search_songs, get_audio_url, like_track, create_playlist, add_to_playlist, find_playlist_by_name
 from schedule import (
@@ -84,11 +98,14 @@ log = logging.getLogger("chat")
 def _process_voice_attachments_in_history(history: list, keep_idx: int = -1):
     """处理历史消息中的语音/视频附件：
     - 所有语音/视频消息的转写文本注入 content
-    - keep_idx 位置的消息保留媒体 URL 用于 inline_data（-1 表示最后一条）
+    - keep_idx 位置的消息保留媒体 URL（-1 表示最新一条用户消息）
     - 其他消息移除所有附件
     """
     if keep_idx < 0:
-        keep_idx = len(history) - 1
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                keep_idx = i
+                break
     for i, msg in enumerate(history):
         atts = msg.get("attachments", [])
         if not atts:
@@ -188,6 +205,12 @@ def _visible_ai_text(text: str) -> str:
     return cleaned.strip()
 
 
+def _extract_mi_band_commands(text: str) -> tuple[str, list[str]]:
+    """Extract supported vibration commands before the visible reply is cleaned."""
+    commands = [value.lower() for value in BAND_VIBRATE_CMD_PATTERN.findall(text or "")]
+    return BAND_VIBRATE_CMD_PATTERN.sub("", text or "").strip(), commands
+
+
 def _chat_stream_event(model_key: str, full_text: str, chunk: str) -> dict[str, str]:
     provider = (MODELS.get(model_key) or {}).get("provider", "")
     if provider == "antigravity_cli":
@@ -206,7 +229,48 @@ async def _emit_chat_visible_chunk(
         return
     await _q.put(_chat_stream_event(model_key, visible_text, visible_chunk))
     if tts_streamer:
-        tts_streamer.feed(visible_chunk)
+        await tts_streamer.feed_async(visible_chunk)
+
+
+async def _consume_chat_stream(
+    source,
+    queue,
+    *,
+    model_key: str,
+    tts_streamer: TTSStreamer | None = None,
+) -> tuple[StreamSafetyResult, str]:
+    visible_text = ""
+    stream_filter = WebCommandStreamFilter()
+
+    async def on_commit(chunk: str) -> None:
+        nonlocal visible_text
+        visible_chunk = stream_filter.feed(chunk)
+        if visible_chunk:
+            visible_text += visible_chunk
+            await _emit_chat_visible_chunk(
+                queue,
+                model_key,
+                visible_text,
+                visible_chunk,
+                tts_streamer,
+            )
+
+    result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
+    visible_tail = stream_filter.flush()
+    if visible_tail:
+        visible_text += visible_tail
+        await _emit_chat_visible_chunk(
+            queue,
+            model_key,
+            visible_text,
+            visible_tail,
+            tts_streamer,
+        )
+    if result.notice:
+        notice = f"\n\n[{result.notice}]"
+        visible_text += notice
+        await queue.put(_chat_stream_event(model_key, visible_text, notice))
+    return result, visible_text
 
 
 _AI_ERROR_PREFIXES = (
@@ -732,6 +796,31 @@ async def _wechat_sys_msg(conv_id: str, text: str, after_msg_id: str = None):
     await manager.broadcast({"type": "msg_created", "data": msg})
 
 
+async def _hug_pillow_sys_msg(conv_id: str, text: str, after_msg_id: str = None):
+    """Insert a hug-pillow action notice that remains visible to later models."""
+    now = time.time()
+    msg_id = f"msg_{time.time_ns()}_hug"
+    order_atts = [{"type": "system_model_context"}]
+    if after_msg_id:
+        order_atts.append({"type": "system_notice_order", "after_msg_id": after_msg_id})
+    att_json = json.dumps(order_atts, ensure_ascii=False)
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+            (msg_id, conv_id, "system", text, now, att_json),
+        )
+        await db.commit()
+    msg = {
+        "id": msg_id,
+        "conv_id": conv_id,
+        "role": "system",
+        "content": text,
+        "created_at": now,
+        "attachments": order_atts,
+    }
+    await manager.broadcast({"type": "msg_created", "data": msg})
+
+
 async def _process_private_wechat_commands(full_text: str, conv_id: str, ai_msg_id: str) -> str:
     async def _save_system(system_text: str):
         await _wechat_sys_msg(conv_id, system_text, after_msg_id=ai_msg_id)
@@ -1110,7 +1199,6 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     if body.client_id:
         manager.set_last_sender(body.client_id)
     # Aion 侧：用户在 Aion 私聊发消息
-    manager.set_aion_last_active("private")
 
     # 1. 查出原消息信息
     async with get_db() as db:
@@ -1121,11 +1209,9 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             return {"error": "message not found"}
         conv_id = orig["conv_id"]
         msg_created_at = orig["created_at"]
+        resent_at = time.time()
 
-        # 2. 更新消息内容
-        await db.execute("UPDATE messages SET content=? WHERE id=?", (body.content, msg_id))
-
-        # 3. 删除该消息之后的所有消息
+        # 2. 先按原发送时间删除后续消息
         cur2 = await db.execute(
             "SELECT id FROM messages WHERE conv_id=? AND created_at>?",
             (conv_id, msg_created_at)
@@ -1136,11 +1222,22 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 "DELETE FROM messages WHERE conv_id=? AND created_at>?",
                 (conv_id, msg_created_at)
             )
+        # 3. 编辑确认等同重新发送，内容和发送时间一起更新
+        await db.execute(
+            "UPDATE messages SET content=?, created_at=? WHERE id=?",
+            (body.content, resent_at, msg_id),
+        )
+        await db.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (resent_at, conv_id),
+        )
         await db.commit()
 
     # 广播更新和删除事件
+    await record_aion_private_active()
     updated_d = dict(orig)
     updated_d["content"] = body.content
+    updated_d["created_at"] = resent_at
     try: updated_d["attachments"] = json.loads(updated_d.get("attachments") or "[]") if updated_d.get("attachments") else []
     except: updated_d["attachments"] = []
     await manager.broadcast({"type": "msg_updated", "data": updated_d})
@@ -1244,7 +1341,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
     if recall_query:
         recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
-        if digest_result.get("require_detail") and recalled:
+        if (is_search_needed or digest_result.get("require_detail")) and recalled:
             detail_text = await fetch_source_details(recalled, recall_keywords)
 
     debug_recalled = [{"content": m["content"], "type": m["type"], "score": m["score"],
@@ -1280,33 +1377,35 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     async def _bg_generate():
         full_text = ""
         visible_text = ""
-        web_stream_filter = WebCommandStreamFilter()
         has_error = False
+        error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
-            try:
+
+            async def content_stream():
                 async for chunk in stream_ai_with_xhs_tool(history, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
-                    full_text += chunk
-                    visible_chunk = web_stream_filter.feed(chunk)
-                    if visible_chunk:
-                        visible_text += visible_chunk
-                        await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_chunk, tts_streamer)
-                visible_tail = web_stream_filter.flush()
-                if visible_tail:
-                    visible_text += visible_tail
-                    await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_tail, tts_streamer)
-            except Exception as e:
-                has_error = True
-                error_text = f"\n[请求出错: {str(e)}]"
-                full_text += error_text
-                await _q.put({"type": "chunk", "content": error_text})
+                    yield chunk
+
+            stream_result, visible_text = await _consume_chat_stream(
+                content_stream(),
+                _q,
+                model_key=model_key,
+                tts_streamer=tts_streamer,
+            )
+            full_text = stream_result.committed_text
+            safety_notice = stream_result.notice
+            has_error = stream_result.stop_reason is not None
+            error_text = stream_result.diagnostic_error or stream_result.stop_reason
 
             stripped = full_text.strip()
             if not has_error and _is_ai_error_text(stripped):
                 has_error = True
+                error_text = stripped
+            if safety_notice:
+                full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
             music_cards = []
@@ -1324,6 +1423,23 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                         log.warning("点歌搜索失败: %s", e)
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
+
+            full_text = await process_band_vibration(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+            )
+            full_text = await process_hug_pillow_commands(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+                sender="aion",
+                save_system_message=lambda text: _hug_pillow_sys_msg(
+                    conv_id, text, after_msg_id=ai_msg_id
+                ),
+            )
 
             toy_matches = TOY_CMD_PATTERN.findall(full_text)
             if toy_matches:
@@ -1440,6 +1556,14 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 source_ref=f"{conv_id}:{ai_msg_id}",
             )
 
+            full_text, supervision_command = await queue_app_supervision_reply_command(
+                full_text,
+                source_message_id=ai_msg_id,
+                role_id="aion",
+                source_kind="private",
+                source_ref=conv_id,
+            )
+
             full_text = _visible_ai_text(full_text)
 
             # 检测 [转账：N元] 指令 — AI 转账入账（不从 full_text 中剥离，前端渲染卡片需要）
@@ -1467,6 +1591,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 
             now2 = time.time()
@@ -1480,6 +1605,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
             ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip()}
             await manager.broadcast({"type": "msg_created", "data": ai_msg})
+            await broadcast_app_supervision_command(supervision_command)
             await export_conversation(conv_id)
 
             if toy_matches:
@@ -1563,7 +1689,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
-                "error_text": stripped if has_error else None,
+                "error_text": error_text if has_error else None,
             }
             await _q.put(debug_data)
             await manager.broadcast({"type": "debug", "data": debug_data})
@@ -1597,7 +1723,6 @@ async def send_message(conv_id: str, body: MsgCreate):
     if body.client_id:
         manager.set_last_sender(body.client_id)
     # Aion 侧：用户在 Aion 私聊发消息
-    manager.set_aion_last_active("private")
     now = time.time()
     msg_id = f"msg_{int(now*1000)}"
 
@@ -1644,6 +1769,7 @@ async def send_message(conv_id: str, body: MsgCreate):
             await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
 
+    await record_aion_private_active()
     if duplicate_msg:
         await manager.broadcast({"type": "msg_created", "data": duplicate_msg})
         return _done_streaming_response()
@@ -1841,7 +1967,7 @@ async def send_message(conv_id: str, body: MsgCreate):
         if recall_query:
             recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
             # 如果需要补充记忆证据
-            if digest_result.get("require_detail") and recalled:
+            if (is_search_needed or digest_result.get("require_detail")) and recalled:
                 detail_text = await fetch_source_details(recalled, recall_keywords)
 
         debug_recalled = [{"content": m["content"], "type": m["type"], "score": m["score"],
@@ -1882,34 +2008,36 @@ async def send_message(conv_id: str, body: MsgCreate):
         """后台任务：AI 流式生成 → 后处理 → 存 DB → WS 广播。始终运行到结束。"""
         full_text = ""
         visible_text = ""
-        web_stream_filter = WebCommandStreamFilter()
         has_error = False
+        error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
-            try:
+
+            async def content_stream():
                 async for chunk in stream_ai_with_xhs_tool(history, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
-                    full_text += chunk
-                    visible_chunk = web_stream_filter.feed(chunk)
-                    if visible_chunk:
-                        visible_text += visible_chunk
-                        await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_chunk, tts_streamer)
-                visible_tail = web_stream_filter.flush()
-                if visible_tail:
-                    visible_text += visible_tail
-                    await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_tail, tts_streamer)
-            except Exception as e:
-                has_error = True
-                error_text = f"\n[请求出错: {str(e)}]"
-                full_text += error_text
-                await _q.put({"type": "chunk", "content": error_text})
+                    yield chunk
+
+            stream_result, visible_text = await _consume_chat_stream(
+                content_stream(),
+                _q,
+                model_key=model_key,
+                tts_streamer=tts_streamer,
+            )
+            full_text = stream_result.committed_text
+            safety_notice = stream_result.notice
+            has_error = stream_result.stop_reason is not None
+            error_text = stream_result.diagnostic_error or stream_result.stop_reason
 
             # 检查 AI 返回的错误文本
             stripped = full_text.strip()
             if not has_error and _is_ai_error_text(stripped):
                 has_error = True
+                error_text = stripped
+            if safety_notice:
+                full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
             # 检测 [MUSIC:xxx] 指令 → 搜索歌曲并推送卡片数据
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
@@ -1928,6 +2056,23 @@ async def send_message(conv_id: str, body: MsgCreate):
                         log.warning("点歌搜索失败: %s", e)
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
+
+            full_text = await process_band_vibration(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+            )
+            full_text = await process_hug_pillow_commands(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+                sender="aion",
+                save_system_message=lambda text: _hug_pillow_sys_msg(
+                    conv_id, text, after_msg_id=ai_msg_id
+                ),
+            )
 
             # 检测 [TOY:x] 指令
             toy_matches = TOY_CMD_PATTERN.findall(full_text)
@@ -2054,6 +2199,14 @@ async def send_message(conv_id: str, body: MsgCreate):
                 source_ref=f"{conv_id}:{ai_msg_id}",
             )
 
+            full_text, supervision_command = await queue_app_supervision_reply_command(
+                full_text,
+                source_message_id=ai_msg_id,
+                role_id="aion",
+                source_kind="private",
+                source_ref=conv_id,
+            )
+
             # 检测 [转账：N元] 指令 — AI 转账入账
             transfer_matches = TRANSFER_CMD_PATTERN.findall(full_text)
             for t_amount_str in transfer_matches:
@@ -2122,6 +2275,7 @@ async def send_message(conv_id: str, body: MsgCreate):
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 
             now2 = time.time()
@@ -2135,6 +2289,7 @@ async def send_message(conv_id: str, body: MsgCreate):
 
             ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip()}
             await manager.broadcast({"type": "msg_created", "data": ai_msg})
+            await broadcast_app_supervision_command(supervision_command)
             await export_conversation(conv_id)
 
             # 推送 [TOY:x] 指令到前端
@@ -2225,7 +2380,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
-                "error_text": stripped if has_error else None,
+                "error_text": error_text if has_error else None,
             }
 
             # 推送剧场指令结果到前端
@@ -2509,6 +2664,8 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
         f"你刚才为了回答{user_name}发起了联网搜索或网页读取，系统已经完成。以下是结果：\n\n"
         f"{web_context}\n\n"
         f"请根据这些结果自然回答{user_name}。如果信息不足，请说明不足；不要编造来源。"
+        "请先自行归纳总结搜索结果，只提供与当前问题或分享主题直接相关的关键信息。"
+        "请像平时聊天一样自然表达，不要写成搜索报告，不要逐条复述搜索结果，也不要长篇大论。"
         f"除非确实必须继续核实，否则不要再次输出 [WEB_SEARCH:...] 或 [WEB_EXTRACT:...]。"
     )
     messages = prefix + recent + [{"role": "user", "content": web_prompt}]
@@ -2535,7 +2692,8 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
         if web_tts and visible_tail:
             web_tts.feed(visible_tail)
     except Exception as e:
-        full_text = f"[联网搜索完成但回复生成失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "联网搜索完成但回复生成失败")
+        full_text = resolution.visible_text
 
     if not full_text.strip():
         return
@@ -2551,15 +2709,17 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
     full_text = _visible_ai_text(clean_web_command_text(full_text))
 
     now = time.time()
+    reply_atts = await with_band_vibration_attachment(msg_id, [])
+    att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else "[]"
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (msg_id, conv_id, "assistant", full_text, now, "[]"),
+            (msg_id, conv_id, "assistant", full_text, now, att_json),
         )
         await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
 
-    ai_msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now, "attachments": []}
+    ai_msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now, "attachments": reply_atts}
     await manager.broadcast({"type": "msg_created", "data": ai_msg})
     if web_tts:
         try:
@@ -2707,7 +2867,8 @@ async def perform_poi_check(conv_id: str, model_key: str, categories: list[str])
             if poi_tts:
                 poi_tts.feed(chunk)
     except Exception as e:
-        full_text = f"[周边搜索完成但回复生成失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "周边搜索完成但回复生成失败")
+        full_text = resolution.visible_text
 
     if not full_text.strip():
         return
@@ -2737,16 +2898,18 @@ async def perform_poi_check(conv_id: str, model_key: str, categories: list[str])
     await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
     now = time.time()
+    reply_atts = await with_band_vibration_attachment(msg_id, [])
+    att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else "[]"
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (msg_id, conv_id, "assistant", full_text, now, "[]")
+            (msg_id, conv_id, "assistant", full_text, now, att_json)
         )
         await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
 
     ai_msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant",
-              "content": full_text, "created_at": now, "attachments": []}
+              "content": full_text, "created_at": now, "attachments": reply_atts}
     await manager.broadcast({"type": "msg_created", "data": ai_msg})
     if poi_tts:
         try:
@@ -2846,7 +3009,8 @@ async def perform_activity_check(conv_id: str, model_key: str, n: int = 6):
             if ac_tts:
                 ac_tts.feed(chunk)
     except Exception as e:
-        full_text = f"[查看动态失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "查看动态失败")
+        full_text = resolution.visible_text
 
     if not full_text.strip():
         return
@@ -2874,16 +3038,18 @@ async def perform_activity_check(conv_id: str, model_key: str, n: int = 6):
     await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
     now = time.time()
+    reply_atts = await with_band_vibration_attachment(msg_id, [])
+    att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else "[]"
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (msg_id, conv_id, "assistant", full_text, now, "[]")
+            (msg_id, conv_id, "assistant", full_text, now, att_json)
         )
         await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
 
     ai_msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant",
-              "content": full_text, "created_at": now, "attachments": []}
+              "content": full_text, "created_at": now, "attachments": reply_atts}
     await manager.broadcast({"type": "msg_created", "data": ai_msg})
     if ac_tts:
         try:
@@ -3007,7 +3173,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
 
         if recall_query:
             recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
-            if digest_result.get("require_detail") and recalled:
+            if (is_search_needed or digest_result.get("require_detail")) and recalled:
                 detail_text = await fetch_source_details(recalled, recall_keywords)
 
         debug_recalled = [{"content": m["content"], "type": m["type"], "score": m["score"],
@@ -3046,34 +3212,36 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         """后台任务：AI 流式生成 → 后处理 → 存 DB → WS 广播。始终运行到结束。"""
         full_text = ""
         visible_text = ""
-        web_stream_filter = WebCommandStreamFilter()
         has_error = False
+        error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
-            try:
+
+            async def content_stream():
                 async for chunk in stream_ai(history, model_key, usage_meta, temperature, max_tokens=max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
-                    full_text += chunk
-                    visible_chunk = web_stream_filter.feed(chunk)
-                    if visible_chunk:
-                        visible_text += visible_chunk
-                        await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_chunk, regen_tts)
-                visible_tail = web_stream_filter.flush()
-                if visible_tail:
-                    visible_text += visible_tail
-                    await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_tail, regen_tts)
-            except Exception as e:
-                has_error = True
-                error_text = f"\n[请求出错: {str(e)}]"
-                full_text += error_text
-                await _q.put({"type": "chunk", "content": error_text})
+                    yield chunk
+
+            stream_result, visible_text = await _consume_chat_stream(
+                content_stream(),
+                _q,
+                model_key=model_key,
+                tts_streamer=regen_tts,
+            )
+            full_text = stream_result.committed_text
+            safety_notice = stream_result.notice
+            has_error = stream_result.stop_reason is not None
+            error_text = stream_result.diagnostic_error or stream_result.stop_reason
 
             # 检查 AI 返回的错误文本
             stripped = full_text.strip()
             if not has_error and _is_ai_error_text(stripped):
                 has_error = True
+                error_text = stripped
+            if safety_notice:
+                full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
             # 检测 [MUSIC:xxx] 指令 → 搜索歌曲并推送卡片数据
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
@@ -3092,6 +3260,23 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                         log.warning("点歌搜索失败: %s", e)
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
+
+            full_text = await process_band_vibration(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+            )
+            full_text = await process_hug_pillow_commands(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+                sender="aion",
+                save_system_message=lambda text: _hug_pillow_sys_msg(
+                    conv_id, text, after_msg_id=ai_msg_id
+                ),
+            )
 
             # 检测 [TOY:x] 指令
             toy_matches = TOY_CMD_PATTERN.findall(full_text)
@@ -3247,6 +3432,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 
             now2 = time.time()
@@ -3350,7 +3536,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
-                "error_text": stripped if has_error else None,
+                "error_text": error_text if has_error else None,
             }
             await _q.put(debug_data)
             await manager.broadcast({"type": "debug", "data": debug_data})

@@ -20,7 +20,7 @@ from ws import manager
 
 ACTION_DEFS = {
     "seeky_interaction": "和宠物鲸鱼 Seeky 互动",
-    "role_chat": "和另一个家庭成员聊一句",
+    "role_chat": "和另一个家庭成员自然聊聊",
     "home_dynamics": "查看近期家庭动态",
     "web_roam": "上网冲浪搜索感兴趣的内容",
     "cam_check": "调取监控查看用户当前状态",
@@ -452,12 +452,16 @@ async def _select_action(actor: str, *, manual: bool = False) -> dict:
     options = "\n".join(f"- {key}: {ACTION_DEFS[key]}" for key in enabled)
     data = await _ask_actor_json(actor, (
         "[空闲自主行动]\n"
-        "现在用户暂时没有和你聊天。请根据你的人设、最近30条聊天记录和当前心情，"
-        "从下面动作里选择一项。只返回 JSON，不要解释。选择尽量多变，不要每次都查看用户当前状态。"
+        "现在用户暂时没有和你聊天，可能在忙碌或休息。请根据你的人设、最近30条聊天记录和当前心情，"
+        "从下面动作里，按照自己想做的事情选择一项。只返回 JSON，不要解释。选择尽量多变，不要每次都查看用户当前状态。"
         "如果最近用户明确要求测试或选择某个动作，请优先遵守。\n\n"
         f"{options}\n\n"
-        "Return JSON with action, reason, and message. When action is role_chat, message is the line to post; otherwise message can be empty.\n"
-        '格式：{"action":"上面的key之一","reason":"一句话理由"}'
+        "Return JSON with action, reason, and message. "
+        "当 action 是 role_chat 时，message 必须是将直接发送到群聊的完整消息："
+        "结合你的人设、最近30条聊天记录、当前时间和此刻心情，说出你现在真正想对另一位家庭成员说的话。"
+        "像平时群聊一样自然表达完整的想法，不要因为返回 JSON 而刻意简短；"
+        "不限定句数或字数，也不要为了凑长度而啰嗦。其他动作的 message 可以为空。\n"
+        '格式：{"action":"上面的key之一","reason":"选择这个动作的理由","message":"role_chat 时要直接发送的完整群聊消息"}'
     ))
     raw_action = str(data.get("action") or "").strip()
     action = raw_action
@@ -558,6 +562,7 @@ async def _run_web_roam(actor: str) -> dict:
         f"你刚才在空闲时搜索了「{query}」。以下是系统搜索结果：\n\n"
         f"{web_context}\n\n"
         f"请给{user_name}发一条自然消息，像随手分享给恋人一样随意，说说自己看到了什么、想到了什么。"
+        "请先自行归纳总结搜索结果，只提供与当前问题或分享主题直接相关的关键信息，不要写成搜索报告，也不要逐条复述。"
         "每次分享的方式要不一样：有时一两句话带过，有时展开聊聊；不要每次都以做家务/放下图纸之类的场景描写开头，"
         "不要固定用“我刚才搜索了……”开场，也不必每次都联系到对方身上升华。"
         "只有搜索结果里确实有值得对方自己打开看的原文时才把原网址完整写进回复（系统会自动解析成可点击卡片），多数时候不用贴链接。"
@@ -660,17 +665,9 @@ async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
     target = "connor" if actor == "aion" else "aion"
     actor_name = _actor_label(actor)
     target_name = _actor_label(target)
-    data = {"message": _clip(str((selected or {}).get("message") or ""), 500)}
-    if not data["message"]:
-        data = await _ask_actor_json(actor, (
-        "[发起一轮群聊]\n"
-        f"你要在最近的群聊里主动对 {target_name} 说一句话，然后对方会回复一句。"
-        "请自然发起一个话题，讨论一件事或单纯想起什么，随意聊天。只返回 JSON。\n"
-        '格式：{"message":"要发到群聊的一个话题"}'
-    ))
-    message = _clip(str(data.get("message") or ""), 500)
+    message = _clip(str((selected or {}).get("message") or ""), 500)
     if not message:
-        message = f"{target_name}，你现在在想什么？"
+        raise RuntimeError("role_chat 动作未返回可发送的 message")
     await _save_msg(room_id, actor, message)
     room, msgs = await _load_room_and_messages(room_id, 50)
     queue: asyncio.Queue = asyncio.Queue()
@@ -680,7 +677,7 @@ async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
     else:
         await _reply_connor(room_id, msgs, context_limit, message, queue, connor_model_key=_connor_model())
     event = await append_idle_event(
-        actor, "role_chat", f"{actor_name}在群聊里找{target_name}聊了一句",
+        actor, "role_chat", f"{actor_name}在群聊里找{target_name}主动聊了起来",
         message, target_type="chatroom", target_id=room_id,
     )
     return {"event": event}

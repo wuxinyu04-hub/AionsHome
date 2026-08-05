@@ -10,7 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#050923">
-<link rel="stylesheet" href="/static/chatroom.css?v=bubble-align-chat-15-400-20260803-md">
+<link rel="stylesheet" href="/static/chatroom.css?v=bubble-align-chat-15-400-20260803-md-monitor-camera-thumb-20260731-webview-backdrop-20260805">
 <link rel="stylesheet" href="/static/voice-call.css?v=voice-call-polish-20260704g">
 <link rel="stylesheet" href="/static/vendor/atom-one-dark.min.css?v=1">
 </head>
@@ -198,7 +198,7 @@
             <div class="ambient-buffer-preview empty" id="crAmbientBufferPreview">暂无待检查片段</div>
           </div>
         </div>
-        <button class="save-btn" onclick="saveSettings()">保存</button>
+        <button class="save-btn" id="saveSettingsBtn" onclick="saveSettings()">保存</button>
       </div>
     </div>
   </div>
@@ -312,7 +312,6 @@
         </div>
         <div class="memory-footer-actions">
           <button class="mem-add-btn" onclick="showAddMemory()">+ 手动添加</button>
-          <button class="mem-add-btn" id="chatroomCompressDailyBtn" style="background:#6a4c93;" onclick="compressChatroomDailyMemories()">🗜️ 压缩日常</button>
           <button class="mem-add-btn" style="background:var(--text3);" onclick="triggerDigest()">📝 总结记忆</button>
         </div>
         <div class="chatroom-compress-review" id="chatroomCompressReview" style="display:none"></div>
@@ -451,7 +450,10 @@
   <script src="/static/vendor/lang-xml.min.js?v=1"></script>
   <script src="/static/vendor/lang-yaml.min.js?v=1"></script>
   <script src="/static/vendor/marked.min.js?v=1"></script>
-  <script src="/static/chatroom.js?v=audio-mutex-20260803-md-unreadjump"></script>
+  <script src="/static/hug_pillow_ai.js?v=hug-pillow-ai-20260726"></script>
+  <script src="/static/monitor-camera-snapshot.js?v=20260731"></script>
+  <script src="/static/schedule-command-filter.js?v=20260805"></script>
+  <script src="/static/chatroom.js?v=audio-mutex-20260803-md-unreadjump-hug-pillow-ai-20260726-monitor-camera-20260731-schedule-command-tolerance-20260805-voice-message-actions-20260805"></script>
   <script src="/static/voice-call.js?v=voice-call-polish-20260704g"></script>
 </body>
 </html>
