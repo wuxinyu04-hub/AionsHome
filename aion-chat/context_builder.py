@@ -611,7 +611,7 @@ def _is_model_visible_timeline_message(message: dict) -> bool:
     return any(keyword in content for keyword in SYSTEM_MSG_CONTEXT_KEYWORDS)
 
 
-async def fetch_merged_timeline(
+def _merged_timeline_sources(
     who: str,
     *,
     conv_id: str = None,
