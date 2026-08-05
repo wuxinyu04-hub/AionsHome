@@ -140,8 +140,12 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 #player .scene svg{height:60%}
 #player .scene .vignette{background:linear-gradient(180deg,rgba(11,14,24,.35) 0%,rgba(11,14,24,.15) 35%,rgba(11,14,24,.9) 68%,var(--bg) 100%)}
 .p-ui{position:relative;z-index:2;display:flex;flex-direction:column;height:100%}
-.p-top{display:flex;justify-content:space-between;align-items:center;padding:max(18px,env(safe-area-inset-top)) 22px 0}
-.p-top button{background:none;border:none;color:var(--fg-soft);font-size:18px;cursor:pointer;padding:6px}
+.p-top{display:flex;justify-content:space-between;align-items:center;padding:max(28px,env(safe-area-inset-top)) 22px 0}
+/* 退出/列表键给到和首页 .exit 一致的半透明圆背景：裸字符叠在插画上几乎看不见，
+   安卓沉浸式下 env(safe-area-inset-top) 又常报成 0，↓ 会被状态栏吃掉 */
+.p-top button{background:rgba(11,14,24,.4);border:1px solid rgba(239,233,219,.12);border-radius:50%;
+  width:34px;height:34px;color:var(--fg-soft);font-size:16px;cursor:pointer;backdrop-filter:blur(6px);
+  display:grid;place-items:center}
 .p-title{font-family:var(--serif);font-size:14px;color:var(--fg-soft);letter-spacing:.12em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%}
 .p-mid{flex:1;display:flex;flex-direction:column;justify-content:flex-end;padding:0 30px 22px;text-align:center;overflow:hidden}
 .cap{font-family:var(--serif);letter-spacing:.04em;text-shadow:0 2px 16px rgba(0,0,0,.7);transition:opacity 1.2s}
@@ -317,7 +321,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .app.has-mini #home{padding-bottom:82px}
 
 /* 播放/暂停符号在 Android 上被 Noto Color Emoji 渲成彩色——强制单色 */
-#pPlay, #miniPause, .r-play, .al-play, .pc{font-variant-emoji:text;font-family:system-ui,Segoe UI Emoji,Segoe UI Symbol,sans-serif}
+#pPlay, #miniPause, #pBack, #pQueueBtn, .r-play, .al-play, .pc{font-variant-emoji:text;font-family:system-ui,Segoe UI Emoji,Segoe UI Symbol,sans-serif}
 </style>
 </head>
 <body>
