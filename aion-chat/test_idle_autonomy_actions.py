@@ -131,7 +131,6 @@ class IdleAutonomyWebRoamTests(unittest.IsolatedAsyncioTestCase):
                  "【联网搜索结果】\n查询：AI 桌面宠物设计\n1. 示例文章\nURL：https://example.com\n内容：有趣的设计灵感"
              ])) as run_web_commands, \
              patch.object(autonomy, "_actor_context", new=AsyncMock(return_value=[])), \
-             patch.object(autonomy, "_trailing_unanswered_ai_count", new=AsyncMock(return_value=0)), \
              patch.object(autonomy, "_call_actor", new=AsyncMock(return_value=saved_message["content"])) as call_actor, \
              patch.object(autonomy, "_save_private_message", new=AsyncMock(return_value=saved_message)) as save_private, \
              patch.object(autonomy, "append_idle_event", new=fake_append):
@@ -146,33 +145,6 @@ class IdleAutonomyWebRoamTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("AI 桌面宠物设计", events[0][0][2])
         self.assertEqual(events[0][1]["result_type"], "message")
         self.assertEqual(events[0][1]["result_id"], "msg_web")
-
-    async def test_run_web_roam_holds_back_when_user_has_not_replied(self):
-        """用户连发未回时只记事件、不再推消息（收敛分支）。"""
-        events = []
-
-        async def fake_append(*args, **kwargs):
-            events.append((args, kwargs))
-            return {"id": "idle_web"}
-
-        with patch.object(autonomy, "_ask_actor_json", new=AsyncMock(return_value={
-            "search_command": "[WEB_SEARCH:AI 桌面宠物设计]",
-            "reason": "想找点灵感",
-        })), \
-             patch.object(autonomy, "_is_idle_web_roam_available", return_value=True), \
-             patch.object(autonomy, "run_web_commands", new=AsyncMock(return_value=["【联网搜索结果】\n查询：AI 桌面宠物设计"])), \
-             patch.object(autonomy, "_trailing_unanswered_ai_count", new=AsyncMock(return_value=2)), \
-             patch.object(autonomy, "_actor_context", new=AsyncMock(return_value=[])), \
-             patch.object(autonomy, "_call_actor", new=AsyncMock(return_value="不该被调用")) as call_actor, \
-             patch.object(autonomy, "_save_private_message", new=AsyncMock()) as save_private, \
-             patch.object(autonomy, "append_idle_event", new=fake_append):
-            result = await autonomy._run_web_roam("aion")
-
-        call_actor.assert_not_awaited()
-        save_private.assert_not_awaited()
-        self.assertIsNone(result["message"])
-        self.assertTrue(result["held_back"])
-        self.assertTrue(events[0][1]["metadata"]["held_back"])
 
     async def test_aion_private_idle_message_saves_link_preview_attachments(self):
         db = _RecordingDb()

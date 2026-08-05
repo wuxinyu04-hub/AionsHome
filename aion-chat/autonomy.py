@@ -26,6 +26,7 @@ ACTION_DEFS = {
     "cam_check": "调取监控查看用户当前状态",
     "wish_pool": "查看许愿池并尝试实现用户的愿望",
     "xhs_roam": "去小红书查看指定账号最新帖子并按人设评论或回复",
+    "leave_sleep_audio": "给用户留一条晚安哄睡语音（带今天聊的记忆，让她晚上听）",
 }
 
 SEEKY_ACTIONS = {
@@ -394,20 +395,6 @@ async def _actor_context(actor: str, limit: int = 30) -> list[dict]:
     return messages
 
 
-async def _trailing_unanswered_ai_count(actor: str) -> int:
-    """统计最后一条用户消息之后 AI 连续发出的消息条数（用户一直没回时用于收敛主动推送）。"""
-    who = "aion" if actor == "aion" else "connor"
-    timeline = await fetch_merged_timeline(who, 30)
-    count = 0
-    for msg in reversed(timeline):
-        sender = msg.get("sender")
-        if sender == "user":
-            break
-        if sender in ("assistant", "aion", "connor"):
-            count += 1
-    return count
-
-
 async def _ask_actor_json(actor: str, instruction: str, *, limit: int = 30) -> dict:
     messages = await _actor_context(actor, limit)
     messages.append({"role": "user", "content": instruction})
@@ -542,20 +529,6 @@ async def _run_web_roam(actor: str) -> dict:
     if not web_context:
         web_context = "【联网搜索结果】\n系统没有拿到可用结果。"
 
-    # 用户连续多条推送未回复时不再继续发消息，搜到的内容留着等她回来再聊
-    unanswered = await _trailing_unanswered_ai_count(actor)
-    if unanswered >= 2:
-        event = await append_idle_event(
-            actor,
-            "web_roam",
-            f"{actor_name}上网冲浪搜索了：{_clip(query, 80)}",
-            f"{user_name}还没回消息，先自己看着，等她回来再聊",
-            target_type="web",
-            target_id=query,
-            metadata={"query": query, "reason": str(result.get("reason") or "").strip(), "held_back": True},
-        )
-        return {"event": event, "message": None, "query": query, "held_back": True}
-
     messages = await _actor_context(actor, 30)
     messages.append({"role": "user", "content": (
         "[上网冲浪搜索完成]\n"
@@ -681,6 +654,103 @@ async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
         message, target_type="chatroom", target_id=room_id,
     )
     return {"event": event}
+
+
+def _actor_sleep_voice(actor: str) -> str:
+    """actor 的哄睡音色：林叙(connor)=wenrougongzi，叙远(aion)=cixingnansheng。
+    从 chatroom_config 读，兜底硬编码。"""
+    try:
+        from chatroom import load_chatroom_config
+        cfg = load_chatroom_config()
+        if actor == "connor":
+            return cfg.get("tts_connor_voice") or "wenrougongzi"
+        return cfg.get("tts_aion_voice") or "cixingnansheng"
+    except Exception:
+        return "wenrougongzi" if actor == "connor" else "cixingnansheng"
+
+
+async def _gather_actor_memory_for_sleep(actor: str) -> str:
+    """读 actor 的记忆格式化成哄睡背景感知文本。
+    林叙(connor) 读 chatroom_memories；叙远(aion) 读主 memory--各自承接各自的对话，不串。
+    daily/long_term 都取（query 相关性召回），交给 prompt 做"不复述"控制。"""
+    try:
+        if actor == "connor":
+            from chatroom import recall_chatroom_memories
+            mems = await recall_chatroom_memories("今晚 心情 哄睡 晚安", scope="group", top_k=6)
+        else:
+            from memory import recall_memories
+            mems, _ = await recall_memories("今晚 心情 哄睡 晚安", top_k=6)
+        lines = []
+        for m in mems or []:
+            content = (m.get("content") or m.get("evidence_summary") or "").strip()
+            if content:
+                lines.append(content)
+        return "\n".join(lines)[:1200] if lines else ""
+    except Exception as e:
+        log.warning("读 actor 记忆失败 actor=%s: %s", actor, e)
+        return ""
+
+
+async def _run_leave_sleep_audio(actor: str) -> dict:
+    """actor 自主给用户留一条晚安哄睡语音：带今天的记忆生成（林叙/叙远各自人设+音色），群聊说一声。"""
+    import bedtime
+    from routes.chatroom import _save_msg
+
+    room_id = await _latest_group_room_id()
+    if not room_id:
+        raise RuntimeError("没有可用的群聊房间")
+
+    # 1. 读 actor 自己的记忆（今天聊的 + 长期）
+    memory_context = await _gather_actor_memory_for_sleep(actor)
+
+    # 2. 让 AI 看记忆 + 最近聊天，决定今晚留不留、留什么主题
+    mem_hint = f"\n你对她的了解（背景）：{memory_context[:600]}" if memory_context else ""
+    plan = await _ask_actor_json(actor, (
+        "[自主行动：留晚安哄睡语音]\n"
+        "用户暂时没在聊，可能在准备休息。请你根据你的人设、最近30条聊天记录"
+        + mem_hint + "\n"
+        "决定今晚要不要给她留一条晚安哄睡语音。\n"
+        "- 觉得她今晚需要（累了/心情不好/到点了/今天还没留过）：给一个适合今晚的哄睡主题（一句话，"
+        "如「海边夜晚」「今天辛苦了的轻柔安抚」「讲个慢故事」），和一句在群里发给她的留言（自然、像平时群聊、一两句）。\n"
+        "- 觉得今晚不需要（今天已留过/她正忙着别的）：topic 留空，notice 简短说一句为什么今晚不留。\n"
+        'Return JSON: {"topic":"主题一句话或空","notice":"发给她的群聊留言","reason":"理由"}'
+    ))
+    topic = str(plan.get("topic") or "").strip()
+    notice = _clip(str(plan.get("notice") or ""), 300)
+
+    actor_name = _actor_label(actor)
+
+    # 3. AI 判断今晚不留 -> 只发简短说明，不生成音频
+    if not topic:
+        if notice:
+            await _save_msg(room_id, actor, notice)
+        event = await append_idle_event(
+            actor, "leave_sleep_audio", f"{actor_name}今晚没留哄睡语音",
+            notice or "觉得今晚不需要", target_type="chatroom", target_id=room_id,
+        )
+        return {"event": event, "skipped": True}
+
+    # 4. 建条目 + 触发生成（带记忆 + actor 人设；林叙走 _LINXU_PERSONA，叙远走默认温叙远）
+    voice = _actor_sleep_voice(actor)
+    title = topic[:40]
+    item_id = await bedtime.create_generated_item("asmr", title, voice)
+    bedtime.trigger_generate(
+        item_id, "asmr", topic, voice, title,
+        actor=actor, memory_context=memory_context,
+    )
+
+    # 5. 群聊通知"给你留了条语音"
+    if not notice:
+        notice = f"给你留了条晚安语音：{title}，弄好了晚上听。"
+    await _save_msg(room_id, actor, notice)
+
+    # 6. 记 idle event
+    event = await append_idle_event(
+        actor, "leave_sleep_audio", f"{actor_name}给你留了条晚安哄睡语音",
+        f"主题：{topic} | 标题：{title}", target_type="chatroom", target_id=room_id,
+        metadata={"sleep_item_id": item_id, "topic": topic},
+    )
+    return {"event": event, "item_id": item_id, "title": title}
 
 
 def _memory_basis_ts(mem: dict) -> float:
@@ -1614,6 +1684,8 @@ async def _run_actor_once(actor: str, *, manual: bool = False) -> dict:
         result = await _run_wish_pool(actor)
     elif action == "xhs_roam":
         result = await _run_xhs_roam(actor)
+    elif action == "leave_sleep_audio":
+        result = await _run_leave_sleep_audio(actor)
     else:
         result = {}
     return {"ok": True, "actor": actor, "action": action, "result": result}

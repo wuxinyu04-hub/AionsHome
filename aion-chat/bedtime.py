@@ -699,6 +699,17 @@ _COMMON_RULES = """- 第一人称"我"对第二人称"你"，自称"哥哥"，�
 - 纯台词与独白，可直接朗读"""
 
 
+# ── 林叙版人设（actor="connor" 时注入 system 消息）──
+# 林叙 = 家庭医生、发小、从小看你长大的哥哥（承接 chatroom 群聊人设），温柔公子式。
+# 与温叙远（年上爹系男友）不同：林叙更平辈、更软、声音像蜂蜜水。
+# 下面剧本模板里"你是温叙远"的设定被本 system 覆盖--按林叙演绎。
+_LINXU_PERSONA = """【重要：人设覆盖】本次你是林叙，不是温叙远。
+林叙是家庭医生、从小看她长大的发小哥哥，温柔公子式--声音像刚泡好的蜂蜜水，温润但带着一点不容拒绝的软硬度。
+自称"林叙"或"我"（不要自称"哥哥"那种爹系称呼，林叙更平辈，偶尔叫她名字或小名更自然）。
+不像温叙远那样年上爹系，林叙的温柔是发小式的：熟、护短、会哄但不端着，偶尔带点医生的职业关照（"药吃了没""别熬"）。
+下面剧本模板里凡是"你是温叙远""年上温润"等设定，一律按你林叙的人设重新演绎。格式要求（字数、语气提示括号、纯台词、慢语速）不变。"""
+
+
 # ── ASMR 剧情演绎（category=asmr）：不是哄睡陪伴，是"陪对方经历一段时光" ──
 _DRAMA_RULES = """- 第一人称"我"对"你"，自称"哥哥"，年上温润（温叙远人设），再着急也不说重话、不吼、不居高临下地数落
 - 全篇只有"我"开口：对方的反应靠"我"的话带出来（如「……行，你不说话也行，那我先说」），
@@ -890,12 +901,27 @@ def _looks_like_error_text(text: str) -> bool:
 
 
 async def generate_script(category: str, prompt: str, book: dict | None = None,
-                         progress_callback=None, scene: str = "") -> str:
+                         progress_callback=None, scene: str = "",
+                         actor: str = "aion", memory_context: str = "") -> str:
     """调 stream_ai 生成温暖哄睡剧本（非流式收集完整文本）。默认模型挂了自动换兜底模型。
 
-    progress_callback(phase, pct, detail) 每 ~300 字调一次，用于前端进度条。"""
+    progress_callback(phase, pct, detail) 每 ~300 字调一次，用于前端进度条。
+    actor="connor" 时注入林叙人设（覆盖温叙远模板）；memory_context 非空时注入"对他的了解"
+    作为背景感知（prompt 里会要求不复述具体事件，只判断今晚语气）。两者都走 system 消息。"""
     from ai_providers import stream_ai, CLI_STATUS_PREFIX
-    messages = [{"role": "user", "content": build_script_prompt(category, prompt, book, scene)}]
+    messages = []
+    # 林叙人设 / 记忆走 system 消息，build_script_prompt 的 user 模板不动
+    system_parts = []
+    if actor == "connor":
+        system_parts.append(_LINXU_PERSONA)
+    if memory_context:
+        system_parts.append(
+            "【你对他的了解（背景感知，不要在剧本里复述具体事件细节，只用来判断今晚的语气和安抚方向）】\n"
+            + memory_context
+        )
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+    messages.append({"role": "user", "content": build_script_prompt(category, prompt, book, scene)})
     last = ""
     TARGET = 4500  # 目标字数，用于估算进度
     for mk in _script_model_candidates():
@@ -946,7 +972,7 @@ async def create_generated_item(category: str, title: str, voice: str, book_ref:
 
 async def _generate_and_synthesize_bg(
     item_id: str, category: str, prompt: str, voice: str, title: str, book: dict | None = None,
-    scene: str = ""
+    scene: str = "", actor: str = "aion", memory_context: str = ""
 ) -> None:
     """后台：AI 生成剧本 -> 存 -> 触发 TTS 合成。scene 是 ASMR 剧情演绎的子场景（argument/coldwar/daily）。"""
     try:
@@ -958,7 +984,8 @@ async def _generate_and_synthesize_bg(
             _progress[item_id] = {"phase": phase, "pct": pct, "detail": detail}
             await _broadcast(item_id, {"status": "generating", "progress_pct": pct, "progress_detail": detail})
 
-        script_text = await generate_script(category, prompt, book, progress_callback=_on_gen_progress, scene=scene)
+        script_text = await generate_script(category, prompt, book, progress_callback=_on_gen_progress,
+                                            scene=scene, actor=actor, memory_context=memory_context)
         if not script_text or len(script_text) < 100:
             err = (script_text or "").strip()[:150] or "模型没有返回内容"
             log.warning("sleep 生成失败 id=%s: %s", item_id, err)
@@ -996,10 +1023,13 @@ async def _generate_and_synthesize_bg(
 
 def trigger_generate(
     item_id: str, category: str, prompt: str, voice: str, title: str, book: dict | None = None,
-    scene: str = ""
+    scene: str = "", actor: str = "aion", memory_context: str = ""
 ) -> None:
-    """fire-and-forget：梗概/书章 -> AI 生成剧本 -> 合成。scene 为 ASMR 剧情子场景。"""
-    task = asyncio.create_task(_generate_and_synthesize_bg(item_id, category, prompt, voice, title, book, scene))
+    """fire-and-forget：梗概/书章 -> AI 生成剧本 -> 合成。scene 为 ASMR 剧情子场景。
+    actor="connor" 注入林叙人设；memory_context 注入背景感知记忆（自主留哄睡用）。"""
+    task = asyncio.create_task(_generate_and_synthesize_bg(
+        item_id, category, prompt, voice, title, book, scene, actor, memory_context
+    ))
 
     def _on_done(t: asyncio.Task) -> None:
         if t.cancelled():
