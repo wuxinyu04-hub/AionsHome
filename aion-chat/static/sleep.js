@@ -412,6 +412,23 @@
     const vb = COVER_VIEWS[hashIdx((it && it.id) || 'x', COVER_VIEWS.length)];
     return `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid slice"><use href="#room"/></svg>`;
   }
+  // 播放屏背景：有封面用「模糊放大铺满 + 清晰居中」双层，无封面退回 SVG 房间插画
+  function renderPlayerScene(it) {
+    const sc = document.querySelector('#player .scene');
+    if (!sc || !it) return;
+    const r = coverRev[it.id] ? ('?r=' + coverRev[it.id]) : '';
+    let bg;
+    if (it.has_cover) {
+      const url = `/api/sleep/${esc(it.id)}/cover${r}`;
+      bg = `<img src="${url}" alt="" class="p-cover-bg"><img src="${url}" alt="" class="p-cover">`;
+    } else {
+      bg = `<svg viewBox="0 0 390 370" preserveAspectRatio="xMidYMid slice"><use href="#room"/></svg>`;
+    }
+    // 重建背景层，保留 vignette（无事件，可直接移回）
+    const vig = sc.querySelector('.vignette');
+    sc.innerHTML = bg;
+    sc.appendChild(vig || Object.assign(document.createElement('div'), { className: 'vignette' }));
+  }
   function metaLine(it) {
     const bits = [];
     if (it.voice) bits.push(voiceLabel(it.voice) + ' 读');
@@ -881,6 +898,7 @@
     fetch('/api/sleep/' + it.id + '/played', { method: 'POST' }).catch(() => { });
     it.play_count = (it.play_count || 0) + 1;
     $('pTitle').textContent = it.title || '今晚的故事';
+    renderPlayerScene(it);
     $('pMid').classList.remove('expanded');
     $('capPast').textContent = ''; $('capNow').textContent = '';
     state.capIdx = -1;
@@ -949,8 +967,9 @@
 
   function setupMediaSession(it) {
     if (!('mediaSession' in navigator)) return;
+    const artwork = it.has_cover ? [{ src: `/api/sleep/${it.id}/cover`, sizes: '512x512', type: 'image/jpeg' }] : [];
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: it.title || '今晚的故事', artist: '温叙远', album: '晚安，小语',
+      title: it.title || '今晚的故事', artist: '温叙远', album: '晚安，小语', artwork,
     });
     navigator.mediaSession.setActionHandler('play', () => audio.play().catch(() => { }));
     navigator.mediaSession.setActionHandler('pause', () => audio.pause());
@@ -1259,10 +1278,17 @@
   }
   function scrollQueueToCurrent() {
     // 打开列表时把正在念的一行滚到可见：长列表不用手翻找
-    const sel = $('queueSheet').querySelector('.vo.sel');
-    if (sel && $('queueSheet').classList.contains('on')) sel.scrollIntoView({ block: 'center', behavior: 'auto' });
+    const list = $('queueList');
+    const sel = list.querySelector('.vo.sel');
+    if (!sel || !$('queueSheet').classList.contains('on')) return;
+    // 手动滚 .s-list，避免 scrollIntoView 在短列表上冒泡把整个视口顶上去（退出键被挤出屏幕）
+    const lr = list.getBoundingClientRect(), sr = sel.getBoundingClientRect();
+    list.scrollTop = Math.max(0, list.scrollTop + (sr.top - lr.top) - (list.clientHeight - sr.height) / 2);
   }
-  $('pQueueBtn').onclick = () => { renderQueueSheet(); $('queueSheet').classList.add('on'); requestAnimationFrame(scrollQueueToCurrent); };
+  $('pQueueBtn').onclick = () => {
+    if ($('queueSheet').classList.contains('on')) { closeSheet('queueSheet'); return; }
+    renderQueueSheet(); $('queueSheet').classList.add('on'); requestAnimationFrame(scrollQueueToCurrent);
+  };
 
   // ── 入口屏事件 ──
   $('goBtn').onclick = () => startGenerate($('promptInput').value);
