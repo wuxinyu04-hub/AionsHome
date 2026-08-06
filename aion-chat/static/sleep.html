@@ -183,6 +183,8 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 .p-extra span{cursor:pointer;display:flex;align-items:center;gap:5px;padding:9px 12px;border-radius:12px}
 .p-extra span:active{background:rgba(239,233,219,.07)}
 .p-extra .wn-on{color:var(--amber)}
+.p-extra .ne-done{opacity:.75;cursor:default;pointer-events:none}
+.p-extra .ne-busy{opacity:.6;cursor:default;pointer-events:none}
 .wn-vol{display:none;align-items:center;gap:10px;max-width:220px;margin:12px auto 0}
 .wn-vol.show{display:flex}
 .wn-vol .wl{font-size:10px;color:var(--muted);flex:0 0 auto}
@@ -511,6 +513,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
         <p class="p-timer-hint" id="timerHint"></p>
         <div class="p-extra">
           <span id="wnBtn">♪ 白噪音</span>
+          <span id="neteaseBtn">☁ 网易云</span>
         </div>
         <div class="wn-vol" id="wnVol">
           <span class="wl">白噪音</span>
@@ -618,6 +621,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
-<script src="/static/sleep.js?v=sleep-queue-20260806"></script>
+<script src="/static/sleep.js?v=netease-20260806"></script>
 </body>
 </html>

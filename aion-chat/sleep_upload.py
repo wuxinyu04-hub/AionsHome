@@ -36,6 +36,9 @@ _CAT_NAME = {
     "meditation": "冥想引导", "reading": "散文朗读",
 }
 _CACHED_LOGIN = False
+# 手动上传运行态：item_id -> {status: running|done, ok, song_id, err}。
+# 自动上传（合成完）不记这里，只有手动按钮触发的进内存，供前端轮询。
+_manual: dict[str, dict] = {}
 
 
 def _log_event(item_id: str, status: str, detail: str = "") -> None:
@@ -259,3 +262,45 @@ def upload_finished_item(
     except Exception as e:
         _log_event(item_id, "fail", str(e)[:200])
         return {"ok": False, "song_id": "", "err": f"exception: {e}"}
+
+
+def get_netease_status(item_id: str, category: str = "") -> dict:
+    """查询一条的上传状态（播放页按钮展示用）。
+
+    已传：ledger 有 song_id + 反算歌单名；未传看手动运行态（running/err）。
+    不抛异常，找不到也返回 uploaded=False。
+    """
+    led = _load_ledger()
+    song_id = str(led.get(item_id) or "")
+    uploaded = bool(song_id)
+    m = _manual.get(item_id) or {}
+    return {
+        "uploaded": uploaded,
+        "song_id": song_id,
+        "playlist_name": _get_playlist_name(item_id, category) if uploaded else "",
+        "running": m.get("status") == "running",
+        "err": m.get("err", ""),
+    }
+
+
+def start_manual_upload(item_id: str, title: str = "", category: str = "") -> dict:
+    """手动触发上传（播放页按钮）。同步阻塞，调用方应丢 asyncio.to_thread。
+
+    已传直接返回，不重复传；上传中返回 uploading。失败写 _manual done（含 err），
+    不写台账，下次可重试。
+    """
+    led = _load_ledger()
+    if item_id in led:
+        _log_event(item_id, "skip-duplicate", f"手动触发但已传 songId={led.get(item_id)}")
+        return {"ok": False, "song_id": led.get(item_id), "err": "already_uploaded"}
+    if (_manual.get(item_id) or {}).get("status") == "running":
+        return {"ok": False, "song_id": "", "err": "uploading"}
+    _manual[item_id] = {"status": "running"}
+    res = upload_finished_item(item_id, title, category)
+    _manual[item_id] = {
+        "status": "done",
+        "ok": bool(res.get("ok")),
+        "song_id": res.get("song_id", ""),
+        "err": res.get("err", ""),
+    }
+    return res

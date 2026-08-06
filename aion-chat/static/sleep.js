@@ -475,6 +475,47 @@
       </div>`;
   }
 
+  // ── 网易云上传状态（播放页按钮）──
+  let neteaseTimer = null;
+  function stopNeteasePoll() { if (neteaseTimer) { clearInterval(neteaseTimer); neteaseTimer = null; } }
+  async function refreshNetease(id) {
+    const btn = document.getElementById('neteaseBtn');
+    if (!btn) return;
+    if (!btn._netBnd) { btn._netBnd = true; btn.onclick = onNeteaseBtn; }
+    if (!id) { btn.textContent = '☁ 网易云'; btn.classList.remove('ne-done', 'ne-busy'); stopNeteasePoll(); return; }
+    let r = {};
+    try { r = await (await fetch('/api/sleep/' + id + '/netease-status')).json(); } catch (e) { stopNeteasePoll(); return; }
+    if (state.currentId !== id) { stopNeteasePoll(); return; } // 播放已切走，停轮询
+    btn.classList.remove('ne-done', 'ne-busy');
+    if (r.uploaded) {
+      btn.textContent = '☁ 网易云 · 歌单「' + (r.playlist_name || '云盘') + '」';
+      btn.classList.add('ne-done');
+      stopNeteasePoll();
+    } else if (r.running) {
+      btn.textContent = '☁ 上传中…';
+      btn.classList.add('ne-busy');
+      if (!neteaseTimer) neteaseTimer = setInterval(() => refreshNetease(id), 3000);
+    } else if (r.err) {
+      const why = r.err === 'not_logged_in' ? '未配网易云' : r.err.slice(0, 26);
+      btn.textContent = '☁ 重试（' + why + '）';
+    } else {
+      btn.textContent = '☁ 上传网易云';
+    }
+  }
+  async function startNeteaseUpload() {
+    const id = state.currentId;
+    if (!id) return;
+    const btn = document.getElementById('neteaseBtn');
+    if (btn) { btn.textContent = '☁ 上传中…'; btn.classList.add('ne-busy'); }
+    try { await fetch('/api/sleep/' + id + '/upload-netease', { method: 'POST' }); } catch (e) {}
+    refreshNetease(id);
+  }
+  function onNeteaseBtn() {
+    const btn = document.getElementById('neteaseBtn');
+    if (!btn || btn.classList.contains('ne-done') || btn.classList.contains('ne-busy')) return;
+    startNeteaseUpload();
+  }
+
   // 书库：讲书条目按 book_id 聚合成"专辑"
   function albumGroups() {
     const map = {};
@@ -899,6 +940,7 @@
     it.play_count = (it.play_count || 0) + 1;
     $('pTitle').textContent = it.title || '今晚的故事';
     renderPlayerScene(it);
+    refreshNetease(it.id);
     $('pMid').classList.remove('expanded');
     $('capPast').textContent = ''; $('capNow').textContent = '';
     state.capIdx = -1;

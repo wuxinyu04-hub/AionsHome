@@ -14,9 +14,13 @@ from pydantic import BaseModel
 from config import get_key, get_tts_provider
 
 import bedtime
+import sleep_upload
 
 router = APIRouter(prefix="/api/sleep", tags=["sleep"])
 logger = logging.getLogger("sleep_routes")
+
+# 手动上传后台 task 引用：asyncio.create_task 不保留引用会被 GC，任务跑一半消失
+_upload_tasks: set = set()
 
 # 封面生成 inflight：同步等待端点，连点会并发烧 Gemini 配额，按 item_id 去重
 _cover_inflight: set[str] = set()
@@ -357,3 +361,29 @@ async def voices():
     """
     from routes.settings import tts_voice_list
     return await tts_voice_list()
+
+
+@router.get("/{item_id}/netease-status")
+async def netease_status(item_id: str):
+    """查询一条的网易云上传状态（播放页按钮展示）：uploaded / song_id / 歌单名 / 手动运行态。"""
+    row = await bedtime.get_item_raw(item_id) or {}
+    return sleep_upload.get_netease_status(item_id, row.get("category", ""))
+
+
+@router.post("/{item_id}/upload-netease")
+async def upload_netease(item_id: str):
+    """手动触发一条上传网易云。后台线程跑（10s~5min），立即返回，前端轮询 status。"""
+    row = await bedtime.get_item_raw(item_id) or {}
+    title = row.get("title", "")
+    category = row.get("category", "")
+    st = sleep_upload.get_netease_status(item_id, category)
+    if st.get("uploaded"):
+        return {"queued": False, "uploaded": True,
+                "song_id": st["song_id"], "playlist_name": st["playlist_name"]}
+    if st.get("running"):
+        return {"queued": True, "running": True}
+    task = asyncio.create_task(
+        asyncio.to_thread(sleep_upload.start_manual_upload, item_id, title, category))
+    _upload_tasks.add(task)
+    task.add_done_callback(_upload_tasks.discard)
+    return {"queued": True, "running": True}
