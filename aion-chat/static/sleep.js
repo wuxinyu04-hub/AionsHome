@@ -6,6 +6,44 @@
   const appEl = document.querySelector('.app');
   const audio = $('audio');
 
+  // ── 跨层联动：广播 sleep 状态给顶层驻场条 + 互切（sleep/music 让权，避免双声）──
+  // sleep iframe 持久化（chat.js isPersistentSubPage 含 /sleep），退出页 audio 继续播，
+  // 顶层 chat.js 监听 'aion-sleep' 显示 #globalSleepWrap 驻场条 + 发控制命令回来。
+  const sleepBC = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('aion-sleep') : null;
+  const musicBCForSleep = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('aion-music') : null;
+  let _sleepCastTimer = null;
+  function broadcastSleepState() {
+    if (!sleepBC) return;
+    const cur = (typeof state !== 'undefined' && state.currentId) ? (state.items.find(x => x.id === state.currentId) || null) : null;
+    sleepBC.postMessage({
+      type: 'state',
+      title: cur ? cur.title : '',
+      itemId: state.currentId || '',
+      paused: !audio.src ? true : audio.paused,
+      position: audio.currentTime || 0,
+      duration: audio.duration || 0,
+    });
+  }
+  function broadcastSleepStateThrottled() {
+    if (_sleepCastTimer) return;
+    _sleepCastTimer = setTimeout(() => { _sleepCastTimer = null; broadcastSleepState(); }, 800);
+  }
+  // 互切：sleep 开始播 -> 让 music 暂停（play 边缘触发一次，timeupdate 不重复发）
+  function tellMusicToPause() {
+    if (musicBCForSleep) musicBCForSleep.postMessage({ type: 'pause_request', from: 'sleep' });
+  }
+  if (sleepBC) {
+    sleepBC.onmessage = (e) => {
+      const msg = e.data || {};
+      if (msg.type === 'pause' && audio.src && !audio.paused) audio.pause();
+      else if (msg.type === 'play' && audio.src && audio.paused) audio.play().catch(() => {});
+      else if (msg.type === 'pause_request' && msg.from === 'music') {
+        // music 开始播，sleep 让权暂停
+        if (audio.src && !audio.paused) audio.pause();
+      }
+    };
+  }
+
   const CAT_NAMES = { reading: '他讲的书', boyfriend: '他的晚安', meditation: '助眠冥想', fairytale: '睡前童话', asmr: '白噪与耳语' };
   const CAT_ORDER = ['reading', 'boyfriend', 'meditation', 'fairytale', 'asmr'];
   const MODE_PLACEHOLDER = {
@@ -956,8 +994,8 @@
   });
   pBar.addEventListener('pointercancel', () => { scrubbing = false; });
 
-  audio.addEventListener('play', () => { updatePlayUi(); updateMiniPlayer(); });
-  audio.addEventListener('pause', () => { updatePlayUi(); updateMiniPlayer(); });
+  audio.addEventListener('play', () => { updatePlayUi(); updateMiniPlayer(); broadcastSleepState(); tellMusicToPause(); });
+  audio.addEventListener('pause', () => { updatePlayUi(); updateMiniPlayer(); broadcastSleepState(); });
   audio.addEventListener('timeupdate', () => {
     if (!isFinite(audio.currentTime) || !isFinite(audio.duration)) return;
     if (!scrubbing) { // 拖动中进度条归手指管
@@ -972,6 +1010,7 @@
     }
     updateCaptions();
     saveProgressThrottled();
+    broadcastSleepStateThrottled(); // 顶层驻场条进度同步（节流 800ms）
   });
   audio.addEventListener('ended', () => {
     if (state.stopAtEnd) { resetTimer(); toast('播完了，晚安 🌙'); wnStop(); updateMiniPlayer(); return; }

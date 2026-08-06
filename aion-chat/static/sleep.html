@@ -415,7 +415,7 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
   <!-- ═══ ① 入口屏 ═══ -->
   <div class="screen on" id="home">
     <div class="scene">
-      <button class="exit" onclick="try{top.location.href='/'}catch(e){location.href='/'}">←</button>
+      <button class="exit" onclick="try{top.openSubPage('/')}catch(e){location.href='/'}">←</button>
       <svg viewBox="0 0 390 370" preserveAspectRatio="xMidYMax slice"><use href="#room"/></svg>
       <div class="vignette"></div>
     </div>
@@ -616,6 +616,6 @@ body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-weight:30
 
 <div class="toast" id="toast"></div>
 <audio id="audio" preload="metadata"></audio>
-<script src="/static/sleep.js?v=netease-20260805"></script>
+<script src="/static/sleep.js?v=sleep-queue-20260806"></script>
 </body>
 </html>

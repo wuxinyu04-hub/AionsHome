@@ -2830,6 +2830,126 @@ function openInNetease(songId) {
   window.open('https://music.163.com/song?id=' + songId, '_blank');
 }
 
+// ── 哄睡全局驻场条（sleep iframe 持久化，退出 sleep 页顶层条显示 + 互切让权）──
+// sleep iframe 内的 audio 是唯一出声者，不需要 leader 机制；
+// 退出 sleep 页 iframe 不卸载 audio 继续播，顶层 #globalSleepWrap 显示状态 + 发控制命令回去。
+let sleepBarBuilt = false;
+let sleepBarState = null; // {title, itemId, paused, position, duration}
+let sleepClosed = false; // 用户按 ✕ 关闭后置 true，防止 BC state 把条重新拉起；重新播放时清
+const SLEEP_CLOSED_KEY = 'aion_sleep_closed_v1';
+try { if (localStorage.getItem(SLEEP_CLOSED_KEY) === '1') sleepClosed = true; } catch (e) {}
+let sleepBCForChat = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('aion-sleep') : null;
+
+function sleepFmt(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+}
+function sleepShouldShowBar() {
+  if (sleepClosed || !sleepBarState || !sleepBarState.itemId) return false;
+  // 在 sleep 页内不显示顶层条（sleep 页有自己的播放器 UI）
+  let cur = '';
+  try {
+    if (activeSubPageFrame) cur = subPagePath(activeSubPageFrame.src || activeSubPageFrame.dataset.persistentPath || '');
+  } catch (e) {}
+  return cur !== '/sleep';
+}
+function sleepRenderBar() {
+  const wrap = document.getElementById('globalSleepWrap');
+  if (!sleepShouldShowBar()) {
+    if (wrap) wrap.style.display = 'none';
+    document.body.classList.remove('sleep-bar-up');
+    return;
+  }
+  if (!sleepBarBuilt) sleepEnsureBar();
+  const w = document.getElementById('globalSleepWrap');
+  if (!w || !sleepBarState) return;
+  w.style.display = 'flex';
+  document.body.classList.add('sleep-bar-up');
+  const s = sleepBarState;
+  const titleEl = w.querySelector('.sb-title'); if (titleEl) titleEl.textContent = s.title || '哄睡中';
+  const timeEl = w.querySelector('.sb-time'); if (timeEl) timeEl.textContent = sleepFmt(s.position) + ' / ' + sleepFmt(s.duration);
+  const playBtn = w.querySelector('.sb-play');
+  if (playBtn) { playBtn.classList.toggle('playing', !s.paused); playBtn.textContent = s.paused ? '▶' : '⏸'; }
+}
+function sleepEnsureBar() {
+  if (sleepBarBuilt) return;
+  // 注入样式（只一次）
+  if (!document.getElementById('sleepBarStyle')) {
+    const st = document.createElement('style');
+    st.id = 'sleepBarStyle';
+    st.textContent = `
+      .sleep-bar{position:fixed;left:0;right:0;top:calc(max(34px,env(safe-area-inset-top,0px)) + 44px);
+        z-index:10000;background:var(--surface,#1e1e1e);box-shadow:0 2px 10px rgba(0,0,0,.18);
+        display:flex;align-items:center;gap:6px;padding:0 10px;height:40px;
+        border-bottom:1px solid var(--border,#333);color:var(--text,#eee);
+        font-family:system-ui,sans-serif;cursor:pointer}
+      .sleep-bar .sb-btn{flex:0 0 auto;width:30px;height:30px;border:none;border-radius:50%;
+        background:none;color:var(--text,#eee);font-size:15px;cursor:pointer;font-variant-emoji:text}
+      .sleep-bar .sb-btn.sb-play{color:var(--accent,#ff8359);font-size:17px}
+      .sleep-bar .sb-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+      .sleep-bar .sb-title{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text,#eee)}
+      .sleep-bar .sb-sub{font-size:10px;color:var(--text2,#999)}
+      .sleep-bar .sb-time{font-variant-numeric:tabular-nums}
+      .sleep-bar .sb-close{color:var(--text3,#999);font-size:13px;width:26px;height:26px}
+      /* 共用顶部槽位：哄睡条在显时压住音乐条（互切只有一个在播，两条别同时叠在 top）*/
+      body.sleep-bar-up #globalMusicWrap { display: none !important; }`;
+    document.head.appendChild(st);
+  }
+  const wrap = document.createElement('div');
+  wrap.id = 'globalSleepWrap';
+  wrap.className = 'sleep-bar';
+  wrap.style.display = 'none';
+  wrap.innerHTML = `
+    <button class="sb-btn sb-play" title="播放/暂停">▶</button>
+    <div class="sb-info">
+      <div class="sb-title">-</div>
+      <div class="sb-sub"><span class="sb-time">0:00 / 0:00</span></div>
+    </div>
+    <button class="sb-btn sb-expand" title="打开哄睡">⤢</button>
+    <button class="sb-btn sb-close" title="关闭">✕</button>
+  `;
+  document.body.appendChild(wrap);
+  sleepBarBuilt = true;
+  wrap.querySelector('.sb-play').onclick = (e) => {
+    e.stopPropagation();
+    if (!sleepBCForChat || !sleepBarState) return;
+    sleepBCForChat.postMessage({ type: sleepBarState.paused ? 'play' : 'pause' });
+  };
+  wrap.querySelector('.sb-expand').onclick = (e) => { e.stopPropagation(); openSubPage('/sleep'); };
+  wrap.querySelector('.sb-close').onclick = (e) => { e.stopPropagation(); sleepCloseBar(); };
+  wrap.addEventListener('click', () => { openSubPage('/sleep'); });
+}
+// 关闭驻场条：暂停 sleep 音频（不清 src，可再进哄睡续播）+ 置 sleepClosed 防 BC state 拉起
+function sleepCloseBar() {
+  sleepClosed = true;
+  try { localStorage.setItem(SLEEP_CLOSED_KEY, '1'); } catch (e) {}
+  if (sleepBCForChat) sleepBCForChat.postMessage({ type: 'pause' });
+  sleepBarState = null;
+  const w = document.getElementById('globalSleepWrap');
+  if (w) w.style.display = 'none';
+  document.body.classList.remove('sleep-bar-up');
+}
+if (sleepBCForChat) {
+  sleepBCForChat.onmessage = (e) => {
+    const msg = e.data || {};
+    if (msg.type === 'state') {
+      // 重新播放（非暂停）-> 用户又点了播放，清掉关闭标志，条该回来
+      if (msg.itemId && !msg.paused) {
+        sleepClosed = false;
+        try { localStorage.removeItem(SLEEP_CLOSED_KEY); } catch (e2) {}
+      }
+      // 用户已按 ✕ 关闭：吞掉 state，别把条重新拉起来（pause 后的尾包也走这里被吞）
+      if (sleepClosed) return;
+      sleepBarState = { title: msg.title, itemId: msg.itemId, paused: msg.paused, position: msg.position, duration: msg.duration };
+      sleepRenderBar();
+    }
+  };
+}
+// 互切：music 开始播 -> 让 sleep 暂停（music 端在 musicAudio 'play' 事件调）
+function tellSleepToPause() {
+  if (sleepBCForChat) sleepBCForChat.postMessage({ type: 'pause_request', from: 'music' });
+}
+
 // ── 音乐播放器：持久队列 + mini-bar 常驻 + 自动连播 ──
 // 解决"一首歌放完就没了"：队列 + onended 自动下一首 + localStorage 持久化 + BroadcastChannel 多标签同步
 const MUSIC_QUEUE_KEY = 'aion_music_queue_v1';
@@ -2929,6 +3049,11 @@ function musicStartHeartbeat() {
 function musicBroadcast(msg) { try { if (musicBC) musicBC.postMessage(msg); } catch (e) {} }
 function musicOnBCMessage(msg) {
   if (!msg || !msg.type || msg.tabId === musicTabId) return;
+  // 互切：sleep 开始播 -> music 让权暂停（sleep.js 发来的 pause_request）
+  if (msg.type === 'pause_request' && msg.from === 'sleep') {
+    if (musicAudio && !musicAudio.paused) { try { musicAudio.pause(); } catch (e) {} }
+    return;
+  }
   if (msg.type === 'queue_update') {
     musicQueue = Array.isArray(msg.queue) ? msg.queue : musicQueue;
     musicSaveQueue();
@@ -3520,6 +3645,7 @@ function musicPlayerOnAudio() {
   musicAudio._mpBound = true;
   musicAudio.addEventListener('timeupdate', musicPlayerTick);
   musicAudio.addEventListener('play', musicPlayerUpdatePlayBtn);
+  musicAudio.addEventListener('play', tellSleepToPause); // 互切：music 播 -> sleep 让权
   musicAudio.addEventListener('pause', musicPlayerUpdatePlayBtn);
   musicAudio.addEventListener('loadedmetadata', musicPlayerTick);
 }
@@ -6911,9 +7037,10 @@ function shouldNavigatePersistentSubPage(frame, url) {
 
 function isPersistentSubPage(url) {
   const path = subPagePath(url);
-  // /music 也持久化：音乐 App 的 iframe 常驻，退出/切换子页时不卸载，后台继续作为 leader 出声，
-  // 聊天页条镜像显示；再进入直接呈现同一存活 iframe，不会因 src 重载而停播（WebView 下 beforeunload 不可靠）
-  return path === '/' || path === '/chatroom' || path === '/health' || path === '/music';
+  // 持久化子页：退出/切换时不卸载 iframe，后台继续出声，再进入直接呈现同一存活 iframe。
+  // /music /sleep 都是播放器子页，持久化才能做到"退出页仍悬浮、跨页控制"。
+  // 注意：isImmersive 白名单（chat.js syncSubPageMode）已含 /sleep，这里只加持久化，别动沉浸那行。
+  return path === '/' || path === '/chatroom' || path === '/health' || path === '/music' || path === '/sleep';
 }
 
 function syncHealthRingPageVisibility() {
@@ -6995,6 +7122,9 @@ function openSubPage(url) {
   $('subPageOverlay').classList.add('show');
   currentSubPage = url;
   syncHealthRingPageVisibility();
+  // 退出 sleep 页 -> openSubPage('/')：持久 iframe 只 display:none，audio 继续播；
+  // 立即重渲染顶层驻场条，不等下一个 800ms BC 广播（退出瞬间就能看到条）。
+  if (typeof sleepRenderBar === 'function') sleepRenderBar();
 }
 function closeSubPage(skipReload = false) {
   const ov = $('subPageOverlay');
@@ -7024,6 +7154,8 @@ function closeSubPage(skipReload = false) {
   if (!skipReload && currentConvId) {
     refreshCurrentConversationFromServer();
   }
+  // 关闭浮层回聊天页：sleep 若在播，持久 iframe audio 不停，顶层驻场条应显出来。
+  if (typeof sleepRenderBar === 'function') sleepRenderBar();
 }
 // 导航到 Home（从任何功能页返回 Home）
 function navigateToHome() {
