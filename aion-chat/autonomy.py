@@ -732,7 +732,9 @@ async def _run_leave_sleep_audio(actor: str) -> dict:
 
     # 4. 建条目 + 触发生成（带记忆 + actor 人设；林叙走 _LINXU_PERSONA，叙远走默认温叙远）
     voice = _actor_sleep_voice(actor)
-    title = topic[:40]
+    # 标题加 MM-DD 日期前缀，库里好区分每天留的语音（自主留会越积越多）
+    date_prefix = datetime.now().strftime("%m-%d ")
+    title = (date_prefix + topic)[:40]
     item_id = await bedtime.create_generated_item("asmr", title, voice)
     bedtime.trigger_generate(
         item_id, "asmr", topic, voice, title,
