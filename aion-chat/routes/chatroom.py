@@ -81,11 +81,14 @@ router = APIRouter(prefix="/api/chatroom", tags=["chatroom"])
 
 
 async def _consume_chatroom_stream(
-    source,
+    source_factory,
     queue,
     *,
     chunk_type: str,
+    label: str = "",
 ) -> StreamSafetyResult:
+    """消费聊天室 AI 流。source_factory 传可调用对象时，transport 失败且未吐字会重试一次。
+    传普通 source（不可调用）则保持原行为，便于测试复用单次迭代器。"""
     stream_filter = WebCommandStreamFilter()
 
     async def on_commit(chunk: str) -> None:
@@ -93,7 +96,19 @@ async def _consume_chatroom_stream(
         if visible:
             await queue.put({"type": chunk_type, "content": visible})
 
-    result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
+    can_retry = callable(source_factory)
+    factory = source_factory if can_retry else (lambda: source_factory)
+
+    result = await consume_safe_stream(factory(), CHAT_STREAM_POLICY, on_commit)
+
+    # transport 且一个字都没吐出来：大概率瞬时代理抖动，重试一次再放弃
+    if can_retry and result.stop_reason == "transport" and not result.committed_text:
+        diag = result.diagnostic_error or "无诊断信息"
+        print(f"[CHATROOM] {label or chunk_type} transport 失败，自动重试一次: {diag}")
+        result = await consume_safe_stream(factory(), CHAT_STREAM_POLICY, on_commit)
+        if result.diagnostic_error:
+            print(f"[CHATROOM] {label or chunk_type} 重试仍失败: {result.diagnostic_error}")
+
     visible_tail = stream_filter.flush()
     if visible_tail:
         await queue.put({"type": chunk_type, "content": visible_tail})
@@ -3184,9 +3199,10 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
             yield chunk
 
     stream_result = await _consume_chatroom_stream(
-        content_stream(),
+        content_stream,
         _q,
         chunk_type="connor_chunk",
+        label=f"{connor_label}(私聊)",
     )
     full_text = stream_result.committed_text
     safety_notice = stream_result.notice
@@ -3338,9 +3354,10 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
             yield chunk
 
     stream_result = await _consume_chatroom_stream(
-        content_stream(),
+        content_stream,
         _q,
         chunk_type="aion_chunk",
+        label=ai_label,
     )
     full_text = stream_result.committed_text
     safety_notice = stream_result.notice
@@ -3421,9 +3438,10 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
             yield chunk
 
     stream_result = await _consume_chatroom_stream(
-        content_stream(),
+        content_stream,
         _q,
         chunk_type="connor_chunk",
+        label=f"{connor_label}(群聊)",
     )
     full_text = stream_result.committed_text
     safety_notice = stream_result.notice
