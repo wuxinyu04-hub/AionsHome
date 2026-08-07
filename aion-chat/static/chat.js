@@ -2845,22 +2845,26 @@ function renderMgmtCards(msgId, _attempt) {
   row.querySelectorAll('.mgmt-cards-container').forEach(e => e.remove());
   const container = document.createElement('div');
   container.className = 'music-cards-container mgmt-cards-container';
-  cards.forEach(c => { container.innerHTML += buildMgmtCardHtml(c); });
+  cards.forEach(c => { container.innerHTML += buildMgmtCardHtml(c, msgId); });
   const msgBody = row.querySelector('.msg-body');
   msgBody.appendChild(container);
 }
 
-function buildMgmtCardHtml(card) {
+function buildMgmtCardHtml(card, msgId) {
   const act = card.action;
   const isAdd = act === 'playlist_add';
   const isPlay = act === 'playlist_play';
   const isRemove = act === 'playlist_remove';
+  const isDaily = act === 'daily_recommend';
   const hasPl = (isAdd || isPlay || isRemove);
   const pid = hasPl ? card.playlist_id : card.id;
   const listName = hasPl ? (card.playlist || '') : (card.name || '');
-  const icon = isAdd ? '🎶' : (isPlay ? '▶' : (isRemove ? '🗑' : '📑'));
+  const icon = isAdd ? '🎶' : (isPlay ? '▶' : (isRemove ? '🗑' : (isDaily ? '📅' : '📑')));
   let title, sub;
-  if (isAdd) {
+  if (isDaily) {
+    title = `今日推荐${card.date ? ' · ' + escHtml(card.date) : ''}`;
+    sub = `${card.count || (card.songs || []).length} 首 · 他帮你放起来了`;
+  } else if (isAdd) {
     title = `《${escHtml(card.name || '')}》`;
     sub = `${escHtml(card.artist || '')} · 已加入「${escHtml(card.playlist || '')}」`;
   } else if (isPlay) {
@@ -2873,11 +2877,13 @@ function buildMgmtCardHtml(card) {
     title = `已建歌单「${escHtml(card.name || '')}」`;
     sub = '他为你新建的歌单';
   }
-  const btn = (pid != null)
-    ? (isRemove
-        ? `<button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
-        : `<button class="music-btn primary" onclick='playPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`)
-    : '';
+  const btn = isDaily
+    ? (msgId != null ? `<button class="music-btn primary" onclick='playDailySongs(${JSON.stringify(msgId)})'>▶ 播放全部</button>` : '')
+    : (pid != null
+        ? (isRemove
+            ? `<button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
+            : `<button class="music-btn primary" onclick='playPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`)
+        : '');
   return `
     <div class="music-card">
       <div class="music-cover" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text3)">${icon}</div>
@@ -2887,6 +2893,19 @@ function buildMgmtCardHtml(card) {
         <div class="music-btns">${btn}</div>
       </div>
     </div>`;
+}
+
+// 每日推荐卡一键连播：整单入队 + 开列表循环（同歌单连播逻辑，playDailySongs 由卡片兜底重放）
+function playDailySongs(msgId) {
+  const cards = (msgMgmtCards[msgId] || []).filter(c => c.action === 'daily_recommend');
+  const card = cards[cards.length - 1];
+  if (!card || !card.songs || !card.songs.length) { musicToast('每日推荐还没拉下来'); return; }
+  (card.songs || []).forEach(s => { if (s && s.id != null) musicSongIndex[s.id] = s; });
+  enqueueMusic(card.songs, { play: true });
+  musicRepeat = 'all';
+  musicSaveState();
+  musicRenderBar();
+  musicToast(`🎵 正在播放今日推荐 ${card.songs.length} 首`);
 }
 
 // 点歌单卡片 → 打开播放器歌单 tab 并定位到该歌单（可整单播放/加队列/单曲播放）
@@ -3601,6 +3620,11 @@ function handleMusicCards(data, opts) {
   scrollBottom();
   const cards = data.cards || [];
   if (!cards.length) return;
+  // AI 一口气连发 3 首以上 → 自动开列表循环（像音乐 App 一首接一首，直到用户手动关）
+  if (cards.length >= 3) {
+    musicRepeat = 'all';
+    musicSaveState();
+  }
   enqueueMusic(cards, { play: opts.play !== false });
 }
 
@@ -3616,7 +3640,15 @@ function handleMusicMgmt(card) {
   if (card.ok && card.action === 'like' && card.id != null) musicLikedIds.add(card.id);
 
   // 歌单结果卡片：挂到对应 AI 消息下（后端广播带 msg_id；先存 map 再渲染，消息行未就绪时 renderMessages 会补）
-  if (card.ok && card.msg_id && (card.action === 'playlist_new' || card.action === 'playlist_add' || card.action === 'playlist_play' || card.action === 'playlist_remove')) {
+  if (card.ok && card.msg_id && (card.action === 'playlist_new' || card.action === 'playlist_add' || card.action === 'playlist_play' || card.action === 'playlist_remove' || card.action === 'daily_recommend')) {
+    // 每日推荐直接放起来（整单入队 + 列表循环），卡片留个痕迹可重新播放
+    if (card.action === 'daily_recommend' && card.songs && card.songs.length) {
+      (card.songs || []).forEach(s => { if (s && s.id != null) musicSongIndex[s.id] = s; });
+      enqueueMusic(card.songs, { play: true });
+      musicRepeat = 'all';
+      musicSaveState();
+      musicRenderBar();
+    }
     if (!msgMgmtCards[card.msg_id]) msgMgmtCards[card.msg_id] = [];
     msgMgmtCards[card.msg_id].push(card);
     renderMgmtCards(card.msg_id);
@@ -3635,6 +3667,8 @@ function handleMusicMgmt(card) {
     text = card.ok ? `🎶 点播歌单「${card.playlist || ''}」` : `🎶 ${card.msg || '失败'}`;
   } else if (card.action === 'playlist_remove') {
     text = card.ok ? `🗑 已从「${card.playlist || ''}」移除《${card.name || ''}》` : `🗑 ${card.msg || '失败'}`;
+  } else if (card.action === 'daily_recommend') {
+    text = card.ok ? `🎵 今日推荐 ${card.count || (card.songs || []).length} 首` : `🎵 ${card.msg || '每日推荐失败'}`;
   }
   if (text) musicToast(text);
 }

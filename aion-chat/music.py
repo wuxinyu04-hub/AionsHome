@@ -263,3 +263,30 @@ def find_playlist_by_name(uid: int, name: str) -> dict | None:
         if p.get("name") == name:
             return p
     return None
+
+
+# ── 每日推荐：pyncm 没暴露，用 WeapiCryptoRequest 直接调网易云 weapi ──
+
+def get_daily_recommend(limit: int = 20) -> list[dict]:
+    """网易云今日个性化推荐（需 MUSIC_U 登录）。pyncm 无该 API，
+    复用其会话与 weapi 加密直接 POST /weapi/v3/discovery/recommend/songs。"""
+    _ensure_login()
+    try:
+        from pyncm.apis import WeapiCryptoRequest
+
+        @WeapiCryptoRequest
+        def _daily_recommend(n):
+            return "/api/v3/discovery/recommend/songs", {"n": n}
+
+        resp = _daily_recommend(limit)
+    except Exception as e:
+        log.warning("get_daily_recommend 接口调用失败: %s", e)
+        return []
+    data = resp.get("data") or {}
+    songs = data.get("dailySongs") or data.get("recommend") or []
+    if not isinstance(songs, list) or not songs:
+        # 有些返回是 {data:{recommend:{songs:[...]}}}（推荐歌单的曲目）
+        rec = data.get("recommend")
+        if isinstance(rec, dict):
+            songs = rec.get("songs") or []
+    return [_track_brief(s) for s in songs][:limit]

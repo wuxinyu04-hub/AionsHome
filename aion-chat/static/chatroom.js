@@ -675,22 +675,26 @@ function crRenderMgmtCards(msgId, _attempt) {
   row.querySelectorAll('.mgmt-cards-container').forEach(e => e.remove());
   const container = document.createElement('div');
   container.className = 'music-cards-container mgmt-cards-container';
-  cards.forEach(c => { container.innerHTML += crBuildMgmtCardHtml(c); });
+  cards.forEach(c => { container.innerHTML += crBuildMgmtCardHtml(c, msgId); });
   const msgContent = row.querySelector('.msg-content');
   if (msgContent) msgContent.appendChild(container);
 }
 
-function crBuildMgmtCardHtml(card) {
+function crBuildMgmtCardHtml(card, msgId) {
   const act = card.action;
   const isAdd = act === 'playlist_add';
   const isPlay = act === 'playlist_play';
   const isRemove = act === 'playlist_remove';
+  const isDaily = act === 'daily_recommend';
   const hasPl = (isAdd || isPlay || isRemove);
   const pid = hasPl ? card.playlist_id : card.id;
   const listName = hasPl ? (card.playlist || '') : (card.name || '');
-  const icon = isAdd ? '🎶' : (isPlay ? '▶' : (isRemove ? '🗑' : '📑'));
+  const icon = isAdd ? '🎶' : (isPlay ? '▶' : (isRemove ? '🗑' : (isDaily ? '📅' : '📑')));
   let title, sub;
-  if (isAdd) {
+  if (isDaily) {
+    title = `今日推荐${card.date ? ' · ' + esc(card.date) : ''}`;
+    sub = `${card.count || (card.songs || []).length} 首 · 他帮你放起来了`;
+  } else if (isAdd) {
     title = `《${esc(card.name || '')}》`;
     sub = `${esc(card.artist || '')} · 已加入「${esc(card.playlist || '')}」`;
   } else if (isPlay) {
@@ -703,11 +707,13 @@ function crBuildMgmtCardHtml(card) {
     title = `已建歌单「${esc(card.name || '')}」`;
     sub = '他为你新建的歌单';
   }
-  const btn = (pid != null)
-    ? (isRemove
-        ? `<button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
-        : `<button class="music-btn primary" onclick='crPlayPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`)
-    : '';
+  const btn = isDaily
+    ? (msgId != null ? `<button class="music-btn primary" onclick='crPlayDailySongs(${JSON.stringify(msgId)})'>▶ 播放全部</button>` : '')
+    : (pid != null
+        ? (isRemove
+            ? `<button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
+            : `<button class="music-btn primary" onclick='crPlayPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`)
+        : '');
   return `
     <div class="music-card">
       <div class="music-cover" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text3)">${icon}</div>
@@ -717,6 +723,16 @@ function crBuildMgmtCardHtml(card) {
         <div class="music-btns">${btn}</div>
       </div>
     </div>`;
+}
+
+function crPlayDailySongs(msgId) {
+  // 委托父页连播今日推荐（群聊不自己出声，共享父页队列与列表循环）
+  try {
+    if (window.parent !== window && typeof window.parent.playDailySongs === 'function') {
+      window.parent.playDailySongs(msgId);
+      return;
+    }
+  } catch (e) {}
 }
 
 function crViewMusicPlaylist(pid, name) {
@@ -744,11 +760,13 @@ function crHandleMgmtCards(raw) {
   const card = (raw && raw.data) ? raw.data : raw;
   if (!card || !card.ok) return;
   if (card.action !== 'playlist_new' && card.action !== 'playlist_add'
-      && card.action !== 'playlist_play' && card.action !== 'playlist_remove') return;
+      && card.action !== 'playlist_play' && card.action !== 'playlist_remove'
+      && card.action !== 'daily_recommend') return;
   if (!card.msg_id) return;
-  const key = (card.action === 'playlist_add' || card.action === 'playlist_play' || card.action === 'playlist_remove') ? card.playlist_id : card.id;
+  const isPlCard = (card.action === 'playlist_add' || card.action === 'playlist_play' || card.action === 'playlist_remove');
+  const key = isPlCard ? card.playlist_id : (card.action === 'daily_recommend' ? card.date : card.id);
   const list = crMgmtCards[card.msg_id] || [];
-  if (list.some(c => c.action === card.action && ((c.action === 'playlist_add' || c.action === 'playlist_play' || c.action === 'playlist_remove') ? c.playlist_id : c.id) === key)) return;
+  if (list.some(c => c.action === card.action && ((c.action === 'playlist_add' || c.action === 'playlist_play' || c.action === 'playlist_remove') ? c.playlist_id : (c.action === 'daily_recommend' ? c.date : c.id)) === key)) return;
   crMgmtCards[card.msg_id] = list.concat(card);
   crRenderMgmtCards(card.msg_id);
   scrollToBottom();

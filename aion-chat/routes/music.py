@@ -7,12 +7,15 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
+import datetime
+
 import httpx
 
 from music import (
     search_songs, get_song_detail, get_audio_url, get_lyrics,
     get_user_playlists, get_playlist_tracks, get_likelist, like_track,
     create_playlist, add_to_playlist, remove_from_playlist, find_playlist_by_name,
+    get_daily_recommend,
 )
 import playback
 from config import SETTINGS
@@ -36,6 +39,7 @@ PLAYLIST_NEW_PATTERN = re.compile(r"\[PLAYLIST_NEW:([^\]]+)\]")     # [PLAYLIST_
 PLAYLIST_ADD_PATTERN = re.compile(r"\[PLAYLIST_ADD:([^\]]+)\]")     # [PLAYLIST_ADD:歌单名] 或 [PLAYLIST_ADD:歌单名|歌曲名]
 PLAYLIST_PLAY_PATTERN = re.compile(r"\[PLAYLIST_PLAY:([^\]]+)\]")   # [PLAYLIST_PLAY:歌单名] 点播已有歌单
 PLAYLIST_REMOVE_PATTERN = re.compile(r"\[PLAYLIST_REMOVE:([^\]]+)\]")  # [PLAYLIST_REMOVE:歌单名|歌曲名] 从歌单移除
+DAILY_RECOMMEND_PATTERN = re.compile(r"\[DAILY_RECOMMEND\]")        # [DAILY_RECOMMEND] 放网易云今日个性化推荐
 
 
 # 注意：所有会打网易云接口的路由都用同步 def（FastAPI 自动扔线程池执行），
@@ -228,6 +232,14 @@ def music_favorites(refresh: bool = False):
     if songs is None:
         return {"error": "未配置 netease_uid"}
     return {"songs": songs}
+
+
+@router.get("/api/music/daily")
+def music_daily():
+    """网易云今日个性化推荐（AI [DAILY_RECOMMEND] 同源；按天缓存）"""
+    day = datetime.date.today().isoformat()
+    songs = _fetch_cached(f"daily:{day}", lambda: get_daily_recommend(20))
+    return {"songs": songs, "count": len(songs), "date": day}
 
 
 @router.post("/api/music/like/{song_id}")
@@ -557,6 +569,20 @@ def _exec_playlist_remove_cmd(arg: str) -> dict:
         return {"ok": False, "action": "playlist_remove", "msg": f"移除失败：{e}"}
 
 
+def _exec_daily_recommend_cmd() -> dict:
+    """[DAILY_RECOMMEND] 拉网易云今日个性化推荐，前端整单入队列表循环播放（直到用户自己关）"""
+    try:
+        day = datetime.date.today().isoformat()
+        def _do():
+            return get_daily_recommend(20)
+        songs = _fetch_cached(f"daily:{day}", _do)
+        if not songs:
+            return {"ok": False, "action": "daily_recommend", "msg": "今日推荐拉取失败（未登录或接口不可用）"}
+        return {"ok": True, "action": "daily_recommend", "songs": songs, "count": len(songs), "date": day}
+    except Exception as e:
+        return {"ok": False, "action": "daily_recommend", "msg": f"每日推荐失败：{e}"}
+
+
 def _handle_music_mgmt_cmds(full_text: str):
     """检测并执行 [LIKE]/[PLAYLIST_NEW]/[PLAYLIST_ADD]，返回 (剥离后文本, 结果卡片列表)"""
     cards = []
@@ -574,5 +600,8 @@ def _handle_music_mgmt_cmds(full_text: str):
     full_text = PLAYLIST_PLAY_PATTERN.sub("", full_text)
     for m in PLAYLIST_REMOVE_PATTERN.finditer(full_text):
         cards.append(_exec_playlist_remove_cmd(m.group(1).strip()))
-    full_text = PLAYLIST_REMOVE_PATTERN.sub("", full_text).strip()
+    full_text = PLAYLIST_REMOVE_PATTERN.sub("", full_text)
+    for m in DAILY_RECOMMEND_PATTERN.finditer(full_text):
+        cards.append(_exec_daily_recommend_cmd())
+    full_text = DAILY_RECOMMEND_PATTERN.sub("", full_text).strip()
     return full_text, cards
