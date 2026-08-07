@@ -47,6 +47,7 @@ from schedule import (
 )
 from todos import process_todo_commands
 from music import search_songs, get_audio_url
+from routes.music import _handle_music_mgmt_cmds
 from camera import cam, CAM_CHECK_CMD
 from luckin import handle_luckin_commands, luckin_payment_attachments
 from link_preview import build_link_preview_attachments
@@ -587,6 +588,12 @@ async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg
         triggered["music_cards"] = music_cards
         await _q.put(music_data)
         await ws_manager.broadcast({"type": "music", "data": {**music_data, "source": "chatroom"}})
+
+    # ── 歌单管理（[LIKE]/[PLAYLIST_NEW]/[PLAYLIST_ADD]，与私聊共用执行逻辑） ──
+    full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
+    if mgmt_cards:
+        for _mc in mgmt_cards:
+            await ws_manager.broadcast({"type": "music_mgmt", "data": _mc})
 
     # ── 日程/闹钟（先检测指令生成系统消息，再交给 schedule 模块处理） ──
     for match in ALARM_CMD.finditer(full_text):

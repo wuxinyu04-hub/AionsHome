@@ -23,7 +23,7 @@ from camera import cam, CAM_CHECK_CMD, perform_cam_check
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from routes.files import export_conversation
-from routes.music import MUSIC_CMD_PATTERN, LIKE_CMD_PATTERN, PLAYLIST_NEW_PATTERN, PLAYLIST_ADD_PATTERN, _lib_drop as _music_cache_drop
+from routes.music import MUSIC_CMD_PATTERN, _handle_music_mgmt_cmds
 import playback
 from song_gen import SONG_CMD_PATTERN, clean_song_visible_reply
 from stream_reply import resolve_stream_failure
@@ -68,7 +68,7 @@ from context_builder import (
     build_ability_block, WISH_CMD_PATTERN, _build_recall_query, strip_tool_commands,
     BAND_VIBRATE_CMD_PATTERN,
 )
-from music import search_songs, get_audio_url, like_track, create_playlist, add_to_playlist, find_playlist_by_name
+from music import search_songs, get_audio_url
 from schedule import (
     ALARM_CMD, MONITOR_CMD, REMINDER_CMD, SCHEDULE_DEL_CMD, SCHEDULE_LIST_CMD,
     process_schedule_commands,
@@ -693,91 +693,7 @@ async def _music_sys_msg(conv_id: str, music_cards: list):
 
 
 # ── AI 音乐管理指令执行：[LIKE] / [PLAYLIST_NEW] / [PLAYLIST_ADD] ──
-
-def _exec_like_cmd(arg: str) -> dict:
-    """[LIKE] 红心当前在放的歌；[LIKE:歌曲名] 搜并红心"""
-    try:
-        if arg:
-            results = search_songs(arg, limit=1)
-            if not results:
-                return {"ok": False, "action": "like", "msg": f"没搜到《{arg}》"}
-            song = results[0]
-        else:
-            np = playback.get_now_playing()
-            if not np or not np.get("song_id"):
-                return {"ok": False, "action": "like", "msg": "当前没有在播放的歌"}
-            song = {"id": np["song_id"], "name": np.get("name", ""), "artist": np.get("artist", "")}
-        ok = like_track(song["id"], True)
-        if ok:
-            _music_cache_drop("favorites")
-        return {"ok": ok, "action": "like", "name": song.get("name", ""), "artist": song.get("artist", ""), "id": song["id"]}
-    except Exception as e:
-        return {"ok": False, "action": "like", "msg": f"红心失败：{e}"}
-
-
-def _exec_playlist_new_cmd(arg: str) -> dict:
-    """[PLAYLIST_NEW:歌单名] 或 [PLAYLIST_NEW:歌单名|留言]，创建后登记为"他建的歌单"（留言保留展示）"""
-    try:
-        name, _, note = arg.partition("|")
-        name, note = name.strip(), note.strip()
-        p = create_playlist(name)
-        _music_cache_drop("playlists")
-        playback.log_ai_playlist(p.get("id"), name, note)
-        return {"ok": True, "action": "playlist_new", "name": name, "id": p.get("id")}
-    except Exception as e:
-        return {"ok": False, "action": "playlist_new", "msg": f"建歌单失败：{e}"}
-
-
-def _exec_playlist_add_cmd(arg: str) -> dict:
-    """[PLAYLIST_ADD:歌单名] 加当前在放的歌；[PLAYLIST_ADD:歌单名|歌曲名] 搜并加；
-    第三段可附留言：[PLAYLIST_ADD:歌单名|歌曲名|留言]（歌曲名留空则加当前在放的）。歌单不存在自动建。"""
-    try:
-        uid = (SETTINGS.get("netease_uid") or "").strip()
-        if not uid:
-            return {"ok": False, "action": "playlist_add", "msg": "未配置 netease_uid"}
-        parts = [s.strip() for s in arg.split("|")]
-        pname = parts[0]
-        song_kw = parts[1] if len(parts) > 1 else ""
-        note = parts[2] if len(parts) > 2 else ""
-        if song_kw:
-            results = search_songs(song_kw, limit=1)
-            if not results:
-                return {"ok": False, "action": "playlist_add", "msg": f"没搜到《{song_kw}》"}
-            song = results[0]
-        else:
-            np = playback.get_now_playing()
-            if not np or not np.get("song_id"):
-                return {"ok": False, "action": "playlist_add", "msg": "当前没有在播放的歌"}
-            song = {"id": np["song_id"], "name": np.get("name", ""), "artist": np.get("artist", "")}
-        pl = find_playlist_by_name(int(uid), pname)
-        if pl:
-            pid = pl["id"]
-        else:
-            pid = create_playlist(pname).get("id")
-            playback.log_ai_playlist(pid, pname)  # 自动建的也算他建的
-        add_to_playlist(pid, [song["id"]])
-        _music_cache_drop(f"pl:{pid}", "playlists")
-        if playback.is_ai_playlist(pid):
-            playback.log_ai_playlist_song(pid, song, note)
-        return {"ok": True, "action": "playlist_add", "playlist": pname, "name": song.get("name", ""), "artist": song.get("artist", ""), "playlist_id": pid}
-    except Exception as e:
-        return {"ok": False, "action": "playlist_add", "msg": f"加歌失败：{e}"}
-
-
-def _handle_music_mgmt_cmds(full_text: str):
-    """检测并执行 [LIKE]/[PLAYLIST_NEW]/[PLAYLIST_ADD]，返回 (剥离后文本, 结果卡片列表)"""
-    cards = []
-    for m in LIKE_CMD_PATTERN.finditer(full_text):
-        cards.append(_exec_like_cmd((m.group(1) or "").strip()))
-    full_text = LIKE_CMD_PATTERN.sub("", full_text)
-    for m in PLAYLIST_NEW_PATTERN.finditer(full_text):
-        cards.append(_exec_playlist_new_cmd(m.group(1).strip()))
-    full_text = PLAYLIST_NEW_PATTERN.sub("", full_text)
-    for m in PLAYLIST_ADD_PATTERN.finditer(full_text):
-        cards.append(_exec_playlist_add_cmd(m.group(1).strip()))
-    full_text = PLAYLIST_ADD_PATTERN.sub("", full_text).strip()
-    return full_text, cards
-
+# 已挪到 routes/music.py 共用（chat.py 与 chatroom.py 复用同一套执行逻辑）
 
 async def _wechat_sys_msg(conv_id: str, text: str, after_msg_id: str = None):
     """插入微信跨通道系统消息，保留给后续上下文。"""

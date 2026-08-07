@@ -439,3 +439,91 @@ async def music_stream(song_id: int, request: Request):
 
     return StreamingResponse(_stream(), status_code=resp.status_code,
                              media_type=ct, headers=out)
+
+
+# ── AI 音乐管理指令执行：[LIKE] / [PLAYLIST_NEW] / [PLAYLIST_ADD] ──
+# 私聊(chat.py)与聊天室(chatroom.py)共用同一套执行逻辑。
+
+def _exec_like_cmd(arg: str) -> dict:
+    """[LIKE] 红心当前在放的歌；[LIKE:歌曲名] 搜并红心"""
+    try:
+        if arg:
+            results = search_songs(arg, limit=1)
+            if not results:
+                return {"ok": False, "action": "like", "msg": f"没搜到《{arg}》"}
+            song = results[0]
+        else:
+            np = playback.get_now_playing()
+            if not np or not np.get("song_id"):
+                return {"ok": False, "action": "like", "msg": "当前没有在播放的歌"}
+            song = {"id": np["song_id"], "name": np.get("name", ""), "artist": np.get("artist", "")}
+        ok = like_track(song["id"], True)
+        if ok:
+            _lib_drop("favorites")
+        return {"ok": ok, "action": "like", "name": song.get("name", ""), "artist": song.get("artist", ""), "id": song["id"]}
+    except Exception as e:
+        return {"ok": False, "action": "like", "msg": f"红心失败：{e}"}
+
+
+def _exec_playlist_new_cmd(arg: str) -> dict:
+    """[PLAYLIST_NEW:歌单名] 或 [PLAYLIST_NEW:歌单名|留言]，创建后登记为"他建的歌单"（留言保留展示）"""
+    try:
+        name, _, note = arg.partition("|")
+        name, note = name.strip(), note.strip()
+        p = create_playlist(name)
+        _lib_drop("playlists")
+        playback.log_ai_playlist(p.get("id"), name, note)
+        return {"ok": True, "action": "playlist_new", "name": name, "id": p.get("id")}
+    except Exception as e:
+        return {"ok": False, "action": "playlist_new", "msg": f"建歌单失败：{e}"}
+
+
+def _exec_playlist_add_cmd(arg: str) -> dict:
+    """[PLAYLIST_ADD:歌单名] 加当前在放的歌；[PLAYLIST_ADD:歌单名|歌曲名] 搜并加；
+    第三段可附留言：[PLAYLIST_ADD:歌单名|歌曲名|留言]（歌曲名留空则加当前在放的）。歌单不存在自动建。"""
+    try:
+        uid = (SETTINGS.get("netease_uid") or "").strip()
+        if not uid:
+            return {"ok": False, "action": "playlist_add", "msg": "未配置 netease_uid"}
+        parts = [s.strip() for s in arg.split("|")]
+        pname = parts[0]
+        song_kw = parts[1] if len(parts) > 1 else ""
+        note = parts[2] if len(parts) > 2 else ""
+        if song_kw:
+            results = search_songs(song_kw, limit=1)
+            if not results:
+                return {"ok": False, "action": "playlist_add", "msg": f"没搜到《{song_kw}》"}
+            song = results[0]
+        else:
+            np = playback.get_now_playing()
+            if not np or not np.get("song_id"):
+                return {"ok": False, "action": "playlist_add", "msg": "当前没有在播放的歌"}
+            song = {"id": np["song_id"], "name": np.get("name", ""), "artist": np.get("artist", "")}
+        pl = find_playlist_by_name(int(uid), pname)
+        if pl:
+            pid = pl["id"]
+        else:
+            pid = create_playlist(pname).get("id")
+            playback.log_ai_playlist(pid, pname)  # 自动建的也算他建的
+        add_to_playlist(pid, [song["id"]])
+        _lib_drop(f"pl:{pid}", "playlists")
+        if playback.is_ai_playlist(pid):
+            playback.log_ai_playlist_song(pid, song, note)
+        return {"ok": True, "action": "playlist_add", "playlist": pname, "name": song.get("name", ""), "artist": song.get("artist", ""), "playlist_id": pid}
+    except Exception as e:
+        return {"ok": False, "action": "playlist_add", "msg": f"加歌失败：{e}"}
+
+
+def _handle_music_mgmt_cmds(full_text: str):
+    """检测并执行 [LIKE]/[PLAYLIST_NEW]/[PLAYLIST_ADD]，返回 (剥离后文本, 结果卡片列表)"""
+    cards = []
+    for m in LIKE_CMD_PATTERN.finditer(full_text):
+        cards.append(_exec_like_cmd((m.group(1) or "").strip()))
+    full_text = LIKE_CMD_PATTERN.sub("", full_text)
+    for m in PLAYLIST_NEW_PATTERN.finditer(full_text):
+        cards.append(_exec_playlist_new_cmd(m.group(1).strip()))
+    full_text = PLAYLIST_NEW_PATTERN.sub("", full_text)
+    for m in PLAYLIST_ADD_PATTERN.finditer(full_text):
+        cards.append(_exec_playlist_add_cmd(m.group(1).strip()))
+    full_text = PLAYLIST_ADD_PATTERN.sub("", full_text).strip()
+    return full_text, cards
