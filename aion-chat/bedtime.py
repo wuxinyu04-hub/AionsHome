@@ -1355,7 +1355,7 @@ async def cover_targets() -> list[dict]:
     """收集需要补封面的目标。返回 [{id, title_override, category}]。
 
     书库：每本书按 book_id 聚合，取 chapter 最小的一集作代表集，其封面即"书封面"；
-    故事：非 reading、无封面、有音频（没音频的空条目不浪费额度）。
+    故事：非 reading、或独立 reading（无 book_ref）、无封面、有音频（没音频的空条目不浪费额度）。
     """
     async with get_db() as db:
         db.row_factory = __import__("aiosqlite").Row
@@ -1380,8 +1380,10 @@ async def cover_targets() -> list[dict]:
         if not b["has_cover"] and b["rep_id"]:
             targets.append({"id": b["rep_id"], "title_override": b["title"], "category": "reading"})
     for r in rows:
-        if r["category"] != "reading" and not r["cover_path"] and r["audio_path"]:
-            targets.append({"id": r["id"], "title_override": "", "category": r["category"]})
+        # 独立 reading 条目（无 book_ref）也要补封面；带 book_ref 的章节走书封面，不进单集
+        if r["category"] != "reading" or not r["book_ref"]:
+            if not r["cover_path"] and r["audio_path"]:
+                targets.append({"id": r["id"], "title_override": "", "category": r["category"]})
     return targets
 
 
