@@ -30,10 +30,12 @@ def _netease_uid() -> int | None:
 router = APIRouter()
 
 MUSIC_CMD_PATTERN = re.compile(r"\[MUSIC:(.+?)\]")
-# AI 音乐管理指令：红心 / 建歌单 / 往歌单加歌
+# AI 音乐管理指令：红心 / 建歌单 / 往歌单加歌 / 点播已有歌单 / 从歌单移除
 LIKE_CMD_PATTERN = re.compile(r"\[LIKE(?::([^\]]+))?\]")            # [LIKE] 或 [LIKE:歌曲名 歌手名]
 PLAYLIST_NEW_PATTERN = re.compile(r"\[PLAYLIST_NEW:([^\]]+)\]")     # [PLAYLIST_NEW:歌单名]
 PLAYLIST_ADD_PATTERN = re.compile(r"\[PLAYLIST_ADD:([^\]]+)\]")     # [PLAYLIST_ADD:歌单名] 或 [PLAYLIST_ADD:歌单名|歌曲名]
+PLAYLIST_PLAY_PATTERN = re.compile(r"\[PLAYLIST_PLAY:([^\]]+)\]")   # [PLAYLIST_PLAY:歌单名] 点播已有歌单
+PLAYLIST_REMOVE_PATTERN = re.compile(r"\[PLAYLIST_REMOVE:([^\]]+)\]")  # [PLAYLIST_REMOVE:歌单名|歌曲名] 从歌单移除
 
 
 # 注意：所有会打网易云接口的路由都用同步 def（FastAPI 自动扔线程池执行），
@@ -514,6 +516,47 @@ def _exec_playlist_add_cmd(arg: str) -> dict:
         return {"ok": False, "action": "playlist_add", "msg": f"加歌失败：{e}"}
 
 
+def _exec_playlist_play_cmd(arg: str) -> dict:
+    """[PLAYLIST_PLAY:歌单名] 点播用户已有的歌单，前端拿到 pid 整单列表循环播放"""
+    try:
+        uid = (SETTINGS.get("netease_uid") or "").strip()
+        if not uid:
+            return {"ok": False, "action": "playlist_play", "msg": "未配置 netease_uid"}
+        pname = arg.strip()
+        pl = find_playlist_by_name(int(uid), pname)
+        if not pl:
+            return {"ok": False, "action": "playlist_play", "msg": f"没找到歌单《{pname}》"}
+        return {"ok": True, "action": "playlist_play", "playlist": pname, "playlist_id": pl["id"]}
+    except Exception as e:
+        return {"ok": False, "action": "playlist_play", "msg": f"点播歌单失败：{e}"}
+
+
+def _exec_playlist_remove_cmd(arg: str) -> dict:
+    """[PLAYLIST_REMOVE:歌单名|歌曲名] 从歌单移除一首（AI 打理歌单用）"""
+    try:
+        uid = (SETTINGS.get("netease_uid") or "").strip()
+        if not uid:
+            return {"ok": False, "action": "playlist_remove", "msg": "未配置 netease_uid"}
+        parts = [s.strip() for s in arg.split("|")]
+        pname, song_kw = parts[0], (parts[1] if len(parts) > 1 else "")
+        if not song_kw:
+            return {"ok": False, "action": "playlist_remove", "msg": "要移除哪首？格式：[PLAYLIST_REMOVE:歌单名|歌曲名]"}
+        results = search_songs(song_kw, limit=1)
+        if not results:
+            return {"ok": False, "action": "playlist_remove", "msg": f"没搜到《{song_kw}》"}
+        song = results[0]
+        pl = find_playlist_by_name(int(uid), pname)
+        if not pl:
+            return {"ok": False, "action": "playlist_remove", "msg": f"没找到歌单《{pname}》"}
+        remove_from_playlist(pl["id"], [song["id"]])
+        _lib_drop(f"pl:{pl['id']}", "playlists")
+        if playback.is_ai_playlist(pl["id"]):
+            playback.remove_ai_playlist_song(pl["id"], song["id"])
+        return {"ok": True, "action": "playlist_remove", "playlist": pname, "playlist_id": pl["id"], "name": song.get("name", ""), "artist": song.get("artist", "")}
+    except Exception as e:
+        return {"ok": False, "action": "playlist_remove", "msg": f"移除失败：{e}"}
+
+
 def _handle_music_mgmt_cmds(full_text: str):
     """检测并执行 [LIKE]/[PLAYLIST_NEW]/[PLAYLIST_ADD]，返回 (剥离后文本, 结果卡片列表)"""
     cards = []
@@ -525,5 +568,11 @@ def _handle_music_mgmt_cmds(full_text: str):
     full_text = PLAYLIST_NEW_PATTERN.sub("", full_text)
     for m in PLAYLIST_ADD_PATTERN.finditer(full_text):
         cards.append(_exec_playlist_add_cmd(m.group(1).strip()))
-    full_text = PLAYLIST_ADD_PATTERN.sub("", full_text).strip()
+    full_text = PLAYLIST_ADD_PATTERN.sub("", full_text)
+    for m in PLAYLIST_PLAY_PATTERN.finditer(full_text):
+        cards.append(_exec_playlist_play_cmd(m.group(1).strip()))
+    full_text = PLAYLIST_PLAY_PATTERN.sub("", full_text)
+    for m in PLAYLIST_REMOVE_PATTERN.finditer(full_text):
+        cards.append(_exec_playlist_remove_cmd(m.group(1).strip()))
+    full_text = PLAYLIST_REMOVE_PATTERN.sub("", full_text).strip()
     return full_text, cards

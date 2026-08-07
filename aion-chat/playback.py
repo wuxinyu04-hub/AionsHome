@@ -260,6 +260,29 @@ def log_ai_playlist_song(playlist_id, song: dict, note: str = ""):
             return
 
 
+def remove_ai_playlist_song(playlist_id, song_id):
+    """AI 从自己建的歌单里移除歌曲时，同步清登记簿里的那条（含留言）"""
+    try:
+        pid = int(playlist_id)
+        sid = int(song_id)
+    except (TypeError, ValueError):
+        return
+    with _ai_pl_lock:
+        pls = _load_json_list(_AI_PLAYLISTS_FILE)
+        changed = False
+        for p in pls:
+            if p.get("playlist_id") != pid:
+                continue
+            songs = p.get("songs", [])
+            n = len(songs)
+            p["songs"] = [s for s in songs if s.get("id") != sid]
+            if len(p["songs"]) != n:
+                changed = True
+            break
+        if changed:
+            _save_json(_AI_PLAYLISTS_FILE, pls)
+
+
 def get_ai_playlists() -> list:
     """AI 建的歌单登记簿（含每首歌的留言）"""
     with _ai_pl_lock:

@@ -2851,20 +2851,32 @@ function renderMgmtCards(msgId, _attempt) {
 }
 
 function buildMgmtCardHtml(card) {
-  const isAdd = card.action === 'playlist_add';
-  const pid = isAdd ? card.playlist_id : card.id;
-  const listName = isAdd ? (card.playlist || '') : (card.name || '');
-  const icon = isAdd ? '🎶' : '📑';
+  const act = card.action;
+  const isAdd = act === 'playlist_add';
+  const isPlay = act === 'playlist_play';
+  const isRemove = act === 'playlist_remove';
+  const hasPl = (isAdd || isPlay || isRemove);
+  const pid = hasPl ? card.playlist_id : card.id;
+  const listName = hasPl ? (card.playlist || '') : (card.name || '');
+  const icon = isAdd ? '🎶' : (isPlay ? '▶' : (isRemove ? '🗑' : '📑'));
   let title, sub;
   if (isAdd) {
     title = `《${escHtml(card.name || '')}》`;
     sub = `${escHtml(card.artist || '')} · 已加入「${escHtml(card.playlist || '')}」`;
+  } else if (isPlay) {
+    title = `已选中歌单「${escHtml(card.playlist || '')}」`;
+    sub = '他挑了这张歌单给你放';
+  } else if (isRemove) {
+    title = `已从「${escHtml(card.playlist || '')}」移除《${escHtml(card.name || '')}》`;
+    sub = escHtml(card.artist || '');
   } else {
     title = `已建歌单「${escHtml(card.name || '')}」`;
     sub = '他为你新建的歌单';
   }
   const btn = (pid != null)
-    ? `<button class="music-btn primary" onclick='playPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
+    ? (isRemove
+        ? `<button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
+        : `<button class="music-btn primary" onclick='playPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`)
     : '';
   return `
     <div class="music-card">
@@ -2884,11 +2896,14 @@ function viewMusicPlaylist(pid, name) {
   loadPlaylistTracks(pid, name);
 }
 
-// 歌单卡一键连播：整单入队 + 顺序播放
+// 歌单卡一键连播：整单入队 + 开列表循环（播完自动接回第一首，直到用户手动关）
 function playPlaylistAll(pid, name) {
   fetchPlaylistTracks(pid).then(tracks => {
     if (!tracks || !tracks.length) { musicToast('歌单是空的'); return; }
     enqueueMusic(tracks, { play: true });
+    musicRepeat = 'all';
+    musicSaveState();
+    musicRenderBar();
     musicToast(`正在播放「${name || '歌单'}」共 ${tracks.length} 首`);
   });
 }
@@ -3593,7 +3608,7 @@ function handleMusicCards(data, opts) {
 function handleMusicMgmt(card) {
   if (!card) return;
   // 面板同步：歌单变更成功后，若播放器正停在歌单列表视图则刷新（后端已清缓存，会拉新）
-  if (card.ok && (card.action === 'playlist_new' || card.action === 'playlist_add')) {
+  if (card.ok && (card.action === 'playlist_new' || card.action === 'playlist_add' || card.action === 'playlist_remove')) {
     const ov = musicPlayerOverlay;
     if (ov && musicPlayerTab === 'playlists' && !ov.querySelector('.mp-pl-back')) loadMusicPlaylists();
   }
@@ -3601,7 +3616,7 @@ function handleMusicMgmt(card) {
   if (card.ok && card.action === 'like' && card.id != null) musicLikedIds.add(card.id);
 
   // 歌单结果卡片：挂到对应 AI 消息下（后端广播带 msg_id；先存 map 再渲染，消息行未就绪时 renderMessages 会补）
-  if (card.ok && card.msg_id && (card.action === 'playlist_new' || card.action === 'playlist_add')) {
+  if (card.ok && card.msg_id && (card.action === 'playlist_new' || card.action === 'playlist_add' || card.action === 'playlist_play' || card.action === 'playlist_remove')) {
     if (!msgMgmtCards[card.msg_id]) msgMgmtCards[card.msg_id] = [];
     msgMgmtCards[card.msg_id].push(card);
     renderMgmtCards(card.msg_id);
@@ -3616,6 +3631,10 @@ function handleMusicMgmt(card) {
     text = card.ok ? `📑 已建歌单「${card.name || ''}」` : `📑 ${card.msg || '失败'}`;
   } else if (card.action === 'playlist_add') {
     text = card.ok ? `📑 已加入歌单「${card.playlist || ''}」：《${card.name || ''}》` : `📑 ${card.msg || '失败'}`;
+  } else if (card.action === 'playlist_play') {
+    text = card.ok ? `🎶 点播歌单「${card.playlist || ''}」` : `🎶 ${card.msg || '失败'}`;
+  } else if (card.action === 'playlist_remove') {
+    text = card.ok ? `🗑 已从「${card.playlist || ''}」移除《${card.name || ''}》` : `🗑 ${card.msg || '失败'}`;
   }
   if (text) musicToast(text);
 }

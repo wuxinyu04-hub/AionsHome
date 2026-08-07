@@ -681,20 +681,32 @@ function crRenderMgmtCards(msgId, _attempt) {
 }
 
 function crBuildMgmtCardHtml(card) {
-  const isAdd = card.action === 'playlist_add';
-  const pid = isAdd ? card.playlist_id : card.id;
-  const listName = isAdd ? (card.playlist || '') : (card.name || '');
-  const icon = isAdd ? '🎶' : '📑';
+  const act = card.action;
+  const isAdd = act === 'playlist_add';
+  const isPlay = act === 'playlist_play';
+  const isRemove = act === 'playlist_remove';
+  const hasPl = (isAdd || isPlay || isRemove);
+  const pid = hasPl ? card.playlist_id : card.id;
+  const listName = hasPl ? (card.playlist || '') : (card.name || '');
+  const icon = isAdd ? '🎶' : (isPlay ? '▶' : (isRemove ? '🗑' : '📑'));
   let title, sub;
   if (isAdd) {
     title = `《${esc(card.name || '')}》`;
     sub = `${esc(card.artist || '')} · 已加入「${esc(card.playlist || '')}」`;
+  } else if (isPlay) {
+    title = `已选中歌单「${esc(card.playlist || '')}」`;
+    sub = '他挑了这张歌单给你放';
+  } else if (isRemove) {
+    title = `已从「${esc(card.playlist || '')}」移除《${esc(card.name || '')}》`;
+    sub = esc(card.artist || '');
   } else {
     title = `已建歌单「${esc(card.name || '')}」`;
     sub = '他为你新建的歌单';
   }
   const btn = (pid != null)
-    ? `<button class="music-btn primary" onclick='crPlayPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
+    ? (isRemove
+        ? `<button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
+        : `<button class="music-btn primary" onclick='crPlayPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`)
     : '';
   return `
     <div class="music-card">
@@ -731,11 +743,12 @@ function crPlayPlaylistAll(pid, name) {
 function crHandleMgmtCards(raw) {
   const card = (raw && raw.data) ? raw.data : raw;
   if (!card || !card.ok) return;
-  if (card.action !== 'playlist_new' && card.action !== 'playlist_add') return;
+  if (card.action !== 'playlist_new' && card.action !== 'playlist_add'
+      && card.action !== 'playlist_play' && card.action !== 'playlist_remove') return;
   if (!card.msg_id) return;
-  const key = card.action === 'playlist_add' ? card.playlist_id : card.id;
+  const key = (card.action === 'playlist_add' || card.action === 'playlist_play' || card.action === 'playlist_remove') ? card.playlist_id : card.id;
   const list = crMgmtCards[card.msg_id] || [];
-  if (list.some(c => c.action === card.action && ((c.action === 'playlist_add' ? c.playlist_id : c.id) === key))) return;
+  if (list.some(c => c.action === card.action && ((c.action === 'playlist_add' || c.action === 'playlist_play' || c.action === 'playlist_remove') ? c.playlist_id : c.id) === key)) return;
   crMgmtCards[card.msg_id] = list.concat(card);
   crRenderMgmtCards(card.msg_id);
   scrollToBottom();
