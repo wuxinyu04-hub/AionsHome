@@ -54,7 +54,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 /* ── 聊天区 ── */
 .chat-area { flex:1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 
-.chat-header { padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top)); border-bottom: 1px solid rgba(240,228,221,0.45); background: rgba(255,249,245,0.65); backdrop-filter: blur(20px) saturate(1.6); -webkit-backdrop-filter: blur(20px) saturate(1.6); display: flex; align-items: center; gap: 10px; min-height: 48px; position: absolute; top: 0; left: 0; right: 0; z-index: 8; box-shadow: 0 1px 8px rgba(0,0,0,0.06); }
+.chat-header { padding: 10px 16px; padding-top: calc(max(var(--aion-safe-top, env(safe-area-inset-top, 0px)), 28px) + 10px); border-bottom: 1px solid rgba(240,228,221,0.45); background: rgba(255,249,245,0.65); backdrop-filter: blur(20px) saturate(1.6); -webkit-backdrop-filter: blur(20px) saturate(1.6); display: flex; align-items: center; gap: 10px; min-height: 48px; position: absolute; top: 0; left: 0; right: 0; z-index: 8; box-shadow: 0 1px 8px rgba(0,0,0,0.06); }
 .chat-header .home-btn { background: none; border: none; color: var(--text); font-size: 20px; cursor: pointer; padding: 4px 6px; flex-shrink: 0; }
 .chat-header .menu-btn { display: none; background: none; border: none; color: var(--text); font-size: 22px; cursor: pointer; padding: 4px; }
 .chat-header .title { flex:1; font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
@@ -716,7 +716,7 @@ body[data-theme="light"] .link-preview-card:hover {
   .chat-header .menu-btn { display: flex; }
   .msg-row { max-width: 92%; margin-bottom: 1px; gap: 2px; }
   .msg-dots { display:inline; }
-  .messages { padding: 8px 6px; padding-top: calc(56px + env(safe-area-inset-top)); gap: 1px; }
+  .messages { padding: 8px 6px; padding-top: calc(max(var(--aion-safe-top, env(safe-area-inset-top, 0px)), 36px) + 56px); gap: 1px; }
   .msg-bubble { padding: 8px 12px; font-size: 14px; line-height: 1.6; border-radius: 14px; }
   .msg-avatar { width: 30px; height: 30px; }
   .tts-replay-btn { font-size: 12px; }
@@ -1815,7 +1815,7 @@ body[data-theme="light"] .plus-menu-item { text-shadow: none; }
   .sidebar.open { left: 0; }
   .chat-header {
     position: fixed;
-    top: max(12px, env(safe-area-inset-top, 0px));
+    top: max(36px, env(safe-area-inset-top, 0px));
     left: 12px;
     right: 12px;
     width: auto;

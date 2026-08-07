@@ -183,7 +183,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 
 .chat-header {
   padding: 10px 16px;
-  padding-top: calc(10px + env(safe-area-inset-top));
+  padding-top: calc(max(var(--aion-safe-top, env(safe-area-inset-top, 0px)), 28px) + 10px);
   border-bottom: 1px solid var(--border);
   background: rgba(250,247,244,0.88);
   backdrop-filter: blur(20px) saturate(1.6);
@@ -238,7 +238,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 
 .chat-search-panel {
   position: absolute;
-  top: calc(56px + env(safe-area-inset-top));
+  top: calc(max(var(--aion-safe-top, env(safe-area-inset-top, 0px)), 28px) + 56px);
   left: 12px;
   right: 12px;
   z-index: 9;
@@ -3378,7 +3378,7 @@ body[data-theme="light"] .toast {
   }
   .chat-header {
     position: fixed;
-    top: max(10px, env(safe-area-inset-top, 0px));
+    top: max(36px, env(safe-area-inset-top, 0px));
     left: 8px;
     right: 8px;
     border-radius: 14px;
@@ -3386,7 +3386,7 @@ body[data-theme="light"] .toast {
     z-index: 8;
   }
   .messages {
-    padding-top: calc(max(10px, env(safe-area-inset-top, 0px)) + 62px);
+    padding-top: calc(max(36px, env(safe-area-inset-top, 0px)) + 62px);
     padding-bottom: 112px;
   }
   .bubble {
