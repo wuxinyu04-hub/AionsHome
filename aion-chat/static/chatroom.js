@@ -562,6 +562,7 @@ document.addEventListener('keydown', crBumpTTSPlaybackState);
 
 // ── 音乐卡片 ──
 let crMusicCards = {}; // { msgId: [{ id, name, artist, cover, audio_url }] }
+let crMgmtCards = {}; // { msgId: [歌单管理结果卡片(playlist_new/playlist_add)] }
 
 // ── 密语胶囊 ──
 function crToyLabel(cmd) {
@@ -659,6 +660,85 @@ function crBuildMusicCardHtml(song) {
         </div>
       </div>
     </div>`;
+}
+
+// 歌单管理结果卡片（[PLAYLIST_NEW]/[PLAYLIST_ADD]），点「查看歌单」委托父页打开播放器定位到该歌单
+function crRenderMgmtCards(msgId, _attempt) {
+  const cards = crMgmtCards[msgId];
+  if (!cards || !cards.length) return;
+  const row = document.querySelector(`[data-msg-id="${msgId}"]`) || document.getElementById(`streaming-${msgId}`);
+  if (!row) {
+    // 广播可能先于流式行创建到达：延迟重试，最多 ~4s，期间行出现即渲染
+    if ((_attempt || 0) < 8) setTimeout(() => crRenderMgmtCards(msgId, (_attempt || 0) + 1), 500);
+    return;
+  }
+  row.querySelectorAll('.mgmt-cards-container').forEach(e => e.remove());
+  const container = document.createElement('div');
+  container.className = 'music-cards-container mgmt-cards-container';
+  cards.forEach(c => { container.innerHTML += crBuildMgmtCardHtml(c); });
+  const msgContent = row.querySelector('.msg-content');
+  if (msgContent) msgContent.appendChild(container);
+}
+
+function crBuildMgmtCardHtml(card) {
+  const isAdd = card.action === 'playlist_add';
+  const pid = isAdd ? card.playlist_id : card.id;
+  const listName = isAdd ? (card.playlist || '') : (card.name || '');
+  const icon = isAdd ? '🎶' : '📑';
+  let title, sub;
+  if (isAdd) {
+    title = `《${esc(card.name || '')}》`;
+    sub = `${esc(card.artist || '')} · 已加入「${esc(card.playlist || '')}」`;
+  } else {
+    title = `已建歌单「${esc(card.name || '')}」`;
+    sub = '他为你新建的歌单';
+  }
+  const btn = (pid != null)
+    ? `<button class="music-btn primary" onclick='crPlayPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
+    : '';
+  return `
+    <div class="music-card">
+      <div class="music-cover" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text3)">${icon}</div>
+      <div class="music-info">
+        <div class="music-name">${title}</div>
+        <div class="music-artist">${sub}</div>
+        <div class="music-btns">${btn}</div>
+      </div>
+    </div>`;
+}
+
+function crViewMusicPlaylist(pid, name) {
+  // 一律委托给父页（chat 主页）的播放器：共享队列与歌单视图，避免两套播放器叠播
+  try {
+    if (window.parent !== window && typeof window.parent.viewMusicPlaylist === 'function') {
+      window.parent.viewMusicPlaylist(pid, name);
+      return;
+    }
+  } catch (e) {}
+}
+
+function crPlayPlaylistAll(pid, name) {
+  // 委托父页整单连播，群聊不自己出声
+  try {
+    if (window.parent !== window && typeof window.parent.playPlaylistAll === 'function') {
+      window.parent.playPlaylistAll(pid, name);
+      return;
+    }
+  } catch (e) {}
+}
+
+// 兼容 WS 广播 {type,data} 与 SSE payload 两种形状；同 msg_id 同歌单去重，避免双通道重复渲染
+function crHandleMgmtCards(raw) {
+  const card = (raw && raw.data) ? raw.data : raw;
+  if (!card || !card.ok) return;
+  if (card.action !== 'playlist_new' && card.action !== 'playlist_add') return;
+  if (!card.msg_id) return;
+  const key = card.action === 'playlist_add' ? card.playlist_id : card.id;
+  const list = crMgmtCards[card.msg_id] || [];
+  if (list.some(c => c.action === card.action && ((c.action === 'playlist_add' ? c.playlist_id : c.id) === key))) return;
+  crMgmtCards[card.msg_id] = list.concat(card);
+  crRenderMgmtCards(card.msg_id);
+  scrollToBottom();
 }
 
 function crOpenInNetease(songId) {
@@ -3517,6 +3597,9 @@ function endStreamingBubble(messageOrAttachments) {
       if (crIsAiSender(finalMsg.sender)) crMovePrecedingRelatedSystemNoticesAfter(renderedRow, finalMsg.id || '');
       if (crMemoryRecordMsgIds.has(finalMsg.id)) crApplyMemoryHint(finalMsg.id);
       crShowToyCapsule(finalMsg.id, crToyCommandsFromAttachments(finalMsg.attachments));
+      // 重建行会清掉流式期间已挂上的音乐/歌单卡片，恢复之（幂等，无卡片则无操作）
+      crRenderMusicCards(finalMsg.id);
+      crRenderMgmtCards(finalMsg.id);
     }
     streamingBubble = null;
     streamingText = '';
@@ -3741,6 +3824,9 @@ function handleSSE(data) {
         scrollToBottom();
         if (data.autoplay && data.cards.length) crPlayMusicOnline(data.cards[0].id);
       }
+      break;
+    case 'music_mgmt':
+      crHandleMgmtCards(data);
       break;
     case 'toy_command':
       crHandleToyCommand(data);
@@ -5624,6 +5710,9 @@ function connectWS() {
             const div = document.createElement('div');
             div.innerHTML = msgHTML(msg);
             row.replaceWith(div.firstElementChild);
+            // 重建行会清掉已挂上的音乐/歌单卡片，恢复之
+            crRenderMusicCards(msg.id);
+            crRenderMgmtCards(msg.id);
           }
         }
       }
@@ -5655,6 +5744,11 @@ function connectWS() {
           scrollToBottom();
           if (d.autoplay && d.cards.length) crPlayMusicOnline(d.cards[0].id);
         }
+      }
+
+      // 歌单管理结果广播 — 不受 isSending/isAiChatting 限制（命令在回复生成期广播，卡片要实时落）
+      if (data.type === 'music_mgmt' && data.data) {
+        crHandleMgmtCards(data);
       }
 
       // 玩具指令广播

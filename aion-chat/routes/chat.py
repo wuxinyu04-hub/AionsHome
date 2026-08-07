@@ -1577,7 +1577,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 await _music_sys_msg(conv_id, music_cards)
             if mgmt_cards:
                 for _mc in mgmt_cards:
-                    await manager.broadcast({"type": "music_mgmt", "data": _mc})
+                    await manager.broadcast({"type": "music_mgmt", "data": {**_mc, "msg_id": ai_msg_id}})
 
             if image_gen_prompt:
                 ig_data = {'type': 'image_gen_start', 'conv_id': conv_id, 'msg_id': ai_msg_id, 'is_selfie': image_gen_is_selfie}
@@ -2268,7 +2268,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 await _music_sys_msg(conv_id, music_cards)
             if mgmt_cards:
                 for _mc in mgmt_cards:
-                    await manager.broadcast({"type": "music_mgmt", "data": _mc})
+                    await manager.broadcast({"type": "music_mgmt", "data": {**_mc, "msg_id": ai_msg_id}})
 
             if image_gen_prompt:
                 ig_data = {'type': 'image_gen_start', 'conv_id': conv_id, 'msg_id': ai_msg_id, 'is_selfie': image_gen_is_selfie}
@@ -3424,7 +3424,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 await _music_sys_msg(conv_id, music_cards)
             if mgmt_cards:
                 for _mc in mgmt_cards:
-                    await manager.broadcast({"type": "music_mgmt", "data": _mc})
+                    await manager.broadcast({"type": "music_mgmt", "data": {**_mc, "msg_id": ai_msg_id}})
 
             if image_gen_prompt:
                 ig_data = {'type': 'image_gen_start', 'conv_id': conv_id, 'msg_id': ai_msg_id, 'is_selfie': image_gen_is_selfie}

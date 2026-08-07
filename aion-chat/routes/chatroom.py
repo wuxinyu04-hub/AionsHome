@@ -593,7 +593,7 @@ async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg
     full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
     if mgmt_cards:
         for _mc in mgmt_cards:
-            await ws_manager.broadcast({"type": "music_mgmt", "data": _mc})
+            await ws_manager.broadcast({"type": "music_mgmt", "data": {**_mc, "msg_id": msg_id, "source": "chatroom"}})
 
     # ── 日程/闹钟（先检测指令生成系统消息，再交给 schedule 模块处理） ──
     for match in ALARM_CMD.finditer(full_text):

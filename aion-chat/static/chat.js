@@ -39,6 +39,7 @@ let worldBook = { ai_persona: "", user_persona: "", ai_name: "AI", user_name: "�
 let msgDebugData = {};  // { msgId: { model, recalled_memories, prompt_messages, prompt_count, usage } }
 let systemLogs = [];    // 系统日志（会话级，刷新清空）
 let msgMusicCards = {}; // { msgId: [{ id, name, artist, album, cover, audio_url, candidates }] }
+let msgMgmtCards = {}; // { msgId: [歌单管理结果卡片(playlist_new/playlist_add)] }
 let hasMoreMessages = false;   // 是否还有更早的消息可加载
 let loadingMore = false;       // 防止重复加载
 let _suppressScrollBottom = false; // 星标跳转时抑制自动滚底
@@ -1855,7 +1856,8 @@ function handleSync(msg) {
     }
   } else if (type === "music_mgmt") {
     // AI 音乐管理指令结果（红心/建歌单/加歌单），始终处理（不守卫 streamingAiId，否则流式时丢失）
-    handleMusicMgmt(data);
+    // 忽略来自聊天室的广播（聊天室有自己的卡片渲染；且 msg_id 是聊天室消息 id，父页无对应行）
+    if (data.source !== "chatroom") handleMusicMgmt(data);
   } else if (type === "image_gen_start") {
     // 通过 WebSocket 收到生图开始（语音发送时前端没有 SSE 流）
     if (data.conv_id === currentConvId && !streamingAiId) {
@@ -2133,6 +2135,10 @@ function renderMessages() {
   // 恢复音乐卡片
   for (const mid of Object.keys(msgMusicCards)) {
     renderMusicCards(mid);
+  }
+  // 恢复歌单结果卡片
+  for (const mid of Object.keys(msgMgmtCards)) {
+    renderMgmtCards(mid);
   }
   // 恢复 [CAM_CHECK] 加载指示器
   if (camCheckMsgId) {
@@ -2824,6 +2830,67 @@ function buildMusicCardHtml(song) {
         ${candidatesHtml}
       </div>
     </div>`;
+}
+
+// 歌单管理结果卡片（[PLAYLIST_NEW]/[PLAYLIST_ADD]），渲染到对应 AI 消息下，点「查看歌单」进面板看内容放歌
+function renderMgmtCards(msgId, _attempt) {
+  const cards = msgMgmtCards[msgId];
+  if (!cards || !cards.length) return;
+  const row = document.getElementById('m_' + msgId);
+  if (!row) {
+    // 广播可能先于消息行渲染到达：延迟重试，最多 ~4s，期间行出现即渲染（renderMessages 恢复区也兜底）
+    if ((_attempt || 0) < 8) setTimeout(() => renderMgmtCards(msgId, (_attempt || 0) + 1), 500);
+    return;
+  }
+  row.querySelectorAll('.mgmt-cards-container').forEach(e => e.remove());
+  const container = document.createElement('div');
+  container.className = 'music-cards-container mgmt-cards-container';
+  cards.forEach(c => { container.innerHTML += buildMgmtCardHtml(c); });
+  const msgBody = row.querySelector('.msg-body');
+  msgBody.appendChild(container);
+}
+
+function buildMgmtCardHtml(card) {
+  const isAdd = card.action === 'playlist_add';
+  const pid = isAdd ? card.playlist_id : card.id;
+  const listName = isAdd ? (card.playlist || '') : (card.name || '');
+  const icon = isAdd ? '🎶' : '📑';
+  let title, sub;
+  if (isAdd) {
+    title = `《${escHtml(card.name || '')}》`;
+    sub = `${escHtml(card.artist || '')} · 已加入「${escHtml(card.playlist || '')}」`;
+  } else {
+    title = `已建歌单「${escHtml(card.name || '')}」`;
+    sub = '他为你新建的歌单';
+  }
+  const btn = (pid != null)
+    ? `<button class="music-btn primary" onclick='playPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
+    : '';
+  return `
+    <div class="music-card">
+      <div class="music-cover" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text3)">${icon}</div>
+      <div class="music-info">
+        <div class="music-name">${title}</div>
+        <div class="music-artist">${sub}</div>
+        <div class="music-btns">${btn}</div>
+      </div>
+    </div>`;
+}
+
+// 点歌单卡片 → 打开播放器歌单 tab 并定位到该歌单（可整单播放/加队列/单曲播放）
+function viewMusicPlaylist(pid, name) {
+  openMusicPlayer();
+  musicSwitchTab('playlists');
+  loadPlaylistTracks(pid, name);
+}
+
+// 歌单卡一键连播：整单入队 + 顺序播放
+function playPlaylistAll(pid, name) {
+  fetchPlaylistTracks(pid).then(tracks => {
+    if (!tracks || !tracks.length) { musicToast('歌单是空的'); return; }
+    enqueueMusic(tracks, { play: true });
+    musicToast(`正在播放「${name || '歌单'}」共 ${tracks.length} 首`);
+  });
 }
 
 function openInNetease(songId) {
@@ -3522,9 +3589,26 @@ function handleMusicCards(data, opts) {
   enqueueMusic(cards, { play: opts.play !== false });
 }
 
-// AI 音乐管理指令结果 → toast 提示
+// AI 音乐管理指令结果 → 歌单结果卡片（挂到对应消息下）+ 面板同步；无卡片场景退回 toast
 function handleMusicMgmt(card) {
   if (!card) return;
+  // 面板同步：歌单变更成功后，若播放器正停在歌单列表视图则刷新（后端已清缓存，会拉新）
+  if (card.ok && (card.action === 'playlist_new' || card.action === 'playlist_add')) {
+    const ov = musicPlayerOverlay;
+    if (ov && musicPlayerTab === 'playlists' && !ov.querySelector('.mp-pl-back')) loadMusicPlaylists();
+  }
+  // 红心/加歌单后刷新本地 liked 集合
+  if (card.ok && card.action === 'like' && card.id != null) musicLikedIds.add(card.id);
+
+  // 歌单结果卡片：挂到对应 AI 消息下（后端广播带 msg_id；先存 map 再渲染，消息行未就绪时 renderMessages 会补）
+  if (card.ok && card.msg_id && (card.action === 'playlist_new' || card.action === 'playlist_add')) {
+    if (!msgMgmtCards[card.msg_id]) msgMgmtCards[card.msg_id] = [];
+    msgMgmtCards[card.msg_id].push(card);
+    renderMgmtCards(card.msg_id);
+    scrollBottom();
+    return;
+  }
+
   let text = '';
   if (card.action === 'like') {
     text = card.ok ? `❤️ 已红心《${card.name || ''}》${card.artist ? '- ' + card.artist : ''}` : `❤️ ${card.msg || '失败'}`;
@@ -3534,8 +3618,6 @@ function handleMusicMgmt(card) {
     text = card.ok ? `📑 已加入歌单「${card.playlist || ''}」：《${card.name || ''}》` : `📑 ${card.msg || '失败'}`;
   }
   if (text) musicToast(text);
-  // 红心/加歌单后刷新本地 liked 集合与歌单缓存
-  if (card.ok && card.action === 'like' && card.id != null) musicLikedIds.add(card.id);
 }
 
 function musicToast(text) {
