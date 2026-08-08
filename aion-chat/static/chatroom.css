@@ -2464,7 +2464,7 @@ body[data-theme="light"] .monitor-camera-snapshot summary {
 
 /* ── 响应式 ── */
 @media (max-width: 700px) {
-  .sidebar { position: fixed; left: -280px; top: 0; bottom: 0; z-index: 50; transition: left 0.25s ease; box-shadow: none; }
+  .sidebar { position: fixed; left: -280px; top: 0; bottom: 0; z-index: 50; padding-top: max(36px, env(safe-area-inset-top, 0px)); transition: left 0.25s ease; box-shadow: none; }
   .sidebar.open { left: 0; box-shadow: 4px 0 20px rgba(0,0,0,0.15); }
   .chat-header .menu-btn { display: block; }
   .chat-header .header-actions { gap: 4px; }
