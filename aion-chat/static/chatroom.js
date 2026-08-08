@@ -784,6 +784,17 @@ function crFindSong(songId) {
   }
   return null;
 }
+// 群聊音乐：整批委托给父页共享队列（而不是只丢第一首），子页无父页时退回本地单曲兜底。
+function crDelegateMusicToParent(cards, autoplay) {
+  if (!cards || !cards.length) return;
+  try {
+    if (window.parent !== window && typeof window.parent.enqueueMusicBatch === 'function') {
+      window.parent.enqueueMusicBatch(cards, { play: autoplay !== false });
+      return;
+    }
+  } catch (e) {}
+  if (autoplay !== false) crPlayMusicOnline(cards[0].id);
+}
 function crPlayMusicOnline(songId) {
   let song = crFindSong(songId);
   // 一律委托给父页（chat）的队列播放器：共享队列，避免双 audio 叠播。
@@ -3853,7 +3864,7 @@ function handleSSE(data) {
         crMusicCards[data.msg_id] = data.cards;
         crRenderMusicCards(data.msg_id);
         scrollToBottom();
-        if (data.autoplay && data.cards.length) crPlayMusicOnline(data.cards[0].id);
+        crDelegateMusicToParent(data.cards, data.autoplay);
       }
       break;
     case 'music_mgmt':
@@ -5773,7 +5784,7 @@ function connectWS() {
           crMusicCards[d.msg_id] = d.cards;
           crRenderMusicCards(d.msg_id);
           scrollToBottom();
-          if (d.autoplay && d.cards.length) crPlayMusicOnline(d.cards[0].id);
+          crDelegateMusicToParent(d.cards, d.autoplay);
         }
       }
 

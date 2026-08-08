@@ -412,9 +412,10 @@ async def music_stream(song_id: int, request: Request):
         "Referer": "https://music.163.com/",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     }
-    rng = request.headers.get("range")
-    if rng:
-        up_headers["Range"] = rng
+    # 即使浏览器首次没带 Range，也向上游索要 bytes=0-：
+    # 206 的 Content-Range 会把整首大小告知 Android WebView，确保 duration 可用。
+    rng = request.headers.get("range") or "bytes=0-"
+    up_headers["Range"] = rng
 
     client = httpx.AsyncClient(timeout=60, follow_redirects=True)
     req = client.build_request("GET", url, headers=up_headers)
@@ -446,10 +447,21 @@ async def music_stream(song_id: int, request: Request):
     elif ".flac" in url:
         ct = "audio/flac"
 
+    # 上游若没给 content-length，从 content-range 的 start/end 算出本段长度补上；
+    # 否则 Android WebView 的 <audio> 拿不到 duration（Infinity）且响应长度不符，
+    # onended 可能不触发、队列卡死。绝不能填整首 total——partial 响应体没那么长。
+    upstream_cl = resp.headers.get("content-length")
     out = {"Accept-Ranges": "bytes", "Cache-Control": "no-cache"}
     for h in ("content-length", "content-range"):
         if resp.headers.get(h):
             out[h] = resp.headers[h]
+    if not upstream_cl and not out.get("content-length"):
+        cr = resp.headers.get("content-range")  # bytes start-end/total
+        if cr and " " in cr and cr.split(" ", 1)[0].lower() == "bytes":
+            start, _, rest = cr.split(" ")[1].partition("-")
+            end, _, _ = rest.partition("/")
+            if start.isdigit() and end.isdigit() and int(end) >= int(start):
+                out["content-length"] = str(int(end) - int(start) + 1)
 
     return StreamingResponse(_stream(), status_code=resp.status_code,
                              media_type=ct, headers=out)

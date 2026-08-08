@@ -2905,7 +2905,7 @@ function playDailySongs(msgId) {
   musicRepeat = 'all';
   musicSaveState();
   musicRenderBar();
-  musicToast(`🎵 正在播放今日推荐 ${card.songs.length} 首`);
+  musicToast(`🎵 正在播放今日推荐 ${card.songs.length} 首 · 列表循环`);
 }
 
 // 点歌单卡片 → 打开播放器歌单 tab 并定位到该歌单（可整单播放/加队列/单曲播放）
@@ -2923,7 +2923,7 @@ function playPlaylistAll(pid, name) {
     musicRepeat = 'all';
     musicSaveState();
     musicRenderBar();
-    musicToast(`正在播放「${name || '歌单'}」共 ${tracks.length} 首`);
+    musicToast(`正在播放「${name || '歌单'}」共 ${tracks.length} 首 · 列表循环`);
   });
 }
 
@@ -3358,7 +3358,8 @@ function musicRenderBar() {
   const artist = mirror ? mirror.artist : cur?.artist;
   const cnt = musicQueue.length;
   const idx = musicIndex >= 0 ? (musicIndex + 1) : 0;
-  wrap.querySelector('.mb-sub').textContent = (artist || '未知歌手') + (cnt > 1 ? ` · ${idx}/${cnt}` : '');
+  const loopTxt = musicRepeat === 'off' ? '' : (musicRepeat === 'one' ? ' · 单曲循环' : ' · 列表循环');
+  wrap.querySelector('.mb-sub').textContent = (artist || '未知歌手') + (cnt > 1 ? ` · ${idx}/${cnt}` : '') + loopTxt;
   const playing = musicIsLeader ? (musicAudio && !musicAudio.paused && musicAudio.src) : (mirror && !mirror.paused);
   wrap.querySelector('.mb-play').textContent = playing ? '⏸' : '▶';
   wrap.querySelector('.mb-repeat').classList.toggle('active', musicRepeat !== 'off');
@@ -3510,8 +3511,18 @@ function musicPrev() {
 function musicToggleRepeat() {
   musicRepeat = musicRepeat === 'off' ? 'all' : (musicRepeat === 'all' ? 'one' : 'off');
   musicSaveState(); musicRenderBar();
+  if (musicPlayerOverlay) musicPlayerRender(); // 全屏播放器的循环按钮同步刷新
+  musicToast('循环 ' + musicRepeatText());
 }
-function musicToggleShuffle() { musicShuffle = !musicShuffle; musicSaveState(); musicRenderBar(); }
+function musicRepeatText() {
+  return musicRepeat === 'off' ? '顺序播放' : (musicRepeat === 'one' ? '单曲循环' : '列表循环');
+}
+function musicToggleShuffle() {
+  musicShuffle = !musicShuffle;
+  musicSaveState(); musicRenderBar();
+  if (musicPlayerOverlay) musicPlayerRender(); // 全屏播放器的随机按钮同步刷新
+  musicToast('随机 ' + (musicShuffle ? '开 · 随机播放' : '关 · 顺序播放'));
+}
 function musicClose() {
   musicClosed = true;
   try { localStorage.setItem(MUSIC_CLOSED_KEY, '1'); } catch (e) {} // 持久化:页面刷新/重启后 bar 不会回来
@@ -3621,11 +3632,29 @@ function handleMusicCards(data, opts) {
   const cards = data.cards || [];
   if (!cards.length) return;
   // AI 一口气连发 3 首以上 → 自动开列表循环（像音乐 App 一首接一首，直到用户手动关）
-  if (cards.length >= 3) {
+  if (cards.length >= 3 && musicRepeat !== 'all') {
     musicRepeat = 'all';
     musicSaveState();
+    musicToast(`已入队 ${cards.length} 首 · 列表循环播放`);
   }
   enqueueMusic(cards, { play: opts.play !== false });
+}
+
+// 子页（群聊）委托：把一整批音乐卡片加入共享队列。
+// 与 handleMusicCards 的区别：不做本页卡片渲染；且当前正有歌在放时，
+// 新一批只追加、不打断（修「后面的覆盖前面的」）；队列空闲才开播。
+function enqueueMusicBatch(songs, opts) {
+  opts = opts || {};
+  const cards = Array.isArray(songs) ? songs : (songs ? [songs] : []);
+  if (!cards.length) return;
+  cards.forEach(c => { if (c && c.id != null) musicSongIndex[c.id] = c; });
+  if (cards.length >= 3 && musicRepeat !== 'all') {
+    musicRepeat = 'all';
+    musicSaveState();
+    musicToast(`已入队 ${cards.length} 首 · 列表循环播放`);
+  }
+  const nowPlaying = !!(musicAudio && !musicAudio.paused);
+  enqueueMusic(cards, { play: opts.play !== false && !nowPlaying });
 }
 
 // AI 音乐管理指令结果 → 歌单结果卡片（挂到对应消息下）+ 面板同步；无卡片场景退回 toast
@@ -3814,8 +3843,9 @@ function musicPlayerRender() {
   ov.querySelector('.mp-title').textContent = (cur && cur.name) || '未在播放';
   ov.querySelector('.mp-sub').textContent = (cur && cur.artist) || '';
   ov.querySelector('.mp-repeat').classList.toggle('active', musicRepeat !== 'off');
-  ov.querySelector('.mp-repeat').textContent = musicRepeat === 'one' ? '🔂' : '🔁';
+  ov.querySelector('.mp-repeat').textContent = (musicRepeat === 'one' ? '🔂 单曲' : (musicRepeat === 'all' ? '🔁 列表' : '🔁 顺序')) + '循环';
   ov.querySelector('.mp-shuffle').classList.toggle('active', musicShuffle);
+  ov.querySelector('.mp-shuffle').textContent = '🔀 随机';
   ov.querySelector('.mp-queue-count').textContent = musicQueue.length;
   musicPlayerUpdatePlayBtn();
 }
