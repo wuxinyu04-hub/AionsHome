@@ -73,6 +73,7 @@ _PROVIDER_ERROR_PREFIXES = (
     "[硅基流动错误",
     "[中转站错误",
     "[自定义中转站错误",
+    "[anthropic",
     "[gemini错误",
     "[geminicli错误",
     "[antigravitycli错误",
@@ -782,6 +783,156 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
                         yield delta["content"]
                 except Exception as e:
                     log.warning("自定义中转站流式 chunk 解析失败，已跳过该 chunk: %s", e)
+
+# ── Anthropic 原生格式（Claude 中转站）──────────────
+ANTHROPIC_API_VERSION = "2023-06-01"
+# Anthropic 的 max_tokens 必填；主聊天默认 None、前端"不限"传 0，都会落进这一兜底。
+# 取 8192 对齐哄睡剧本的 token 预算，避免音乐连发 / 长剧本 / 长文案在 1024 被静默钳断。
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
+
+
+def _anthropic_messages_url(base_url: str) -> str:
+    """把用户填的 Base URL 规整成 Anthropic /v1/messages 端点。"""
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if not re.match(r"^https?://", base, re.IGNORECASE):
+        scheme = "http" if re.match(r"^(localhost|127\.|0\.0\.0\.0|192\.168\.|10\.)", base) else "https"
+        base = f"{scheme}://{base}"
+    if base.endswith("/v1/messages"):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/messages"
+    return f"{base}/v1/messages"
+
+
+def build_anthropic_messages(history: list) -> tuple[str, list]:
+    """把项目内 OpenAI 风格历史记录转成 Anthropic Messages 格式。
+
+    返回 (system_text, messages)：system 提示抽成顶层字段（Anthropic 没有 system 角色），
+    messages 只含 user/assistant 且相邻同角色合并、以 user 开头（Anthropic 要求严格交替）。
+    """
+    system_parts: list[str] = []
+    out: list[dict] = []
+    for m in history:
+        role = m.get("role")
+        if role == "system":
+            text = (m.get("content") or "").strip()
+            if text:
+                system_parts.append(text)
+            continue
+        if role not in ("user", "assistant"):
+            continue
+        content = m.get("content") or ""
+        attachments = m.get("attachments", [])
+        if isinstance(attachments, str):
+            try:
+                attachments = json.loads(attachments) if attachments else []
+            except Exception as e:
+                log.debug("Anthropic 消息附件 JSON 解析失败，按无附件处理: %s", e)
+                attachments = []
+        blocks: list[dict] = []
+        if content:
+            blocks.append({"type": "text", "text": content})
+        if role == "user":
+            for att in attachments:
+                fpath = _resolve_attachment_path(att)
+                if not fpath or not fpath.exists():
+                    continue
+                mime = mimetypes.guess_type(str(fpath))[0] or "application/octet-stream"
+                if mime.startswith("image/"):
+                    b64 = base64.b64encode(fpath.read_bytes()).decode()
+                    blocks.append({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": mime, "data": b64},
+                    })
+                else:
+                    blocks.append({"type": "text", "text": f"[附件未内联: {fpath.name} ({mime})]"})
+        if not blocks:
+            continue
+        if len(blocks) == 1 and blocks[0]["type"] == "text":
+            out.append({"role": role, "content": blocks[0]["text"]})
+        else:
+            out.append({"role": role, "content": blocks})
+    merged: list[dict] = []
+    for msg in out:
+        if merged and merged[-1]["role"] == msg["role"]:
+            prev = merged[-1]
+            if isinstance(prev["content"], str) and isinstance(msg["content"], str):
+                prev["content"] = f"{prev['content']}\n{msg['content']}"
+            else:
+                prev_blocks = prev["content"] if isinstance(prev["content"], list) else [{"type": "text", "text": prev["content"]}]
+                msg_blocks = msg["content"] if isinstance(msg["content"], list) else [{"type": "text", "text": msg["content"]}]
+                prev["content"] = prev_blocks + msg_blocks
+        else:
+            merged.append(dict(msg))
+    if merged and merged[0]["role"] == "assistant":
+        merged.insert(0, {"role": "user", "content": "（继续）"})
+    return "\n\n".join(system_parts), merged
+
+
+async def call_anthropic(messages: list, cfg: dict, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None):
+    model = (cfg.get("model") or "").strip()
+    url = _anthropic_messages_url(cfg.get("base_url", ""))
+    if not url or not model:
+        yield "[Anthropic线路错误] 缺少 API 地址或模型名称"
+        return
+    headers = {"Content-Type": "application/json", "anthropic-version": ANTHROPIC_API_VERSION}
+    api_key = (cfg.get("api_key") or "").strip()
+    if api_key:
+        headers["x-api-key"] = api_key
+    system_text, api_messages = build_anthropic_messages(messages)
+    payload = {
+        "model": model,
+        "messages": api_messages,
+        "stream": True,
+        # Anthropic 的 max_tokens 必填且必须 >0
+        "max_tokens": max_tokens if max_tokens and max_tokens > 0 else _ANTHROPIC_DEFAULT_MAX_TOKENS,
+    }
+    if system_text:
+        payload["system"] = system_text
+    if temperature is not None:
+        payload["temperature"] = temperature
+    async with _make_http_client(url) as client:
+        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+            if resp.status_code != 200:
+                body = await resp.aread()
+                _err = _decode_relay_body(body)
+                yield _err or f"[HTTP {resp.status_code}] 请求失败且响应体为空——请检查 base_url/网络"
+                return
+            async for line in resp.aiter_lines():
+                data = _openai_sse_data(line)
+                if data is None:
+                    continue
+                try:
+                    event = json.loads(data)
+                except Exception:
+                    continue
+                etype = event.get("type")
+                if etype == "content_block_delta":
+                    delta = event.get("delta") or {}
+                    dtype = delta.get("type")
+                    if dtype == "text_delta" and delta.get("text"):
+                        yield delta["text"]
+                    elif dtype == "thinking_delta" and delta.get("thinking"):
+                        if meta is not None:
+                            meta["reasoning_content"] = meta.get("reasoning_content", "") + str(delta["thinking"])
+                elif etype == "message_start":
+                    usage = (event.get("message") or {}).get("usage") or {}
+                    if meta is not None and usage.get("input_tokens"):
+                        meta["prompt_tokens"] = usage.get("input_tokens", 0)
+                elif etype == "message_delta":
+                    usage = event.get("usage") or {}
+                    if meta is not None and usage.get("output_tokens"):
+                        meta["completion_tokens"] = usage.get("output_tokens", 0)
+                        meta["total_tokens"] = (meta.get("prompt_tokens") or 0) + usage.get("output_tokens", 0)
+                        meta["raw"] = usage
+                elif etype == "error":
+                    err = event.get("error") or {}
+                    yield f"[Anthropic错误] {err.get('message') or err}"
+                    return
+                elif etype == "message_stop":
+                    return
 
 # ── Gemini CLI ────────────────────────────────────
 def _find_gemini_script() -> str | None:
@@ -2294,6 +2445,9 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
                 yield chunk
         elif cfg["provider"] == "custom_openai":
             async for chunk in call_custom_openai(normalized, cfg, meta, temperature, max_tokens):
+                yield chunk
+        elif cfg["provider"] == "anthropic":
+            async for chunk in call_anthropic(normalized, cfg, meta, temperature, max_tokens):
                 yield chunk
         elif cfg["provider"] == "gemini_cli":
             async for chunk in call_gemini_cli(normalized, cfg["model"], meta, temperature, max_tokens):

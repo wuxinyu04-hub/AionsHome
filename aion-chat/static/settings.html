@@ -613,7 +613,7 @@ body[data-theme="light"] .avatar-preview {
         <span class="summary-chevron">›</span>
       </summary>
       <div class="card-body">
-        <p class="hint">Base URL 可填根域名、<code>/v1</code> 或 <code>/v3</code>（如火山方舟 <code>api/coding/v3</code>）；显示名会进入模型列表。</p>
+        <p class="hint">每条线路可选 <strong>OpenAI 兼容</strong> 或 <strong>Anthropic 原生</strong> 格式（后者走 <code>/v1/messages</code> + <code>x-api-key</code>，适合 Claude 中转站）。OpenAI 格式的 Base URL 可填根域名、<code>/v1</code> 或 <code>/v3</code>（如火山方舟 <code>api/coding/v3</code>）；显示名会进入模型列表。</p>
         <div id="customRoutesList" class="route-list"></div>
         <div class="section-actions">
           <button class="action-btn add" type="button" onclick="addCustomRoute()">＋ 添加线路</button>
@@ -917,7 +917,7 @@ function newCustomModel() {
 }
 
 function newCustomRoute() {
-  return { id: makeRouteId(), name: "", base_url: "", api_key: "", models: [newCustomModel()], collapsed: false };
+  return { id: makeRouteId(), name: "", base_url: "", api_key: "", format: "openai", models: [newCustomModel()], collapsed: false };
 }
 
 function currentRouteCollapsedState() {
@@ -938,6 +938,7 @@ function normalizeRoutesForUi(routes, collapsedState) {
       name: route.name || "",
       base_url: route.base_url || "",
       api_key: route.api_key || "",
+      format: route.format || "openai",
       collapsed: hasSavedState ? !!collapsedState[id] : true,
       models: Array.isArray(route.models) && route.models.length
         ? route.models.map(function(model) {
@@ -1001,12 +1002,19 @@ function renderCustomRoutes() {
               '<input class="form-input" type="text" value="' + escAttr(route.name) + '" placeholder="例：红豆沙 / 冰可乐 / OpenRouter" oninput="updateCustomRoute(' + routeIndex + ', \'name\', this.value)">' +
             '</label>' +
             '<label class="route-field">' +
+              '<span>接口格式</span>' +
+              '<select class="form-input" onchange="updateCustomRoute(' + routeIndex + ', \'format\', this.value); renderCustomRoutes()">' +
+                '<option value="openai" ' + (route.format !== "anthropic" ? "selected" : "") + '>OpenAI 兼容</option>' +
+                '<option value="anthropic" ' + (route.format === "anthropic" ? "selected" : "") + '>Anthropic 原生</option>' +
+              '</select>' +
+            '</label>' +
+            '<label class="route-field">' +
               '<span>Base URL</span>' +
-              '<input class="form-input mono-input" type="text" value="' + escAttr(route.base_url) + '" placeholder="https://example.com 或 https://example.com/v1" oninput="updateCustomRoute(' + routeIndex + ', \'base_url\', this.value)">' +
+              '<input class="form-input mono-input" type="text" value="' + escAttr(route.base_url) + '" placeholder="' + (route.format === "anthropic" ? "https://example.com（根域名或 /v1，自动拼 /v1/messages）" : "https://example.com 或 https://example.com/v1") + '" oninput="updateCustomRoute(' + routeIndex + ', \'base_url\', this.value)">' +
             '</label>' +
             '<label class="route-field">' +
               '<span>API Key</span>' +
-              '<input class="form-input mono-input" type="text" value="' + escAttr(route.api_key) + '" placeholder="可留空；填写后作为 Bearer Token" oninput="updateCustomRoute(' + routeIndex + ', \'api_key\', this.value)">' +
+              '<input class="form-input mono-input" type="text" value="' + escAttr(route.api_key) + '" placeholder="' + (route.format === "anthropic" ? "x-api-key 的 Key" : "可留空；填写后作为 Bearer Token") + '" oninput="updateCustomRoute(' + routeIndex + ', \'api_key\', this.value)">' +
             '</label>' +
           '</div>' +
           '<div class="route-models">' +
@@ -1096,6 +1104,7 @@ function collectCustomRoutes() {
       name: name || "自定义线路 " + (routeIndex + 1),
       base_url: baseUrl,
       api_key: apiKey,
+      format: route.format === "anthropic" ? "anthropic" : "openai",
       models: models
     });
   });

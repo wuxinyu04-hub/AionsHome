@@ -127,12 +127,12 @@ def build_portable_routes(
                 model_key=model_key,
                 model_config=config,
             )
-        elif provider == "custom_openai":
+        elif provider in ("custom_openai", "anthropic"):
             _upsert_chat_route(
                 routes,
                 route_id=str(config.get("route_id") or model_key),
                 label=str(config.get("route_name") or model_key),
-                provider="custom_openai",
+                provider=provider,
                 base_url=str(config.get("base_url") or ""),
                 api_key=str(config.get("api_key") or ""),
                 model_key=model_key,
@@ -143,6 +143,11 @@ def build_portable_routes(
         if not isinstance(raw_route, dict):
             continue
         route_id = str(raw_route.get("id") or f"custom-{index}")
+        route_provider = (
+            "anthropic"
+            if str(raw_route.get("format") or "").strip() == "anthropic"
+            else "custom_openai"
+        )
         for raw_model in raw_route.get("models") or []:
             if isinstance(raw_model, str):
                 model_key = raw_model
@@ -163,7 +168,7 @@ def build_portable_routes(
                 routes,
                 route_id=route_id,
                 label=str(raw_route.get("name") or f"Cloud route {index}"),
-                provider="custom_openai",
+                provider=route_provider,
                 base_url=str(raw_route.get("base_url") or ""),
                 api_key=str(raw_route.get("api_key") or ""),
                 model_key=model_key,

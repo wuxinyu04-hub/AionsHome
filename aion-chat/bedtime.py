@@ -857,16 +857,19 @@ def _script_model_candidates() -> list[str]:
             seen.add(sig)
 
     # 1) 配了 key 的 API 供应方（不含 code 特化模型）。
-    #    custom_openai 的 key 可能在路由级 cfg['api_key']（如 CPA 本地代理、火山引擎），不止全局 key。
+    #    custom_openai / anthropic 的 key 在路由级 cfg['api_key']（如 CPA 本地代理、火山引擎、Claude 中转站），不止全局 key。
     def _has_key(prov: str, cfg: dict) -> bool:
         if prov == "custom_openai":
             return bool(cfg.get("api_key") or get_key("custom_openai"))
+        if prov == "anthropic":
+            # Anthropic 原生接口要求 x-api-key，只会是路由级 config 里的 key
+            return bool(cfg.get("api_key"))
         return bool(get_key(prov))
 
     api_cands: list[tuple[str, dict]] = []
     for key, cfg in MODELS.items():
         prov = cfg.get("provider")
-        if prov in ("siliconflow", "custom_openai") and _has_key(prov, cfg) \
+        if prov in ("siliconflow", "custom_openai", "anthropic") and _has_key(prov, cfg) \
                 and "code" not in (cfg.get("model") or "").lower():
             api_cands.append((key, cfg))
     # 用户偏好 Gemini 文风：模型名带 gemini 的兜底排最前（如 CPA 路由的 gemini-3.6）

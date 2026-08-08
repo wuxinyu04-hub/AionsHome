@@ -21,7 +21,7 @@ router = APIRouter()
 
 log = logging.getLogger("settings.fishaudio")
 
-RELAY_MODEL_PROVIDERS = {"aipro", "custom_openai"}
+RELAY_MODEL_PROVIDERS = {"aipro", "custom_openai", "anthropic"}
 
 # ── 密钥打码 ──────────────────────────────────────
 # GET /api/settings 不再外发明文密钥：明文字段返回打码值，前端原样回传时

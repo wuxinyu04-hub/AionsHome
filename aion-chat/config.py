@@ -311,6 +311,7 @@ def normalize_custom_model_routes(value) -> list[dict]:
             route_id = f"{route_id}_{idx}"
         seen_route_ids.add(route_id)
         route_name = _clean_text(item.get("name")) or f"自定义线路 {idx}"
+        route_format = "anthropic" if (_clean_text(item.get("format")) == "anthropic") else "openai"
         models: list[dict] = []
         for raw_model in raw_models:
             if isinstance(raw_model, str):
@@ -342,6 +343,7 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 "name": route_name,
                 "base_url": base_url,
                 "api_key": api_key,
+                "format": route_format,
                 "models": models,
             })
     return routes
@@ -380,17 +382,21 @@ def refresh_custom_models() -> None:
     MODELS.clear()
     MODELS.update(BUILTIN_MODELS)
     for route in normalize_custom_model_routes(SETTINGS.get("custom_model_routes")):
+        route_format = route.get("format", "openai")
+        provider = "anthropic" if route_format == "anthropic" else CUSTOM_OPENAI_PROVIDER
         for item in route.get("models", []):
             key = item["key"]
             MODELS[key] = {
-                "provider": CUSTOM_OPENAI_PROVIDER,
+                "provider": provider,
                 "model": item["model"],
                 "vision": bool(item.get("vision", True)),
-                "audio": item.get("audio") is True,
+                # Anthropic 原生接口不内联音频
+                "audio": False if route_format == "anthropic" else item.get("audio") is True,
                 "base_url": route["base_url"],
                 "api_key": route.get("api_key", ""),
                 "route_id": route["id"],
                 "route_name": route["name"],
+                "format": route_format,
             }
     # Antigravity(agy) 模型：扁平列表，走本地 OAuth。
     # 若显示名与内置/自定义线路重名则跳过，避免覆盖既有 provider。
