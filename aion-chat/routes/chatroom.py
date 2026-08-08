@@ -1497,6 +1497,19 @@ def _resolve_connor_model(model_key: str | None = None) -> str:
     return "Codex"
 
 
+def _resolve_aion_model(model_key: str | None = None) -> str:
+    """温叙远模型兜底：与 connor 对称，body.model 无效时落到配置 aion_model / DEFAULT_MODEL。"""
+    requested = (model_key or "").strip()
+    if requested and requested in MODELS:
+        return requested
+    configured = (load_chatroom_config().get("aion_model") or "").strip()
+    if configured and configured in MODELS:
+        return configured
+    if configured:
+        return configured
+    return DEFAULT_MODEL
+
+
 async def _stream_connor_model(messages: list[dict], model_key: str | None = None, meta: dict | None = None):
     """Connor 默认走 Codex CLI；选择其他模型时复用统一模型线路。"""
     key = _resolve_connor_model(model_key)
@@ -2778,7 +2791,7 @@ async def send_message(room_id: str, body: MsgSend):
 
     room_type = room["type"]
     await record_chatroom_active(room_id, room_type)
-    model_key = body.model
+    model_key = _resolve_aion_model(body.model)
     connor_model_key = _resolve_connor_model(body.connor_model)
 
     # ── 更新用户最后活跃窗口追踪 ──
@@ -2847,7 +2860,7 @@ async def reply_once(room_id: str, body: ReplyOnceTrigger):
 
     context_limit = room.get("context_minutes", 30)
     query_text = msgs[-1]["content"] if msgs else ""
-    model_key = body.model
+    model_key = _resolve_aion_model(body.model)
     connor_model_key = _resolve_connor_model(body.connor_model)
 
     _q: asyncio.Queue = asyncio.Queue()
@@ -3055,7 +3068,7 @@ async def edit_resend_chatroom_message(msg_id: str, body: MsgEditResend):
 
     room_type = room["type"]
     await record_chatroom_active(room_id, room_type)
-    model_key = body.model
+    model_key = _resolve_aion_model(body.model)
     connor_model_key = _resolve_connor_model(body.connor_model)
     context_limit = room.get("context_minutes", 30)
     if room_type == "group":
@@ -3133,7 +3146,7 @@ async def regenerate_chatroom_message(msg_id: str, body: MsgRegenerate):
 
     context_limit = room.get("context_minutes", 30)
     query_text = msgs[-1]["content"] if msgs else ""
-    model_key = body.model
+    model_key = _resolve_aion_model(body.model)
     connor_model_key = _resolve_connor_model(body.connor_model)
     _q: asyncio.Queue = asyncio.Queue()
 
@@ -3518,7 +3531,7 @@ async def trigger_ai_chat(room_id: str, body: AiChatTrigger):
         return {"error": "房间不存在"}
 
     max_rounds = body.rounds or room.get("ai_chat_rounds", 1)
-    model_key = body.model
+    model_key = _resolve_aion_model(body.model)
     connor_model_key = _resolve_connor_model(body.connor_model)
     context_limit = room.get("context_minutes", 30)
     tts_enabled = body.tts_enabled

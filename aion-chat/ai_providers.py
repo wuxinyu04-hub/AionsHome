@@ -569,7 +569,10 @@ def build_gemini_contents(history: list, *, include_audio: bool = False):
 # ── 硅基流动 ──────────────────────────────────────
 async def call_siliconflow(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None):
     url = "https://api.siliconflow.cn/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {get_key('siliconflow')}", "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    _sf_key = get_key('siliconflow')
+    if _sf_key:
+        headers["Authorization"] = f"Bearer {_sf_key}"
     api_messages = build_multimodal_messages(messages)
     payload = {"model": model, "messages": api_messages, "stream": True,
                "stream_options": {"include_usage": True}}
@@ -666,7 +669,10 @@ async def call_gemini(messages: list, model: str, meta: dict | None = None, temp
 # ── AiPro 中转站  ────────────────────────────────────────https://vip.aipro.love
 async def call_aipro(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None):
     url = "https://shufulei.net/v1/chat/completions"	
-    headers = {"Authorization": f"Bearer {get_key('aipro')}", "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    _ap_key = get_key('aipro')
+    if _ap_key:
+        headers["Authorization"] = f"Bearer {_ap_key}"
     api_messages = build_multimodal_messages(messages)
     payload = {"model": model, "messages": api_messages, "stream": True}
     if temperature is not None:
