@@ -171,7 +171,9 @@ def _fetch_cached(key, fetch_fn, refresh=False):
         if cached is not None:
             return cached
         data = fetch_fn()
-        _lib_put(key, data)
+        # 空结果（瞬时 weapi 失败/未登录）不缓存，否则一次抖动卡满 TTL
+        if data:
+            _lib_put(key, data)
         return data
 
 
