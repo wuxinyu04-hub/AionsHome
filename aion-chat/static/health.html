@@ -305,10 +305,26 @@
     </div>
 
     <div class="health-tab-panel" id="healthTabRing" role="tabpanel" aria-labelledby="tabRing">
+      <section class="section" id="miBandCloudSection" style="display:none">
+        <div class="section-head">
+          <div>
+            <div class="section-title" id="miBandCloudTitle">Redmi Smart Band 2 · 小米云</div>
+            <div class="muted" id="miBandCloudMeta">云同步正常</div>
+          </div>
+        </div>
+        <div class="status-row">
+          <span class="status-dot on" id="miBandCloudDot"></span>
+          <span id="miBandCloudStatus">云同步正常</span>
+        </div>
+        <div class="mi-band-actions">
+          <button class="action-btn primary" id="miBandCloudSyncButton" type="button" onclick="miBandCloudSyncNow()">立即同步</button>
+        </div>
+      </section>
+
       <section class="section" id="miBandConnectionSection">
         <div class="section-head">
           <div>
-            <div class="section-title">小米手环 7</div>
+            <div class="section-title"><span id="miBandTitle">小米手环 7</span></div>
             <div class="muted" id="miBandConnectionMeta">等待手机连接</div>
           </div>
           <span class="muted" id="miBandBattery">电量 --</span>
@@ -376,12 +392,20 @@
         </div>
         <div class="mi-band-summary">
           <div class="mi-band-summary-item"><div class="vital-label">最新心率</div><div class="mi-band-summary-value" id="miBandLatestHeart">-- bpm</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">下次同步</div><div class="mi-band-summary-value" id="miBandNextSync">--</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">心率时间</div><div class="mi-band-summary-value" id="miBandHeartTime">--</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">日均心率</div><div class="mi-band-summary-value" id="miBandDailyAvgHeart">-- bpm</div></div>
           <div class="mi-band-summary-item"><div class="vital-label">今日步数</div><div class="mi-band-summary-value" id="miBandTodaySteps">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">活动分钟</div><div class="mi-band-summary-value" id="miBandActivityMinutes">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">最近30分钟</div><div class="mi-band-summary-value" id="miBandRecent30">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">最近60分钟</div><div class="mi-band-summary-value" id="miBandRecent60">--</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">云端更新</div><div class="mi-band-summary-value" id="miBandCloudUpdated">--</div></div>
+          <div class="mi-band-summary-item ble-only"><div class="vital-label">下次同步</div><div class="mi-band-summary-value" id="miBandNextSync">--</div></div>
+          <div class="mi-band-summary-item ble-only"><div class="vital-label">活动分钟</div><div class="mi-band-summary-value" id="miBandActivityMinutes">--</div></div>
+          <div class="mi-band-summary-item ble-only"><div class="vital-label">最近30分钟</div><div class="mi-band-summary-value" id="miBandRecent30">--</div></div>
+          <div class="mi-band-summary-item ble-only"><div class="vital-label">最近60分钟</div><div class="mi-band-summary-value" id="miBandRecent60">--</div></div>
         </div>
+        <div class="mi-band-actions" id="aionBandNotifyBox" style="margin:12px 0 4px">
+          <input id="aionBandMessage" type="text" maxlength="40" placeholder="发到手环的消息，如：洗手吃饭啦小傻瓜" style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;outline:none">
+          <button class="save-btn" type="button" onclick="aionNotifyBand()">发送到手环</button>
+        </div>
+        <div class="muted" style="margin:0 0 12px;font-size:12px">链路：系统通知 → 小米运动健康 App → 手环</div>
         <div class="sleep-box">
           <div class="sleep-main">
             <div><div class="vital-label">最近睡眠</div><div class="sleep-total" id="miBandSleepTotal">--</div></div>
@@ -835,6 +859,16 @@ function miBandVibrate(pattern) {
   window.AionMiBand.vibrate(pattern);
 }
 
+function aionNotifyBand() {
+  const input = $('aionBandMessage');
+  if (!window.AionNotify) return showToast('当前 APK 没有通知桥，需安装最新版 AionApp');
+  const text = (input.value || '').trim();
+  if (!text) return showToast('先输入要发到手环的内容');
+  window.AionNotify.show('Aion', text);
+  logMiBand(`已发送到手环：${text}`);
+  showToast('已发系统通知 → 小米运动健康 → 手环');
+}
+
 function logMiBand(message) {
   const log = $('miBandLog');
   if (!log) return;
@@ -855,32 +889,66 @@ function renderMiBandSamples(items) {
     list.innerHTML = '<div class="heart-history-empty">暂无心率记录</div>';
     return;
   }
+  const deviceLabel = item => item.source === 'mi_cloud' ? '小米云' : '小米手环7';
   list.innerHTML = rows.map(item => `<div class="heart-history-item">
     <div><div class="heart-history-time">${fmtHeartTime(item.measured_at)}</div>
-    <div class="heart-history-meta">小米手环${item.steps != null ? ` · ${item.steps} 步` : ''}</div></div>
+    <div class="heart-history-meta">${deviceLabel(item)}${item.steps != null ? ` · ${item.steps} 步` : ''}</div></div>
     <div class="heart-history-bpm">${item.heart_rate || '--'} bpm</div>
   </div>`).join('');
+}
+
+function applyMiBandMode(cloudMode) {
+  const cloud = document.getElementById('miBandCloudSection');
+  if (cloud) cloud.style.display = cloudMode ? '' : 'none';
+  ['miBandConnectionSection', 'miBandScheduleSection', 'miBandRealtimeSection', 'miBandAdvanced'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = cloudMode ? 'none' : '';
+  });
+  document.querySelectorAll('.cloud-only').forEach(el => { el.style.display = cloudMode ? '' : 'none'; });
+  document.querySelectorAll('.ble-only').forEach(el => { el.style.display = cloudMode ? 'none' : ''; });
 }
 
 function renderMiBandSummary(summary) {
   healthState.miBand = summary || null;
   const value = summary || {};
+  const cloudMode = value.mode === 'mi_cloud';
+  applyMiBandMode(cloudMode);
   $('miBandTodaySteps').textContent = Number(value.todaySteps || 0).toLocaleString('zh-CN');
   $('miBandActivityMinutes').textContent = `${Number(value.activityMinutes || 0)} 分钟`;
   $('miBandRecent30').textContent = `${Number(value.recent30ActivityMinutes || 0)} 分钟 · ${Number(value.recent30Steps || 0)} 步`;
   $('miBandRecent60').textContent = `${Number(value.recent60ActivityMinutes || 0)} 分钟 · ${Number(value.recent60Steps || 0)} 步`;
   $('miBandLatestHeart').textContent = Number(value.latestHeartRate) > 0
     ? `${value.latestHeartRate} bpm` : '-- bpm';
+  if (cloudMode) {
+    $('miBandCloudTitle').textContent = value.sourceLabel || 'Redmi Smart Band 2 · 小米云';
+    $('miBandCloudMeta').textContent = Number(value.lastSyncAt) > 0 ? `上次同步 ${fmtTime(value.lastSyncAt)}` : '等待云端同步';
+    $('miBandHeartTime').textContent = Number(value.latestHeartRateAt) > 0 ? fmtTime(value.latestHeartRateAt) : '--';
+    $('miBandDailyAvgHeart').textContent = Number(value.dailyAverageHeartRate) > 0 ? `${value.dailyAverageHeartRate} bpm` : '-- bpm';
+    $('miBandCloudUpdated').textContent = Number(value.cloudUpdatedAt) > 0 ? fmtTime(value.cloudUpdatedAt) : '--';
+  }
   const sleep = value.sleep;
   if (sleep) {
-    $('miBandSleepTotal').textContent = fmtMin(Number(sleep.totalMin || 0));
-    const primaryLabel = sleep.kind === 'nap' ? '小睡' : '主睡眠';
-    $('miBandSleepRange').textContent = `${primaryLabel} ${fmtTime(sleep.startAt)} - ${fmtTime(sleep.endAt)}`;
-    $('miBandSleepMeta').textContent = `深睡 ${sleep.deepMin || 0}m · 浅睡 ${sleep.lightMin || 0}m · REM ${sleep.remMin || 0}m`;
-    $('miBandSleepSessions').innerHTML = (sleep.sessions || []).map(session => {
-      const label = session.kind === 'nap' ? '小睡' : '主睡眠';
-      return `<div class="sleep-session-item"><strong>${label}</strong><span>${fmtTime(session.startAt)} - ${fmtTime(session.endAt)} · ${fmtMin(Number(session.totalMin || 0))}</span></div>`;
-    }).join('');
+    const total = Number(sleep.totalMin || 0);
+    $('miBandSleepTotal').textContent = total > 0 ? fmtMin(total) : '--';
+    if (cloudMode && sleep.precision === 'daily') {
+      const parts = [];
+      if (sleep.sleepDate) parts.push(`日期 ${sleep.sleepDate}`);
+      const segs = [];
+      if (Number(sleep.deepMin) > 0) segs.push(`深睡 ${sleep.deepMin}m`);
+      if (Number(sleep.lightMin) > 0) segs.push(`浅睡 ${sleep.lightMin}m`);
+      if (Number(sleep.remMin) > 0) segs.push(`REM ${sleep.remMin}m`);
+      $('miBandSleepRange').textContent = parts.join(' · ') || '暂无睡眠';
+      $('miBandSleepMeta').textContent = segs.length ? segs.join(' · ') : '云端仅提供睡眠总时长';
+      $('miBandSleepSessions').innerHTML = '';
+    } else {
+      const primaryLabel = sleep.kind === 'nap' ? '小睡' : '主睡眠';
+      $('miBandSleepRange').textContent = `${primaryLabel} ${fmtTime(sleep.startAt)} - ${fmtTime(sleep.endAt)}`;
+      $('miBandSleepMeta').textContent = `深睡 ${sleep.deepMin || 0}m · 浅睡 ${sleep.lightMin || 0}m · REM ${sleep.remMin || 0}m`;
+      $('miBandSleepSessions').innerHTML = (sleep.sessions || []).map(session => {
+        const label = session.kind === 'nap' ? '小睡' : '主睡眠';
+        return `<div class="sleep-session-item"><strong>${label}</strong><span>${fmtTime(session.startAt)} - ${fmtTime(session.endAt)} · ${fmtMin(Number(session.totalMin || 0))}</span></div>`;
+      }).join('');
+    }
   } else {
     $('miBandSleepTotal').textContent = '--';
     $('miBandSleepRange').textContent = '暂无手环睡眠';
@@ -890,9 +958,30 @@ function renderMiBandSummary(summary) {
   const recent = (value.recentHeartRates || []).map(item => {
     let raw = {};
     try { raw = typeof item.raw_json === 'string' ? JSON.parse(item.raw_json || '{}') : (item.raw || {}); } catch (e) {}
-    return { ...raw, heart_rate: item.heart_rate, measured_at: item.measured_at };
+    return { ...raw, heart_rate: item.heart_rate, measured_at: item.measured_at, source: item.source };
   });
   renderMiBandSamples(recent);
+}
+
+async function miBandCloudSyncNow() {
+  const btn = $('miBandCloudSyncButton');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = '同步中…';
+  try {
+    const res = await api('POST', '/api/health/mi-band/cloud-sync');
+    if (!res || res.ok === false) {
+      showToast((res && res.error) || '云端同步失败');
+      return;
+    }
+    if (res.miBand) renderMiBandSummary(res.miBand);
+    showToast('云端同步完成');
+  } catch (e) {
+    showToast('同步失败：' + (e.message || String(e)));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '立即同步';
+  }
 }
 
 function todayStr() {
