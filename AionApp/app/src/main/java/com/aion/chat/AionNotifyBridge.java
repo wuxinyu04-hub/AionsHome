@@ -47,11 +47,11 @@ public final class AionNotifyBridge {
     }
 
     @JavascriptInterface
-    public void show(String title, String text) {
+    public boolean show(String title, String text) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
-            return;
+            return false;
         }
         NotificationCompat.Builder b = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_email)
@@ -62,7 +62,10 @@ public final class AionNotifyBridge {
                 .setAutoCancel(true);
         try {
             NotificationManagerCompat.from(context).notify(NOTIFY_ID, b.build());
-        } catch (SecurityException ignored) {}
+            return true;
+        } catch (SecurityException ignored) {
+            return false;
+        }
     }
 
     @JavascriptInterface

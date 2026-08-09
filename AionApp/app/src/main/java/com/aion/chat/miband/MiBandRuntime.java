@@ -250,8 +250,18 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
             since.setTimeInMillis(syncStart);
             List<MiBandProtocol.ActivitySample> activity = session.fetchActivity(since);
             SampleSink sink = sampleSink;
+            String uploadError = null;
             if (sink != null && !activity.isEmpty()) {
-                sink.upload(deviceName(), activity);
+                try {
+                    sink.upload(deviceName(), activity);
+                } catch (Exception uploadFailure) {
+                    // 上传失败（如服务端 401/网络抖动）不能跳过游标推进：否则下一轮
+                    // 又从同一时间点重拉同样的数据、再次上传失败，形成无限重传，且
+                    // 手环持续产数据会让每批越来越大、白白消耗 BLE 与电量。
+                    // 记一次错误，游标照常前进，丢掉这批已拉取的样本（BLE 历史不可
+                    // 重放，但换取增量同步持续向前）。
+                    uploadError = safeMessage(uploadFailure);
+                }
             }
             long nextCursor = MiBandHistoryParser.nextCursor(syncStart, activity);
             preferences.edit()
@@ -261,7 +271,8 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
             lastSamples = activity;
             lastSyncAt = System.currentTimeMillis();
             state = "ready";
-            error = "";
+            // 上传失败时仍结束同步态（游标已推进），但保留错误让前端可见
+            error = uploadError != null ? uploadError : "";
             syncing = false;
             updateNextSyncAt();
             publishSamples(activity);

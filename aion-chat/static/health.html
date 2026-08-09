@@ -405,7 +405,7 @@
           <input id="aionBandMessage" type="text" maxlength="40" placeholder="发到手环的消息，如：洗手吃饭啦小傻瓜" style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;outline:none">
           <button class="save-btn" type="button" onclick="aionNotifyBand()">发送到手环</button>
         </div>
-        <div class="muted" style="margin:0 0 12px;font-size:12px">链路：系统通知 → 小米运动健康 App → 手环</div>
+        <div class="muted" style="margin:0 0 12px;font-size:12px">链路：系统通知 → Gadgetbridge 转发 → 手环</div>
         <div class="sleep-box">
           <div class="sleep-main">
             <div><div class="vital-label">最近睡眠</div><div class="sleep-total" id="miBandSleepTotal">--</div></div>
@@ -701,6 +701,9 @@ function initMiBand() {
 
 function renderMiBandStatus(status) {
   miBandState = status || {};
+  // 云模式下 BLE 状态元素全部隐藏，且同步数据/最新心率由 renderMiBandSummary
+  // 负责渲染；若继续往下写会用 BLE 缓存（可能是上次会话的陈旧心率）覆盖云端值。
+  if (healthState.miBand && healthState.miBand.mode === 'mi_cloud') return;
   const connected = !!status.connected && !!status.authenticated;
   $('miBandDot').classList.toggle('on', connected);
   const labels = {
@@ -864,9 +867,18 @@ function aionNotifyBand() {
   if (!window.AionNotify) return showToast('当前 APK 没有通知桥，需安装最新版 AionApp');
   const text = (input.value || '').trim();
   if (!text) return showToast('先输入要发到手环的内容');
-  window.AionNotify.show('Aion', text);
+  let ok = false;
+  try {
+    ok = window.AionNotify.show('Aion', text);
+  } catch (e) {
+    ok = false;
+  }
+  if (!ok) {
+    return showToast('发送失败：请检查通知权限是否开启');
+  }
   logMiBand(`已发送到手环：${text}`);
-  showToast('已发系统通知 → 小米运动健康 → 手环');
+  showToast('已发系统通知 → Gadgetbridge → 手环');
+  input.value = '';
 }
 
 function logMiBand(message) {
@@ -921,10 +933,20 @@ function renderMiBandSummary(summary) {
     ? `${value.latestHeartRate} bpm` : '-- bpm';
   if (cloudMode) {
     $('miBandCloudTitle').textContent = value.sourceLabel || 'Redmi Smart Band 2 · 小米云';
-    $('miBandCloudMeta').textContent = Number(value.lastSyncAt) > 0 ? `上次同步 ${fmtTime(value.lastSyncAt)}` : '等待云端同步';
+    const hasSync = Number(value.lastSyncAt) > 0;
+    const syncText = hasSync ? `上次同步 ${fmtTime(value.lastSyncAt)}` : '等待云端同步';
+    $('miBandCloudMeta').textContent = syncText;
+    // 数据区"同步数据"标题下的状态行在云模式也可见，复用云端状态
+    $('miBandSyncResult').textContent = syncText;
     $('miBandHeartTime').textContent = Number(value.latestHeartRateAt) > 0 ? fmtTime(value.latestHeartRateAt) : '--';
     $('miBandDailyAvgHeart').textContent = Number(value.dailyAverageHeartRate) > 0 ? `${value.dailyAverageHeartRate} bpm` : '-- bpm';
     $('miBandCloudUpdated').textContent = Number(value.cloudUpdatedAt) > 0 ? fmtTime(value.cloudUpdatedAt) : '--';
+    // 云同步状态灯：最近 15 分钟内有同步视为正常，否则置灰（不是错误，只是数据不是最新）
+    const cloudFresh = hasSync && (Date.now() / 1000 - value.lastSyncAt) < 15 * 60;
+    const cloudDot = $('miBandCloudDot');
+    if (cloudDot) cloudDot.classList.toggle('on', cloudFresh);
+    const cloudStatus = $('miBandCloudStatus');
+    if (cloudStatus) cloudStatus.textContent = cloudFresh ? '云同步正常' : (hasSync ? '云端数据较旧' : '等待云端同步');
   }
   const sleep = value.sleep;
   if (sleep) {

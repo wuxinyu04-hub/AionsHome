@@ -426,9 +426,17 @@ async def insert_heart_rate(
             now,
         ),
     )
+    # 按来源分别保留：云端快照每 5 分钟一条、BLE 分钟采样、戒指实时各成一路，
+    # 全局只留 20 条会让一路（尤其云快照）把其他来源的历史心率挤掉。
     await db.execute(
         "DELETE FROM health_ring_heart_rates "
-        "WHERE id NOT IN (SELECT id FROM health_ring_heart_rates ORDER BY measured_at DESC LIMIT 20)"
+        "WHERE id NOT IN ("
+        "  SELECT id FROM ("
+        "    SELECT id, ROW_NUMBER() OVER ("
+        "      PARTITION BY source ORDER BY measured_at DESC"
+        "    ) AS rn FROM health_ring_heart_rates"
+        "  ) WHERE rn <= 50"
+        ")"
     )
     return {
         "id": entry_id,
@@ -598,7 +606,7 @@ async def build_heart_rate_summary_for_prompt(limit: int = 8) -> str:
             details = json.loads(event.get("details_json") or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
             details = {}
-        if details.get("source") != "mi_band_7":
+        if details.get("source") not in ("mi_band_7", "mi_cloud"):
             continue
         if now - float(event["created_at"]) <= 6 * 3600:
             fresh_events.append(event)

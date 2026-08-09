@@ -267,6 +267,16 @@ async def _do_sync_once() -> dict[str, Any]:
         # 每轮都拉一次最新快照心率（真实采样时间）
         counts["snapshot"] = await _sync_latest_snapshot(client, uid, device_name, now)
 
+    # 清理 45 天前的云日汇总（与 BLE 路径 TTL 对齐），避免只增不删。
+    # 快照心率在 health_ring_heart_rates 里有按源保留策略，不在这里删。
+    async with get_db() as db:
+        await db.execute(
+            "DELETE FROM health_miband_activity "
+            "WHERE source=? AND measured_at < ?",
+            (SOURCE, now - 45 * 86400),
+        )
+        await db.commit()
+
     # 只有整轮成功才标记回填完成；中途异常会抛出，_backfilled 保持 False，下轮补拉。
     _backfilled = True
     return counts

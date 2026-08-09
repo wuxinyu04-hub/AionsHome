@@ -295,6 +295,12 @@ _AUTH_EXEMPT_PREFIXES = (
 # 精确豁免的完整路径（正则匹配，只放行 App 真正需要的那一个 GET/HEAD）
 _AUTH_EXEMPT_PATTERNS = (
     re.compile(r"^/api/diaries/[^/]+/tts/audio$"),
+    # AionApp 原生 OkHttp（MiBandHealthUploader / AionPushService）还不会带
+    # X-Aion-Token，这三个手环端点仅 App 使用，精确放行；cloud-sync / cloud-relatives
+    # 是网页端点（会带 cookie），不豁免，避免亲友 UID 被公网查到。
+    re.compile(r"^/api/health/mi-band/activity-batch$"),
+    re.compile(r"^/api/health/mi-band/commands/pending$"),
+    re.compile(r"^/api/health/mi-band/commands/[^/]+/ack$"),
 )
 
 class AuthMiddleware(BaseHTTPMiddleware):

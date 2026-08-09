@@ -190,6 +190,13 @@ async def enqueue_band_vibration(
             ),
         )
         created = cursor.rowcount > 0
+        # 顺手清理：过期命令 + 已确认且创建超过 7 天的命令，避免表无限增长。
+        await db.execute(
+            "DELETE FROM health_miband_commands "
+            "WHERE expires_at < ? "
+            "   OR (acknowledged_at IS NOT NULL AND created_at < ?)",
+            (created_at, created_at - 7 * 86400),
+        )
         await db.commit()
     return command, created
 
