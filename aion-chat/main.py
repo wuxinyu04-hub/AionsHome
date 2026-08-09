@@ -88,6 +88,7 @@ from memory_compression import migrate_legacy_daily_capsules
 from chatroom import _connor_1v1_auto_digest_loop
 from fund import fund_scheduler
 from autonomy import idle_autonomy_mgr
+from mi_cloud_health import mi_cloud_health_loop
 from persona_evolution import main_ai_persona_evolution_loop, connor_persona_evolution_loop
 from asset_manifest import get_client_asset_manifest
 from home_assistant_events import ha_event_listener
@@ -214,6 +215,7 @@ async def lifespan(app: FastAPI):
     cr_digest_task = asyncio.create_task(_connor_1v1_auto_digest_loop())
     persona_evolution_task = asyncio.create_task(main_ai_persona_evolution_loop())
     connor_persona_evolution_task = asyncio.create_task(connor_persona_evolution_loop())
+    mi_cloud_health_task = asyncio.create_task(mi_cloud_health_loop())
     try:
         idle_autonomy_mgr.start()
     except Exception as e:
@@ -239,6 +241,7 @@ async def lifespan(app: FastAPI):
     persona_evolution_task.cancel()
     cr_digest_task.cancel()
     digest_task.cancel()
+    mi_cloud_health_task.cancel()
     fund_scheduler.stop()
     pc_display_tracker.stop()
     pc_tracker.stop()
