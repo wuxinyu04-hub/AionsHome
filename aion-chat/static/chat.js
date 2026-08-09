@@ -6603,6 +6603,13 @@ function startSilentKeepAlive() {
 
 // ── 系统通知（后台标签也能弹出） ──
 function sendSystemNotification(title, body) {
+  // AionApp 原生桥优先：走 NotificationManager 的系统通知，可被 Gadgetbridge 监听转发到手环
+  try {
+    if (window.AionNotify && typeof window.AionNotify.show === 'function') {
+      window.AionNotify.show(String(title || 'Aion'), String(body || ''));
+      return;
+    }
+  } catch (e) {}
   if (!('Notification' in window)) return;
   if (Notification.permission !== 'granted') return;
   try { new Notification(title, { body, icon: '/public/icon-192.png' }); } catch(e) {}
