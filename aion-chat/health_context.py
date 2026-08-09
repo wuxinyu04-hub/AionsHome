@@ -371,6 +371,77 @@ async def _update_heart_state(db, entry: dict, category: str, events: list[dict]
     )
 
 
+def _valid_heart_rate_value(value) -> bool:
+    return isinstance(value, int) and 20 <= value <= 240
+
+
+async def insert_heart_rate(
+    db,
+    *,
+    device_name: str,
+    heart_rate,
+    measured_at: Optional[float],
+    source: str,
+    raw: Optional[dict] = None,
+) -> Optional[dict]:
+    """写入一条心率到 health_ring_heart_rates（供 BLE mi_band_7 / 云端 mi_cloud 复用）。
+
+    返回新条目 dict；心率无效返回 None。按 (measured_at*1000, heart_rate) 去重，
+    只保留最新 20 条，避免云端每次轮询重复累加。
+    """
+    try:
+        heart_rate = int(heart_rate)
+    except (TypeError, ValueError):
+        return None
+    if not _valid_heart_rate_value(heart_rate):
+        return None
+    now = time.time()
+    measured = float(measured_at) if measured_at else now
+    entry_id = f"hr_{int(measured * 1000)}_{int(heart_rate)}"
+    raw_json = json.dumps(raw or {}, ensure_ascii=False)
+    db.row_factory = aiosqlite.Row
+    cur = await db.execute(
+        "SELECT id, created_at FROM health_ring_heart_rates WHERE id=?",
+        (entry_id,),
+    )
+    existing = await cur.fetchone()
+    is_new = existing is None
+    await db.execute(
+        """
+        INSERT INTO health_ring_heart_rates
+            (id, device_name, heart_rate, measured_at, source, raw_json, created_at)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+            device_name=excluded.device_name,
+            source=excluded.source,
+            raw_json=excluded.raw_json
+        """,
+        (
+            entry_id,
+            (device_name or "").strip(),
+            heart_rate,
+            measured,
+            (source or "").strip()[:40],
+            raw_json,
+            now,
+        ),
+    )
+    await db.execute(
+        "DELETE FROM health_ring_heart_rates "
+        "WHERE id NOT IN (SELECT id FROM health_ring_heart_rates ORDER BY measured_at DESC LIMIT 20)"
+    )
+    return {
+        "id": entry_id,
+        "device_name": (device_name or "").strip(),
+        "heart_rate": heart_rate,
+        "measured_at": measured,
+        "source": (source or "").strip()[:40],
+        "raw_json": raw_json,
+        "created_at": now if is_new else float(existing["created_at"] or now),
+        "is_new": is_new,
+    }
+
+
 async def analyze_heart_rate_entry(db, entry: Optional[dict]) -> list[dict]:
     if not entry or not entry.get("is_new"):
         return []
@@ -466,7 +537,7 @@ async def get_recent_heart_rates(db, limit: int = 8) -> list[dict]:
         """
         SELECT id, device_name, heart_rate, measured_at, source, raw_json, created_at
         FROM health_ring_heart_rates
-        WHERE source='mi_band_7'
+        WHERE source IN ('mi_band_7', 'mi_cloud')
         ORDER BY measured_at DESC LIMIT ?
         """,
         (max(1, min(int(limit or 8), 20)),),

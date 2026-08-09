@@ -6,6 +6,7 @@ import json
 import re
 import time
 from datetime import date, datetime
+from pathlib import Path
 from typing import List, Optional
 
 import aiosqlite
@@ -17,6 +18,7 @@ from health_context import (
     analyze_heart_rate_entry,
     get_heart_config,
     get_heart_events,
+    insert_heart_rate,
     update_heart_config,
 )
 from ws import manager
@@ -141,53 +143,15 @@ async def _insert_heart_rate(
     source: str,
     raw: Optional[dict] = None,
 ):
-    if not _valid_heart_rate(heart_rate):
-        return None
-    now = time.time()
-    measured = measured_at or now
-    entry_id = f"hr_{int(measured * 1000)}_{int(heart_rate)}"
-    raw_json = json.dumps(raw or {}, ensure_ascii=False)
-    db.row_factory = aiosqlite.Row
-    cur = await db.execute(
-        "SELECT id, created_at FROM health_ring_heart_rates WHERE id=?",
-        (entry_id,),
+    # 统一走 health_context 的可复用写入（同一去重/清理逻辑）
+    return await insert_heart_rate(
+        db,
+        device_name=device_name,
+        heart_rate=heart_rate,
+        measured_at=measured_at,
+        source=source,
+        raw=raw,
     )
-    existing = await cur.fetchone()
-    is_new = existing is None
-    await db.execute(
-        """
-        INSERT INTO health_ring_heart_rates
-            (id, device_name, heart_rate, measured_at, source, raw_json, created_at)
-        VALUES (?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET
-            device_name=excluded.device_name,
-            source=excluded.source,
-            raw_json=excluded.raw_json
-        """,
-        (
-            entry_id,
-            (device_name or "").strip(),
-            int(heart_rate),
-            measured,
-            (source or "").strip()[:40],
-            raw_json,
-            now,
-        ),
-    )
-    await db.execute(
-        "DELETE FROM health_ring_heart_rates "
-        "WHERE id NOT IN (SELECT id FROM health_ring_heart_rates ORDER BY measured_at DESC LIMIT 20)"
-    )
-    return {
-        "id": entry_id,
-        "device_name": (device_name or "").strip(),
-        "heart_rate": int(heart_rate),
-        "measured_at": measured,
-        "source": (source or "").strip()[:40],
-        "raw_json": raw_json,
-        "created_at": now if is_new else float(existing["created_at"] or now),
-        "is_new": is_new,
-    }
 
 
 async def _recent_heart_rates(db, limit: int = 20):
@@ -211,11 +175,129 @@ async def _recent_mi_band_heart_rates(db, limit: int = 20):
     return [dict(r) for r in await cur.fetchall()]
 
 
-async def build_mi_band_summary(db, now: Optional[float] = None):
-    current = time.time() if now is None else float(now)
+async def _recent_cloud_heart_rates(db, limit: int = 20):
+    db.row_factory = aiosqlite.Row
+    cur = await db.execute(
+        "SELECT id, device_name, heart_rate, measured_at, source, raw_json, created_at "
+        "FROM health_ring_heart_rates WHERE source='mi_cloud' "
+        "ORDER BY measured_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+def _load_health_settings() -> dict:
+    try:
+        with open(
+            Path(__file__).resolve().parent.parent / "data" / "settings.json",
+            encoding="utf-8",
+        ) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+async def _cloud_mode_active(db) -> bool:
+    """云模式激活：settings 配了 mi_cloud，或已有 mi_cloud 数据落库。"""
+    if _load_health_settings().get("mi_cloud", {}).get("relative_uid"):
+        return True
+    cur = await db.execute(
+        "SELECT 1 FROM health_miband_activity WHERE source='mi_cloud' LIMIT 1"
+    )
+    if await cur.fetchone():
+        return True
+    cur = await db.execute(
+        "SELECT 1 FROM health_ring_heart_rates WHERE source='mi_cloud' LIMIT 1"
+    )
+    return await cur.fetchone() is not None
+
+
+async def _build_cloud_summary(db, current: float) -> dict:
+    """云端日汇总模式：日均心率/每日步数/睡眠总时长 + 最新快照心率。"""
+    settings = _load_health_settings().get("mi_cloud", {})
+    device_name = settings.get("device_name") or "Redmi Smart Band 2"
+    # 最新快照心率（真实采样时间，写入 health_ring_heart_rates）
+    latest = await (await db.execute(
+        "SELECT id, device_name, heart_rate, measured_at, source, raw_json, created_at "
+        "FROM health_ring_heart_rates WHERE source='mi_cloud' "
+        "ORDER BY measured_at DESC LIMIT 1"
+    )).fetchone()
+    # 最近一条云日汇总（日均心率/步数/睡眠总时长，measured_at=当天 0 点）
+    latest_day = await (await db.execute(
+        "SELECT device_name, measured_at, heart_rate, steps, sleep_value, "
+        "deep_sleep_value, rem_sleep_value, synced_at "
+        "FROM health_miband_activity WHERE source='mi_cloud' "
+        "ORDER BY measured_at DESC LIMIT 1"
+    )).fetchone()
     local_now = datetime.fromtimestamp(current)
     day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    today = await (await db.execute(
+        "SELECT COALESCE(SUM(steps),0) AS steps FROM health_miband_activity "
+        "WHERE source='mi_cloud' AND measured_at>=? AND measured_at<?",
+        (day_start, day_start + 86400),
+    )).fetchone()
+    # 最近一条有睡眠的云日汇总（睡眠只有总时长/深睡/浅睡/REM，无入睡醒来时间线）
+    sleep_day = await (await db.execute(
+        "SELECT measured_at, sleep_value, deep_sleep_value, rem_sleep_value "
+        "FROM health_miband_activity WHERE source='mi_cloud' "
+        "AND (sleep_value>0 OR deep_sleep_value>0 OR rem_sleep_value>0) "
+        "ORDER BY measured_at DESC LIMIT 1"
+    )).fetchone()
+    sleep_summary = None
+    if sleep_day:
+        total = int(sleep_day["sleep_value"] or 0)
+        deep = int(sleep_day["deep_sleep_value"] or 0)
+        rem = int(sleep_day["rem_sleep_value"] or 0)
+        light = max(0, total - deep - rem) if total > 0 else 0
+        sleep_summary = {
+            "precision": "daily",
+            "sleepDate": datetime.fromtimestamp(
+                float(sleep_day["measured_at"])
+            ).date().isoformat(),
+            "startAt": None,
+            "endAt": None,
+            "kind": "main" if total >= 180 else ("nap" if total > 0 else None),
+            "totalMin": total if total > 0 else None,
+            "deepMin": deep if deep > 0 else None,
+            "lightMin": light if light > 0 else None,
+            "remMin": rem if rem > 0 else None,
+            "sessions": [],
+        }
+    return {
+        "mode": "mi_cloud",
+        "sourceLabel": f"{device_name} · 小米云",
+        "deviceName": device_name,
+        "lastSyncAt": latest_day["synced_at"] if latest_day else 0,
+        "cloudUpdatedAt": latest_day["measured_at"] if latest_day else 0,
+        "latestHeartRate": int(latest["heart_rate"]) if latest else None,
+        "latestHeartRateAt": latest["measured_at"] if latest else 0,
+        "heartRateKind": "latest_snapshot",
+        "dailyAverageHeartRate": (
+            int(latest_day["heart_rate"]) if latest_day and latest_day["heart_rate"] else None
+        ),
+        "dailyAverageHeartRateAt": latest_day["measured_at"] if latest_day else 0,
+        "todaySteps": int(today["steps"] if today else 0),
+        "stepsKind": "daily_total",
+        "activityMinutes": None,
+        "recent30ActivityMinutes": None,
+        "recent30Steps": None,
+        "recent60ActivityMinutes": None,
+        "recent60Steps": None,
+        "activityDataThrough": 0,
+        "supportsRecentActivity": False,
+        "sleep": sleep_summary,
+        "recentHeartRates": await _recent_cloud_heart_rates(db, 20),
+    }
+
+
+async def build_mi_band_summary(db, now: Optional[float] = None):
+    current = time.time() if now is None else float(now)
     db.row_factory = aiosqlite.Row
+    # 云模式（红米手环 2 · 小米云）优先；否则走原有 Mi Band 7 BLE 分钟采样
+    if await _cloud_mode_active(db):
+        return await _build_cloud_summary(db, current)
+    local_now = datetime.fromtimestamp(current)
+    day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     latest = await (await db.execute(
         "SELECT device_name, measured_at, synced_at FROM health_miband_activity "
         "WHERE source='mi_band_7' ORDER BY measured_at DESC LIMIT 1"
@@ -306,14 +388,19 @@ async def build_mi_band_summary(db, now: Optional[float] = None):
             "sessions": classified_sessions,
         }
     return {
+        "mode": "ble",
+        "sourceLabel": "Xiaomi Smart Band 7",
         "deviceName": latest["device_name"] if latest else "",
         "lastSyncAt": latest["synced_at"] if latest else 0,
         "latestSampleAt": latest["measured_at"] if latest else 0,
         "todaySteps": int(totals["steps"] if totals else 0),
+        "stepsKind": "minute_samples",
         "activityMinutes": int(totals["active_minutes"] if totals else 0),
         **recent_activity,
+        "supportsRecentActivity": True,
         "latestHeartRate": int(latest_heart["heart_rate"]) if latest_heart else None,
         "latestHeartRateAt": latest_heart["measured_at"] if latest_heart else 0,
+        "heartRateKind": "minute_sample",
         "sleep": sleep_summary,
         "recentHeartRates": await _recent_mi_band_heart_rates(db, 20),
     }
@@ -760,3 +847,36 @@ async def delete_period(entry_id: str):
         await db.execute("DELETE FROM health_period_entries WHERE id=?", (entry_id,))
         await db.commit()
     return {"ok": True}
+
+
+@router.post("/mi-band/cloud-sync")
+async def sync_mi_cloud():
+    """手动触发一次小米云端亲友健康同步（需先配好小号 token + 亲友）。"""
+    try:
+        from mi_cloud_health import sync_mi_cloud_now
+        result = await sync_mi_cloud_now()
+        async with get_db() as db:
+            summary = await build_mi_band_summary(db)
+        await manager.broadcast({"type": "health_mi_band_updated", "data": summary})
+        if summary.get("recentHeartRates"):
+            await manager.broadcast({"type": "health_ring_heart_rates_updated", "items": summary["recentHeartRates"]})
+        return {"ok": True, "result": result, "miBand": summary}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/mi-band/cloud-relatives")
+async def list_mi_cloud_relatives():
+    """列出小号当前所有亲友（用于查出大号的 UID 填 settings.mi_cloud.relative_uid）。"""
+    try:
+        from mi_cloud_health import TOKEN_PATH
+        if not TOKEN_PATH.exists():
+            return {"ok": False, "error": "token 不存在，先跑 mi_cloud_login.py"}
+        from mi_fitness import MiHealthClient
+        async with MiHealthClient.from_token(str(TOKEN_PATH)) as client:
+            relatives = await client.get_relatives()
+        return {"ok": True, "relatives": [
+            {"uid": r.relative_uid, "note": r.relative_note} for r in relatives
+        ]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
