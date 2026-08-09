@@ -15,9 +15,9 @@ import android.webkit.JavascriptInterface;
 
 /**
  * 网页 JS 通过 window.AionNotify.show(title, text) 发一条系统通知。
- * 用途：Gadgetbridge 的通知转发会监听系统通知并推送到手环（震动+显示），
+ * 用途：小米运动健康 App 的通知转发会监听系统通知并推送到手环（震动+显示），
  * 这样 AI 的消息就能落到手环上。
- * 链路：后端 WS → chat.js → AionNotify.show() → NotificationManager → Gadgetbridge → 手环。
+ * 链路：后端 WS → chat.js → AionNotify.show() → NotificationManager → 小米运动健康 → 手环。
  */
 public final class AionNotifyBridge {
     private static final String CHANNEL_ID = "aion_band_notify";
@@ -39,7 +39,7 @@ public final class AionNotifyBridge {
                         CHANNEL_ID,
                         "Aion 手环通知",
                         NotificationManager.IMPORTANCE_HIGH);
-                ch.setDescription("AI 消息推送到手环（经 Gadgetbridge 转发）");
+                ch.setDescription("AI 消息推送到手环（经小米运动健康转发）");
                 ch.enableVibration(true);
                 nm.createNotificationChannel(ch);
             }

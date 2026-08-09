@@ -405,7 +405,7 @@
           <input id="aionBandMessage" type="text" maxlength="40" placeholder="发到手环的消息，如：洗手吃饭啦小傻瓜" style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;outline:none">
           <button class="save-btn" type="button" onclick="aionNotifyBand()">发送到手环</button>
         </div>
-        <div class="muted" style="margin:0 0 12px;font-size:12px">链路：系统通知 → Gadgetbridge 转发 → 手环</div>
+        <div class="muted" style="margin:0 0 12px;font-size:12px">链路：系统通知 → 小米运动健康 App 转发 → 手环</div>
         <div class="sleep-box">
           <div class="sleep-main">
             <div><div class="vital-label">最近睡眠</div><div class="sleep-total" id="miBandSleepTotal">--</div></div>
@@ -877,7 +877,7 @@ function aionNotifyBand() {
     return showToast('发送失败：请检查通知权限是否开启');
   }
   logMiBand(`已发送到手环：${text}`);
-  showToast('已发系统通知 → Gadgetbridge → 手环');
+  showToast('已发系统通知 → 小米运动健康 → 手环');
   input.value = '';
 }
 
