@@ -48,6 +48,7 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
     private final MiBandGattSession session;
+    private final MiBandUploadOutbox outbox;
     private final AtomicBoolean connectionQueued = new AtomicBoolean(false);
     private volatile SampleSink sampleSink;
     private volatile boolean manualDisconnect;
@@ -66,6 +67,7 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
     private MiBandRuntime(Context context) {
         preferences = context.getSharedPreferences(MiBandPreferences.PREFS_NAME, Context.MODE_PRIVATE);
         session = new MiBandGattSession(context, this);
+        outbox = new MiBandUploadOutbox(context);
         reconnectFailures = preferences.getInt(MiBandPreferences.KEY_RECONNECT_FAILURES, 0);
     }
 
@@ -240,6 +242,16 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
             if (session.isRealtime()) throw new IllegalStateException("请先关闭实时心率，再同步历史数据");
             syncing = true;
             publish();
+            SampleSink sink = sampleSink;
+            String uploadError = null;
+            // 先重试落盘的失败批次（上次上传失败时存的），避免历史缺口累积。
+            if (sink != null && outbox.hasPending()) {
+                try {
+                    outbox.drain(sink);
+                } catch (Exception drainFailure) {
+                    uploadError = safeMessage(drainFailure);
+                }
+            }
             long now = System.currentTimeMillis();
             long cursor = preferences.getLong(MiBandPreferences.KEY_ACTIVITY_CURSOR,
                     now - 7L * 24L * 60L * 60L * 1000L);
@@ -249,17 +261,14 @@ public final class MiBandRuntime implements MiBandGattSession.Listener {
             Calendar since = Calendar.getInstance();
             since.setTimeInMillis(syncStart);
             List<MiBandProtocol.ActivitySample> activity = session.fetchActivity(since);
-            SampleSink sink = sampleSink;
-            String uploadError = null;
             if (sink != null && !activity.isEmpty()) {
                 try {
                     sink.upload(deviceName(), activity);
                 } catch (Exception uploadFailure) {
-                    // 上传失败（如服务端 401/网络抖动）不能跳过游标推进：否则下一轮
-                    // 又从同一时间点重拉同样的数据、再次上传失败，形成无限重传，且
-                    // 手环持续产数据会让每批越来越大、白白消耗 BLE 与电量。
-                    // 记一次错误，游标照常前进，丢掉这批已拉取的样本（BLE 历史不可
-                    // 重放，但换取增量同步持续向前）。
+                    // 上传失败不再丢弃：落盘到 outbox，下次同步重试。
+                    // 游标仍前进，避免无限重拉 BLE（BLE 历史不可重放，且手环持续产数据
+                    // 会让每批越来越大、白白消耗 BLE 与电量）。
+                    outbox.appendBatch(deviceName(), activity);
                     uploadError = safeMessage(uploadFailure);
                 }
             }

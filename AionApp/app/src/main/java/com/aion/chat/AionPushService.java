@@ -1,4 +1,4 @@
-﻿package com.aion.chat;
+package com.aion.chat;
 
 import android.app.AlarmManager;
 import android.app.KeyguardManager;
@@ -139,9 +139,11 @@ public class AionPushService extends Service {
     private static final String CH_KEEPALIVE = "aion_keepalive";
     private static final String CH_MESSAGE   = "aion_message_heads_up_v2";
     private static final String CH_ALARM     = "aion_alarm";
+    private static final String CH_BAND_NOTIFY = "aion_band_notify";
 
     private static final int NOTIF_FOREGROUND = 1;
     private static final int NOTIF_MSG_BASE   = 1000;
+    private static final int NOTIF_BAND_BASE  = 2000;
 
     private static final long HEARTBEAT_MS  = 45_000;  // 45s 心跳（省电）
     private static final long HEALTH_TIMEOUT = 120_000; // 120s 无消息 → 重连
@@ -151,6 +153,14 @@ public class AionPushService extends Service {
     private volatile WebSocket webSocket;
     private volatile String serverUrl;
     private int notifCounter = 0;
+
+    /** 拿通知本地编号，溢出前自动回卷，避免负 % 产生负数通知 ID。 */
+    private int nextNotifLocalId() {
+        int next = notifCounter++;
+        if (notifCounter > 1_000_000_000) notifCounter = 0; // 溢出前复零
+        if (next < 0) next = 0; // 极端并发兜底
+        return next % 10000;
+    }
 
     private final AtomicInteger wsGeneration = new AtomicInteger(0);
     private final AtomicBoolean wsConnected = new AtomicBoolean(false);
@@ -206,6 +216,13 @@ public class AionPushService extends Service {
     // ── 小米手环 7：独立于戒指的单一 BLE 运行时与自适应同步线程 ──
     private MiBandRuntime miBandRuntime;
     private final MiBandCommandInbox miBandCommandInbox = new MiBandCommandInbox();
+    // 带手环轻震命令的助手消息 ID：收到 mi_band_command 时记下，msg_created 到达时
+    // 跳过 CH_MESSAGE 通知，避免同一条消息既走手环轻震又走聊天通知造成双震。
+    private final java.util.Set<String> suppressedBandMsgIds =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    // 已提交 ack HTTP 请求但尚未成功的命令 ID：WS 重连或心跳时重试。
+    private final java.util.Set<String> unackedCommandIds =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
     private final AtomicBoolean miBandCommandFetchActive = new AtomicBoolean(false);
     private final AtomicBoolean appSupervisionCommandFetchActive = new AtomicBoolean(false);
     private static final String PREF_APP_SUPERVISION_RESULTS = "app_supervision_command_results";
@@ -2109,7 +2126,19 @@ public class AionPushService extends Service {
         updateKeepAlive("连接中...");
 
         try {
-            Request req = new Request.Builder().url(serverUrl).build();
+            Request.Builder reqBuilder = new Request.Builder().url(serverUrl);
+            // 后端全站鉴权要 aion_auth cookie：okhttp 空 cookie jar 不带 WebView
+            // 登录 cookie，非 Cloudflare 时手动从 CookieManager 取当前 host 的附加。
+            if (!isCloudflareServer()) {
+                try {
+                    String cookie = CookieManager.getInstance().getCookie(
+                            serverUrl.replace("ws://", "http://").replace("wss://", "https://"));
+                    if (cookie != null && !cookie.trim().isEmpty()) {
+                        reqBuilder.header("Cookie", cookie);
+                    }
+                } catch (Exception ignored) {}
+            }
+            Request req = reqBuilder.build();
             webSocket = client.newWebSocket(req, new WebSocketListener() {
 
                 @Override
@@ -2133,6 +2162,7 @@ public class AionPushService extends Service {
                         Log.w(TAG, "phone camera registration failed", error);
                     }
                     updateKeepAlive("在线 ✨");
+                    retryPendingAcks();
                     fetchPendingMiBandCommands();
                     syncAppSupervisionRuntimeConfig();
                     fetchPendingAppSupervisionCommands();
@@ -2189,6 +2219,19 @@ public class AionPushService extends Service {
         String note = data.optString("note", "").trim();
         String senderName = data.optString("sender_name", "").trim();
         long expiresAtMillis = (long) (data.optDouble("expires_at", 0) * 1000.0);
+        // 记下这条命令对应的消息 ID，msg_created 到达时跳过 CH_MESSAGE，避免双震。
+        // 只有"会震"的命令才需要抑制手机通知：纯震动（无纸条）或 call 紧急（纸条+震）。
+        // 纯小纸条（single+note）在手环上只显示文字不震动，手机通知照常弹出。
+        String sourceMsgId = data.optString("source_msg_id", "").trim();
+        boolean willVibrate = note.isEmpty() || "call".equals(pattern);
+        if (!sourceMsgId.isEmpty() && willVibrate) {
+            suppressedBandMsgIds.add(sourceMsgId);
+            // 超过水位线逐出最旧的，不清空全部 —— 全清空会让近期命令集体失去双震保护
+            if (suppressedBandMsgIds.size() > 200) {
+                java.util.Iterator<String> it = suppressedBandMsgIds.iterator();
+                for (int removed = 0; removed < 100 && it.hasNext(); it.next(), removed++) it.remove();
+            }
+        }
         if (!miBandCommandInbox.offer(id, pattern, note, senderName, expiresAtMillis)) return;
         Log.i(TAG, "⌚ queued band command " + id + " pattern=" + pattern);
         drainMiBandCommands();
@@ -2199,12 +2242,32 @@ public class AionPushService extends Service {
 
     private void drainMiBandCommands() {
         if (miBandRuntime == null) return;
+        long now = System.currentTimeMillis();
+        if (!miBandRuntime.status().authenticated) {
+            // 无小米手环认证连接（如红米手环2 走 Gadgetbridge）：
+            // 把震动命令转成系统通知，让 Gadgetbridge 转发到手环震动+显示文字。
+            MiBandCommandInbox.Command fallback = miBandCommandInbox.peekNext(now);
+            if (fallback == null) return;
+            boolean delivered = fallbackBandCommand(fallback);
+            miBandCommandInbox.complete(fallback.id, delivered);
+            if (delivered) {
+                unackedCommandIds.add(fallback.id);
+                ackMiBandCommand(fallback.id);
+                if (mainHandler != null) mainHandler.post(this::drainMiBandCommands);
+            } else {
+                // 系统通知发布失败（无权限/频道关闭/异常）：不 ack，命令留 pending，
+                // 等下次 WS 命令或重连后 pending 拉取重试，避免静默丢失。
+                Log.w(TAG, "⌚ band fallback 通知发布失败，保留 pending 等重试: " + fallback.id);
+            }
+            return;
+        }
         MiBandCommandInbox.Command command = miBandCommandInbox.nextReady(
-                System.currentTimeMillis(), miBandRuntime.status().authenticated);
+                now, true);
         if (command == null) return;
         MiBandRuntime.Completion completion = success -> {
             miBandCommandInbox.complete(command.id, success);
             if (success) {
+                unackedCommandIds.add(command.id);
                 ackMiBandCommand(command.id);
                 if (mainHandler != null) mainHandler.post(this::drainMiBandCommands);
             } else if (miBandRuntime != null) {
@@ -2216,6 +2279,51 @@ public class AionPushService extends Service {
                     command.pattern, command.senderName, command.note, completion);
         } else {
             miBandRuntime.vibrate(command.pattern, completion);
+        }
+    }
+
+    private boolean fallbackBandCommand(MiBandCommandInbox.Command command) {
+        String text = command.note;
+        if (text.isEmpty()) {
+            text = "single".equals(command.pattern) ? "轻轻想了你一下" : "紧急呼叫！";
+        }
+        String title = command.senderName.isEmpty() ? "Aion" : command.senderName;
+        Log.i(TAG, "⌚ band command fallback → 系统通知(手环频道 aion_band_notify): " + text);
+        // 走独立频道 aion_band_notify + 独立 ID 段，不与聊天通知(CH_MESSAGE/NOTIF_MSG_BASE)混用。
+        // 这样手机端可在「小米运动健康」只转发本频道到手环，普通聊天通知不再顺手震手环。
+        return showBandNotify(title, text);
+    }
+
+    private boolean showBandNotify(String title, String text) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            return false;
+        }
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null) return false;
+        Log.i(TAG, "NOTIFY[BAND] " + title + ": " + text);
+        Intent i = new Intent(this, LauncherActivity.class);
+        i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pi = PendingIntent.getActivity(this, nextNotifLocalId(), i,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification b = new NotificationCompat.Builder(this, CH_BAND_NOTIFY)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .build();
+        try {
+            nm.notify(NOTIF_BAND_BASE + (nextNotifLocalId()), b);
+            return true;
+        } catch (SecurityException ignored) {
+            return false;
         }
     }
 
@@ -2243,6 +2351,7 @@ public class AionPushService extends Service {
                 Log.w(TAG, "⌚ pending command fetch failed: " + error.getMessage());
             } finally {
                 miBandCommandFetchActive.set(false);
+                retryPendingAcks();
                 drainMiBandCommands();
             }
         }, "AionMiBandCommandFetch").start();
@@ -2252,20 +2361,35 @@ public class AionPushService extends Service {
         new Thread(() -> {
             try {
                 String base = getHttpBase();
-                if (base == null || base.isEmpty()) return;
+                if (base == null || base.isEmpty()) {
+                    unackedCommandIds.remove(commandId); // no server to ack to — drop
+                    return;
+                }
                 Request request = new Request.Builder()
                         .url(base + "/api/health/mi-band/commands/" + commandId + "/ack")
                         .post(RequestBody.create("", MediaType.get("application/json; charset=utf-8")))
                         .build();
                 try (Response response = client.newCall(request).execute()) {
-                    if (!response.isSuccessful()) {
-                        Log.w(TAG, "⌚ command ack failed HTTP " + response.code());
+                    if (response.isSuccessful()) {
+                        unackedCommandIds.remove(commandId);
+                    } else {
+                        Log.w(TAG, "⌚ command ack failed HTTP " + response.code() + " → retry later");
                     }
                 }
             } catch (Exception error) {
-                Log.w(TAG, "⌚ command ack failed: " + error.getMessage());
+                Log.w(TAG, "⌚ command ack failed: " + error.getMessage() + " → retry later");
             }
         }, "AionMiBandCommandAck").start();
+    }
+
+    /** 重新尝试未成功 ack 的命令（WS 重连 / 心跳重试时调用）。 */
+    private void retryPendingAcks() {
+        if (unackedCommandIds.isEmpty()) return;
+        String[] snapshot = unackedCommandIds.toArray(new String[0]);
+        // 每个失败 ack 各浪费一个线程，但仅在重连时触发，不构成瓶颈。
+        for (String id : snapshot) {
+            if (unackedCommandIds.contains(id)) ackMiBandCommand(id);
+        }
     }
 
     private void postAppSupervisionState(
@@ -2543,11 +2667,16 @@ public class AionPushService extends Service {
                     if (data != null) {
                         String role = data.optString("role", "");
                         if ("assistant".equals(role)) {
+                            String msgId = data.optString("id", "").trim();
+                            if (!msgId.isEmpty() && suppressedBandMsgIds.remove(msgId)) {
+                                // 该助手消息已触发手环轻震命令，不再发 CH_MESSAGE 通知，
+                                // 避免同一条消息既走专用手环通道又走聊天通知造成双震。
+                                Log.i(TAG, "⌚ skip CH_MESSAGE for band-cmd msg " + msgId);
+                                break;
+                            }
                             String c = data.optString("content", "");
                             if (c.length() > 100) c = c.substring(0, 100) + "...";
-                            String sender = data.optString("sender", "AI");
-                            if (sender.isEmpty()) sender = "AI";
-                            else sender = sender.substring(0, 1).toUpperCase() + sender.substring(1);
+                            String sender = notifSenderName(data.optString("sender", "AI"));
                             showNotif(CH_MESSAGE, "💬 " + sender, c, true);
                         }
                     }
@@ -2559,8 +2688,7 @@ public class AionPushService extends Service {
                         if (!"user".equals(sender) && !"system".equals(sender) && !sender.isEmpty()) {
                             String c = data.optString("content", "");
                             if (c.length() > 100) c = c.substring(0, 100) + "...";
-                            sender = sender.substring(0, 1).toUpperCase() + sender.substring(1);
-                            showNotif(CH_MESSAGE, "💬 " + sender, c, true);
+                            showNotif(CH_MESSAGE, "💬 " + notifSenderName(sender), c, true);
                         }
                     }
                     break;
@@ -2939,7 +3067,7 @@ public class AionPushService extends Service {
 
         Intent i = new Intent(this, LauncherActivity.class);
         i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pi = PendingIntent.getActivity(this, notifCounter, i,
+        PendingIntent pi = PendingIntent.getActivity(this, nextNotifLocalId(), i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         NotificationCompat.Builder b = new NotificationCompat.Builder(this, ch)
@@ -2961,7 +3089,7 @@ public class AionPushService extends Service {
             b.setFullScreenIntent(pi, true);  // 锁屏时亮屏弹出
         }
 
-        nm.notify(NOTIF_MSG_BASE + (notifCounter++ % 50), b.build());
+        nm.notify(NOTIF_MSG_BASE + (nextNotifLocalId()), b.build());
     }
 
     // ══════════════════════════════════════════════════════════
@@ -3551,6 +3679,18 @@ public class AionPushService extends Service {
     //  通知渠道
     // ══════════════════════════════════════════════════════════
 
+    // sender 内部 id → 通知标题显示名（与聊天内人格名一致）
+    private static String notifSenderName(String sender) {
+        switch (sender) {
+            case "aion": return "温叙远";
+            case "connor": return "林叙";
+            default:
+                return (sender == null || sender.isEmpty())
+                        ? "AI"
+                        : sender.substring(0, 1).toUpperCase() + sender.substring(1);
+        }
+    }
+
     private void createNotificationChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = getSystemService(NotificationManager.class);
@@ -3573,6 +3713,13 @@ public class AionPushService extends Service {
         c3.enableVibration(true);
         c3.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         nm.createNotificationChannel(c3);
+
+        NotificationChannel c4 = new NotificationChannel(CH_BAND_NOTIFY, "Aion 手环通知",
+                NotificationManager.IMPORTANCE_HIGH);
+        c4.setDescription("AI 主动呼唤/小纸条，经小米运动健康转发到手环震动+显字；普通聊天通知不在此频道");
+        c4.enableVibration(true);
+        c4.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        nm.createNotificationChannel(c4);
     }
 
     private Notification buildKeepAlive(String text) {
