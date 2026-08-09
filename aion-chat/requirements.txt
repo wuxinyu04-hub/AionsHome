@@ -20,3 +20,4 @@ akshare
 chinese-calendar
 mcp
 cryptography
+mi-fitness

@@ -13,6 +13,14 @@ venv/
 # ── 用户数据（含隐私信息，整目录默认忽略；需要入库的用 ! 显式白名单） ──
 # 之前是逐文件黑名单，每加一个新数据文件都可能被漏掉误提交，改为默认全忽略
 aion-chat/data/**
+
+# ── mi-fitness 登录临时文件（二维码/登录链接都含一次性凭证，不入库） ──
+public/mi_cloud_qr.png
+aion-chat/data/mi_cloud_token.json
+aion-chat/data/mi_cloud_login_url.txt
+
+# ── Cloudflare Turnstile 一次性凭证（mi_cloud 登录用，JWT，绝不入库） ──
+nvtoken.txt
 !aion-chat/data/**/
 !aion-chat/data/**/.gitkeep
 !aion-chat/data/sleep_library.json
