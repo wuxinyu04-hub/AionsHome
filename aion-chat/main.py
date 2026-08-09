@@ -263,7 +263,14 @@ from starlette.responses import RedirectResponse, Response
 import auth
 
 # 无需登录即可访问的路径（登录流程本身 + PWA 安装所需资源）
-_AUTH_EXEMPT_PATHS = {"/login", "/api/login", "/sw.js", "/manifest.json", "/favicon.ico", "/api/client-assets"}
+_AUTH_EXEMPT_PATHS = {
+    "/login", "/api/login", "/sw.js", "/manifest.json", "/favicon.ico",
+    "/api/client-assets",
+    # 手机 App 纯上报端点（网页端零引用）：AionPushService 的 HTTP 上报未带
+    # X-Aion-Token，2026-07-30 误移出豁免导致手机活动日志全空（401 挡住）。
+    # 与 /api/location/ 同理放回；等 App 侧补上 token 后再收紧。
+    "/api/activity/report",
+}
 # AionApp 安卓端原生 OkHttp 请求（AionPushService/AionAccessibilityService）还不会带
 # X-Aion-Token，这些端点暂时豁免；等 App 侧加上 token 头后应逐步收紧。
 # 剩下的都是 <img src>/<audio src> 类媒体资源（浏览器同源会带 cookie，但 Range/SW
@@ -278,9 +285,11 @@ _AUTH_EXEMPT_PREFIXES = (
     "/api/gift/thumbnail/",
 )
 # 已收紧（2026-07-30）：
-# - /api/phone-screen/、/api/activity/report、/api/cam/esp32/frame 移除：
+# - /api/phone-screen/、/api/cam/esp32/frame 移除：
 #   网页端零引用（纯 App/硬件用途），且 cam_config 是 active_source=local、
 #   esp32_cam_url 为空，ESP32 没在用。启用 APK 前需给 App 加 token。
+#   （/api/activity/report 同天被移，但手机端未加 token 致上报全被 401 挡，
+#   已在本文件上方 _AUTH_EXEMPT_PATHS 放回豁免。）
 # - /api/diaries/ 整前缀移除，换成下面的精确豁免：原先把日记增删改查全放行了，
 #   而 App 侧（MediaCacheStore）只需要日记 TTS 音频。
 # 精确豁免的完整路径（正则匹配，只放行 App 真正需要的那一个 GET/HEAD）
