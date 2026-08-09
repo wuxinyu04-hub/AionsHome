@@ -35,6 +35,7 @@ from health_context import analyze_heart_rate_entry, insert_heart_rate
 
 DATA_DIR = Path(__file__).parent / "data"
 TOKEN_PATH = DATA_DIR / "mi_cloud_token.json"
+SYNC_STATE_PATH = DATA_DIR / "mi_cloud_sync_state.json"
 SOURCE = "mi_cloud"
 DEVICE_DEFAULT = "Redmi Smart Band 2"
 
@@ -44,9 +45,6 @@ POLL_INTERVAL = 5 * 60
 # 首次启动时补拉的历史天数：小米云端睡眠/步数隔天才有完整汇总，
 # 不补的话昨天和更早的有效数据永远进不来。
 HISTORY_BACKFILL_DAYS = 7
-
-# 进程内标记：历史回填只做一次，之后每次轮询只拉当天。
-_backfilled = False
 
 # 进程内同步锁：后台轮询与手动 /api/health/mi-band/cloud-sync 不能同时写库。
 _sync_lock = asyncio.Lock()
@@ -60,24 +58,53 @@ def _load_settings() -> dict[str, Any]:
         return {}
 
 
+def _load_sync_state() -> dict[str, Any]:
+    """持久化同步检查点：避免每次重启重拉 7 天历史，并记录失败天供下轮重试。
+
+    结构：{backfilled_through:"YYYY-MM-DD", failed_days:["YYYY-MM-DD"...], last_run_at:float}
+    backfilled_through 表示历史已成功补到哪一天；之后每轮只需今天 + failed_days。
+    """
+    try:
+        with open(SYNC_STATE_PATH, encoding="utf-8") as f:
+            state = json.load(f)
+            if isinstance(state, dict):
+                return state
+    except Exception:
+        pass
+    return {"backfilled_through": None, "failed_days": [], "last_run_at": 0}
+
+
+def _save_sync_state(state: dict[str, Any]) -> None:
+    try:
+        with open(SYNC_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _day_iso(day: date) -> str:
+    return day.isoformat()
+
+
 def _day_start_ts(day: date) -> float:
     """当天本地 0 点的时间戳。日汇总行统一用它当 measured_at，三次接口可合并到一行。"""
     return datetime(day.year, day.month, day.day).timestamp()
 
 
-async def _fetch_relative_uid(client) -> int | None:
-    """从 settings 读 relative_uid；没有则取亲友列表第一个。"""
+async def _fetch_relative_uid(client) -> tuple[int | None, str | None]:
+    """从 settings 读 relative_uid；未配置则返回 (None, reason) 而不是静默取亲友列表第一个。
+
+    静默取 relatives[0] 会在新增/重排亲友时悄悄同步错人的健康数据，
+    没有用户隔离的健康表里混入他人数据且不易察觉，故强制要求显式配置。
+    """
     cfg = _load_settings().get("mi_cloud", {})
     uid = cfg.get("relative_uid")
     if uid:
         try:
-            return int(uid)
+            return int(uid), None
         except (TypeError, ValueError):
-            pass
-    relatives = await client.get_relatives()
-    if not relatives:
-        return None
-    return relatives[0].relative_uid
+            return None, f"mi_cloud.relative_uid 配置无效：{uid!r}"
+    return None, "未配置 mi_cloud.relative_uid，已停止同步避免错人（不再默认取亲友列表第一个）"
 
 
 async def _persist_sample(
@@ -86,38 +113,45 @@ async def _persist_sample(
     measured_at: float,
     device_name: str,
     source: str = SOURCE,
-    heart_rate: int,
-    steps: int,
-    sleep_stage: str,
-    sleep: int,
-    deep_sleep: int,
-    rem_sleep: int,
+    heart_rate: Optional[int] = None,
+    steps: Optional[int] = None,
+    sleep_stage: Optional[str] = None,
+    sleep: Optional[int] = None,
+    deep_sleep: Optional[int] = None,
+    rem_sleep: Optional[int] = None,
     now: float,
 ) -> None:
-    # ON CONFLICT 时只覆盖本次非零字段：同一天一行里，心率/步数/睡眠可能由
-    # 三次独立接口分别写入，后写的不应把先写的字段清成 0。
-    # heart_rate=0 / steps=0 / sleep=0 这些“空值”用 COALESCE(NULLIF(excluded,...), old) 保留旧值。
+    # 区分“本次接口没返回该字段”(None -> 保留旧值) 与“返回了 0”(有效测量 -> 覆盖)。
+    # 旧实现 COALESCE(NULLIF(excluded,0), old) 把合法 0 当缺失，平台校正为 0 时旧值残留。
+    def _val(v) -> int:
+        return int(v) if v is not None else 0
+
+    sets = ["device_name=excluded.device_name", "synced_at=excluded.synced_at"]
+    if heart_rate is not None:
+        sets.append("heart_rate=excluded.heart_rate")
+    if steps is not None:
+        sets.append("steps=excluded.steps")
+    if sleep is not None:
+        sets.append("sleep_value=excluded.sleep_value")
+    if deep_sleep is not None:
+        sets.append("deep_sleep_value=excluded.deep_sleep_value")
+    if rem_sleep is not None:
+        sets.append("rem_sleep_value=excluded.rem_sleep_value")
+    if sleep_stage:
+        sets.append("sleep_stage=excluded.sleep_stage")
     await db.execute(
-        """
+        f"""
         INSERT INTO health_miband_activity (
             source, measured_at, device_name, raw_kind, intensity, steps,
             heart_rate, unknown_value, sleep_value, deep_sleep_value,
             rem_sleep_value, sleep_stage, synced_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(source, measured_at) DO UPDATE SET
-            device_name=excluded.device_name,
-            steps=COALESCE(NULLIF(excluded.steps,0), health_miband_activity.steps),
-            heart_rate=COALESCE(NULLIF(excluded.heart_rate,0), health_miband_activity.heart_rate),
-            sleep_value=COALESCE(NULLIF(excluded.sleep_value,0), health_miband_activity.sleep_value),
-            deep_sleep_value=COALESCE(NULLIF(excluded.deep_sleep_value,0), health_miband_activity.deep_sleep_value),
-            rem_sleep_value=COALESCE(NULLIF(excluded.rem_sleep_value,0), health_miband_activity.rem_sleep_value),
-            sleep_stage=CASE WHEN excluded.sleep_stage <> '' THEN excluded.sleep_stage
-                             ELSE health_miband_activity.sleep_stage END,
-            synced_at=excluded.synced_at
+        ON CONFLICT(source, measured_at) DO UPDATE SET {', '.join(sets)}
         """,
         (
-            source, measured_at, device_name, 0, 0, max(0, steps),
-            heart_rate, 0, sleep, deep_sleep, rem_sleep, sleep_stage, now,
+            source, measured_at, device_name, 0, 0, _val(steps),
+            _val(heart_rate), 0, _val(sleep), _val(deep_sleep), _val(rem_sleep),
+            sleep_stage or "", now,
         ),
     )
 
@@ -128,23 +162,22 @@ async def _sync_day(
     day: date,
     device_name: str,
     now: float,
-) -> dict[str, int]:
-    """拉指定一天的云端日汇总入库。返回该天各类型写入条数。"""
-    counts = {"heart": 0, "steps": 0, "sleep": 0}
+) -> dict[str, Any]:
+    """拉指定一天的云端日汇总入库。返回该天各类型写入条数与错误。
+
+    先把三类 API 结果拉到内存，再开**一个** DB 连接批量 upsert + 单次 commit，
+    任一写入失败回滚整天，避免心率已更新但睡眠没写成的部分可见状态。
+    """
+    counts: dict[str, Any] = {"heart": 0, "steps": 0, "sleep": 0}
     day_start = _day_start_ts(day)
+    pending: list[dict[str, Any]] = []
 
     # 心率（日均，SDK time 是秒级 Unix 时间戳，不是毫秒）
     try:
         hrs = await client.get_heart_rate(uid, day, days=1)
         for hr in hrs:
             if hr.avg_hr and 20 <= hr.avg_hr <= 240:
-                async with get_db() as db:
-                    await _persist_sample(
-                        db, measured_at=day_start, device_name=device_name,
-                        source=SOURCE, heart_rate=hr.avg_hr, steps=0, sleep_stage="",
-                        sleep=0, deep_sleep=0, rem_sleep=0, now=now,
-                    )
-                    await db.commit()
+                pending.append({"heart_rate": hr.avg_hr})
                 counts["heart"] += 1
     except Exception as e:
         counts["heart_err"] = str(e)
@@ -154,20 +187,14 @@ async def _sync_day(
         steps_list = await client.get_steps(uid, day, days=1)
         for st in steps_list:
             if st.steps > 0:
-                async with get_db() as db:
-                    await _persist_sample(
-                        db, measured_at=day_start, device_name=device_name,
-                        source=SOURCE, heart_rate=0, steps=st.steps, sleep_stage="",
-                        sleep=0, deep_sleep=0, rem_sleep=0, now=now,
-                    )
-                    await db.commit()
+                pending.append({"steps": st.steps})
                 counts["steps"] += 1
     except Exception as e:
         counts["steps_err"] = str(e)
 
     # 睡眠（一天一条汇总：总时长 + 深睡/浅睡/REM 各分钟数）。
     # 云端只有日粒度汇总，没有逐分钟时间线，不展开、不伪造 stage 行；
-    # 总时长存 sleep_value，深/浅/REM 存对应列，前端按 precision=daily 展示。
+    # 总时长存 sleep_value，深/REM 存对应列，前端按 precision=daily 展示。
     try:
         sleeps = await client.get_sleep(uid, day, days=1)
         for sl in sleeps:
@@ -177,16 +204,26 @@ async def _sync_day(
             total = deep + light + rem
             if total <= 0:
                 continue
-            async with get_db() as db:
-                await _persist_sample(
-                    db, measured_at=day_start, device_name=device_name,
-                    source=SOURCE, heart_rate=0, steps=0, sleep_stage="",
-                    sleep=total, deep_sleep=deep, rem_sleep=rem, now=now,
-                )
-                await db.commit()
+            pending.append({"sleep": total, "deep_sleep": deep, "rem_sleep": rem})
             counts["sleep"] += 1
     except Exception as e:
         counts["sleep_err"] = str(e)
+
+    if pending:
+        async with get_db() as db:
+            for item in pending:
+                await _persist_sample(
+                    db, measured_at=day_start, device_name=device_name,
+                    source=SOURCE,
+                    heart_rate=item.get("heart_rate"),
+                    steps=item.get("steps"),
+                    sleep_stage=item.get("sleep_stage"),
+                    sleep=item.get("sleep"),
+                    deep_sleep=item.get("deep_sleep"),
+                    rem_sleep=item.get("rem_sleep"),
+                    now=now,
+                )
+            await db.commit()
 
     return counts
 
@@ -235,8 +272,13 @@ async def _sync_latest_snapshot(
 
 
 async def _do_sync_once() -> dict[str, Any]:
-    """同步云端数据：首次调用补最近 7 天，之后每次只拉当天。"""
-    global _backfilled
+    """同步云端数据：首次补最近 7 天，之后每次只拉今天 + 失败天。
+
+    同步状态持久化在 data/mi_cloud_sync_state.json（backfilled_through +
+    failed_days），重启不重拉整段历史，只重试失败天。只有当轮全部同步天
+    无任何 *_err 时才推进 backfilled_through、执行 45 天清理；否则保留
+    failed_days 下轮重试，且不清理（避免删了还没补齐的旧数据）。
+    """
     if not TOKEN_PATH.exists():
         return {"error": 0, "reason": "token 不存在，先跑 mi_cloud_login.py"}
 
@@ -245,40 +287,78 @@ async def _do_sync_once() -> dict[str, Any]:
     today = date.today()
     now = time.time()
     device_name = _load_settings().get("mi_cloud", {}).get("device_name", DEVICE_DEFAULT)
-    counts = {"heart": 0, "steps": 0, "sleep": 0}
+    counts: dict[str, Any] = {"heart": 0, "steps": 0, "sleep": 0}
 
-    # 首启补历史：day 从今天往前逐天，先今天、再昨天…避免中途失败时缺口在最新数据。
-    days = [today]
-    if not _backfilled:
-        days += [today - timedelta(days=n) for n in range(1, HISTORY_BACKFILL_DAYS)]
+    state = _load_sync_state()
+    backfilled_through = state.get("backfilled_through")
+    prev_failed: set[str] = set(state.get("failed_days") or [])
+
+    try:
+        bd = date.fromisoformat(backfilled_through) if backfilled_through else None
+    except ValueError:
+        bd = None
+    if bd is None:
+        # 首次：补最近 HISTORY_BACKFILL_DAYS 天（含今天）
+        bd = today - timedelta(days=HISTORY_BACKFILL_DAYS - 1)
+
+    # 本轮要同步的天：今天 + (backfilled_through, today) 开区间 + 历史失败天
+    days: list[date] = [today]
+    d = today - timedelta(days=1)
+    while d > bd:
+        days.append(d)
+        d -= timedelta(days=1)
+    for iso in prev_failed:
+        try:
+            fd = date.fromisoformat(iso)
+        except ValueError:
+            continue
+        if fd != today and fd not in days:
+            days.append(fd)
+
+    run_failed: set[str] = set()
 
     async with MiHealthClient.from_token(str(TOKEN_PATH)) as client:
-        uid = await _fetch_relative_uid(client)
+        uid, reason = await _fetch_relative_uid(client)
         if not uid:
-            counts["reason"] = "亲友列表为空或未配置 relative_uid"
+            counts["reason"] = reason or "未配置 relative_uid"
             return counts
         for day in days:
             day_counts = await _sync_day(client, uid, day, device_name, now)
+            day_had_error = False
             for key in ("heart", "steps", "sleep"):
                 counts[key] += int(day_counts.get(key, 0))
             for err_key in ("heart_err", "steps_err", "sleep_err"):
                 if day_counts.get(err_key):
                     counts[err_key] = day_counts[err_key]
+                    day_had_error = True
+            if day_had_error:
+                run_failed.add(_day_iso(day))
+            else:
+                prev_failed.discard(_day_iso(day))
         # 每轮都拉一次最新快照心率（真实采样时间）
         counts["snapshot"] = await _sync_latest_snapshot(client, uid, device_name, now)
 
-    # 清理 45 天前的云日汇总（与 BLE 路径 TTL 对齐），避免只增不删。
-    # 快照心率在 health_ring_heart_rates 里有按源保留策略，不在这里删。
-    async with get_db() as db:
-        await db.execute(
-            "DELETE FROM health_miband_activity "
-            "WHERE source=? AND measured_at < ?",
-            (SOURCE, now - 45 * 86400),
-        )
-        await db.commit()
+    has_day_errors = bool(run_failed)
 
-    # 只有整轮成功才标记回填完成；中途异常会抛出，_backfilled 保持 False，下轮补拉。
-    _backfilled = True
+    # 推进 backfilled_through：只有今天之前的天全部成功才推进到昨天。
+    # today 的数据云端可能继续更新，不纳入 backfilled_through。
+    if not has_day_errors:
+        state["backfilled_through"] = (today - timedelta(days=1)).isoformat()
+    state["failed_days"] = sorted(run_failed | prev_failed)
+    state["last_run_at"] = now
+    _save_sync_state(state)
+
+    # 45 天清理绑定成功：本轮任何 *_err 都跳过，避免删了没补齐的旧数据。
+    # 快照心率在 health_ring_heart_rates 里有按源保留策略，不在这里删。
+    if not has_day_errors:
+        async with get_db() as db:
+            await db.execute(
+                "DELETE FROM health_miband_activity "
+                "WHERE source=? AND measured_at < ?",
+                (SOURCE, now - 45 * 86400),
+            )
+            await db.commit()
+
     return counts
 
 

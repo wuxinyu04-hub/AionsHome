@@ -122,6 +122,12 @@ async def build_health_summary() -> str:
                 "SELECT start_date, end_date FROM health_period_entries ORDER BY start_date DESC LIMIT 1"
             )
             period_row = await cur.fetchone()
+            # 戒指/快照里的血压、血氧、HRV 一直存了却没进 AI，这里补上。
+            cur = await db.execute(
+                "SELECT systolic_bp, diastolic_bp, spo2, hrv, measured_at "
+                "FROM health_ring_latest WHERE id=1"
+            )
+            ring_row = await cur.fetchone()
 
         parts = []
         hr = mi_band.get("latestHeartRate")
@@ -193,10 +199,27 @@ async def build_health_summary() -> str:
             else:
                 parts.append(f"上次例假:{start}")
 
+        if ring_row:
+            ring_measured = ring_row["measured_at"]
+            ring_age = time.time() - float(ring_measured or 0) if ring_measured else None
+            stale_min = int((heart_cfg or {}).get("stale_minutes") or 30)
+            ring_tag = "" if (ring_age is not None and ring_age <= stale_min * 60) else "(数据过期)"
+            sbp = ring_row["systolic_bp"]
+            dbp = ring_row["diastolic_bp"]
+            if sbp and dbp:
+                parts.append(f"血压:{int(sbp)}/{int(dbp)}{ring_tag}")
+            spo2 = ring_row["spo2"]
+            if spo2:
+                parts.append(f"血氧:{int(spo2)}%{ring_tag}")
+            hrv = ring_row["hrv"]
+            if hrv:
+                parts.append(f"HRV:{int(hrv)}ms{ring_tag}")
+
         if not parts:
             return ""
         return "\n\n[用户健康数据]\n" + "\n".join(parts)
-    except Exception:
+    except Exception as e:
+        print(f"[build_health_summary] 构建健康摘要失败：{e}")
         return ""
 
 

@@ -679,7 +679,7 @@ async def save_mi_band_activity_batch(body: MiBandActivityBatch):
                 if entry and entry.get("is_new"):
                     heart_events_created.extend(await analyze_heart_rate_entry(db, entry))
         await db.execute(
-            "DELETE FROM health_miband_activity WHERE measured_at < ?",
+            "DELETE FROM health_miband_activity WHERE source='mi_band_7' AND measured_at < ?",
             (now - 45 * 86400,),
         )
         latest_heart = next(

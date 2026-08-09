@@ -386,8 +386,9 @@ async def insert_heart_rate(
 ) -> Optional[dict]:
     """写入一条心率到 health_ring_heart_rates（供 BLE mi_band_7 / 云端 mi_cloud 复用）。
 
-    返回新条目 dict；心率无效返回 None。按 (measured_at*1000, heart_rate) 去重，
-    只保留最新 20 条，避免云端每次轮询重复累加。
+    返回新条目 dict；心率无效返回 None。按 (source, measured_at*1000, heart_rate)
+    去重，只保留每来源最新 50 条，避免云端每次轮询重复累加，也避免不同来源
+    同毫秒同 BPM 互相覆盖。
     """
     try:
         heart_rate = int(heart_rate)
@@ -397,7 +398,9 @@ async def insert_heart_rate(
         return None
     now = time.time()
     measured = float(measured_at) if measured_at else now
-    entry_id = f"hr_{int(measured * 1000)}_{int(heart_rate)}"
+    src = (source or "").strip()[:40]
+    # ID 含 source：BLE/云/戒指同毫秒同 BPM 不再互相覆盖，is_new 与按源保留策略才成立。
+    entry_id = f"hr_{src}_{int(measured * 1000)}_{int(heart_rate)}"
     raw_json = json.dumps(raw or {}, ensure_ascii=False)
     db.row_factory = aiosqlite.Row
     cur = await db.execute(
@@ -421,7 +424,7 @@ async def insert_heart_rate(
             (device_name or "").strip(),
             heart_rate,
             measured,
-            (source or "").strip()[:40],
+            src,
             raw_json,
             now,
         ),
@@ -443,7 +446,7 @@ async def insert_heart_rate(
         "device_name": (device_name or "").strip(),
         "heart_rate": heart_rate,
         "measured_at": measured,
-        "source": (source or "").strip()[:40],
+        "source": src,
         "raw_json": raw_json,
         "created_at": now if is_new else float(existing["created_at"] or now),
         "is_new": is_new,
