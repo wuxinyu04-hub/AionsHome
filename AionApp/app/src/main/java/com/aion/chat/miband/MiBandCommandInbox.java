@@ -53,6 +53,19 @@ public final class MiBandCommandInbox {
         return null;
     }
 
+    /** Next executable command regardless of handshake state; does not mark inFlight. */
+    public synchronized Command peekNext(long nowMillis) {
+        Iterator<Map.Entry<String, Command>> iterator = pending.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Command command = iterator.next().getValue();
+            if (command.expiresAtMillis <= nowMillis) iterator.remove();
+        }
+        for (Command command : pending.values()) {
+            if (!command.inFlight) return command;
+        }
+        return null;
+    }
+
     public synchronized void complete(String id, boolean success) {
         Command command = pending.get(id);
         if (command == null) return;

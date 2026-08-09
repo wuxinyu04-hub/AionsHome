@@ -395,8 +395,31 @@ public final class MiBandGattSession {
         batteryLevel = find(UUID.fromString(MiBandProtocol.BATTERY_LEVEL_UUID));
         if (chunkWrite == null || chunkRead == null || fetchMetadata == null || fetchData == null
                 || heartRateMeasurement == null || batteryLevel == null) {
-            throw new IllegalStateException("手环缺少必要的 BLE 服务");
+            throw new IllegalStateException("手环缺少必要的 BLE 服务 | 缺:"
+                    + (chunkWrite == null ? " write" : "")
+                    + (chunkRead == null ? " read" : "")
+                    + (fetchMetadata == null ? " fetchMeta" : "")
+                    + (fetchData == null ? " fetchData" : "")
+                    + (heartRateMeasurement == null ? " heartRate" : "")
+                    + (batteryLevel == null ? " battery" : "")
+                    + dumpServices());
         }
+    }
+
+    private String dumpServices() {
+        StringBuilder detail = new StringBuilder(" | 实际服务:");
+        if (gatt == null || gatt.getServices() == null) {
+            detail.append(" 无");
+            return detail.toString();
+        }
+        for (BluetoothGattService service : gatt.getServices()) {
+            detail.append(" [").append(service.getUuid());
+            for (BluetoothGattCharacteristic characteristic : service.getCharacteristics()) {
+                detail.append("+").append(characteristic.getUuid());
+            }
+            detail.append("]");
+        }
+        return detail.toString();
     }
 
     private void handleChunk(byte[] frame) {
