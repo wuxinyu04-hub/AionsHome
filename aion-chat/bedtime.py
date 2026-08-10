@@ -5,6 +5,7 @@
 """
 import asyncio
 import json
+import mmap
 import re
 import shutil
 import time
@@ -301,7 +302,11 @@ async def _backfill_durations() -> None:
             if not path.exists():
                 continue
             try:
-                dur = _mp3_duration_sec(path.read_bytes())
+                # 用 mmap 逐帧扫，不整文件 read_bytes() 进内存——
+                # 20 分钟 mp3 约 20MB/条，几十条老条目同时回填会瞬时吃掉几百 MB
+                with open(path, "rb") as f:
+                    with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                        dur = _mp3_duration_sec(mm)
             except Exception:
                 continue
             if dur:

@@ -944,7 +944,9 @@
     $('pMid').classList.remove('expanded');
     $('capPast').textContent = ''; $('capNow').textContent = '';
     state.capIdx = -1;
-    pushScreen('player');
+    // 自动切下一首时已在 player 屏，别重复压栈（否则队列连播 navStack 越积越深，
+    // 系统返回键要按很多次才能退到库页）
+    if (navStack[navStack.length - 1] !== 'player') pushScreen('player');
 
     // 剧本分句（去掉 [SFX:...] 标记），按字数权重对齐进度
     try {
@@ -1081,10 +1083,12 @@
   let _st = null;
   function saveProgressThrottled() {
     if (state.currentId == null || _st) return;
+    const itemId = state.currentId;
     _st = setTimeout(() => {
       _st = null;
-      if (state.currentId == null) return;
-      fetch('/api/sleep/' + state.currentId + '/progress', {
+      // 节流窗口内切了歌：这个 tick 记的是旧歌，别把旧歌进度写进新歌 id 里
+      if (state.currentId !== itemId) return;
+      fetch('/api/sleep/' + itemId + '/progress', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ progress_sec: Math.floor(audio.currentTime) }),
       }).catch(() => { });

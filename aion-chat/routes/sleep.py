@@ -25,6 +25,10 @@ _upload_tasks: set = set()
 # 封面生成 inflight：同步等待端点，连点会并发烧 Gemini 配额，按 item_id 去重
 _cover_inflight: set[str] = set()
 
+# 长篇生成（整本书 / 批量封面）后台 task 引用——理由同 _upload_tasks
+_book_tasks: set = set()
+_cover_tasks: set = set()
+
 
 def _require_tts_key() -> None:
     """按当前全局 TTS provider 检查对应 API Key；edge 免 key。未配置则抛 400。
@@ -69,10 +73,9 @@ async def generate_book(body: GenerateBookIn):
     if not voice:
         raise HTTPException(400, "未选择音色，请先在哄睡页选择当前 TTS 服务商的声音")
     _require_tts_key()
-    task = bedtime.auto_generate_book(body.book_id, voice)
-    # 手动触发也不阻塞请求；详细结果写日志，库列表看逐章状态。
-    import asyncio
-    asyncio.create_task(task)
+    task = asyncio.create_task(bedtime.auto_generate_book(body.book_id, voice))
+    _book_tasks.add(task)
+    task.add_done_callback(_book_tasks.discard)
     return {"ok": True, "status": "queued", "book_id": body.book_id, "voice": voice}
 
 
@@ -88,7 +91,9 @@ async def covers_batch():
     targets = await bedtime.cover_targets()
     if not targets:
         return {"ok": True, "total": 0}
-    asyncio.create_task(bedtime.run_cover_batch())
+    task = asyncio.create_task(bedtime.run_cover_batch())
+    _cover_tasks.add(task)
+    task.add_done_callback(_cover_tasks.discard)
     return {"ok": True, "total": len(targets)}
 
 

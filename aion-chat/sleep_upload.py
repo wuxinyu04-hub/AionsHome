@@ -8,7 +8,7 @@
     setup_sleep_upload(music_u)                     # 应用启动时调用一次
     upload_finished_item(item_id, title, voice, ...)  # _synthesize_bg 成功后调用
 """
-import hashlib, json, logging, sqlite3, time
+import hashlib, json, logging, os, sqlite3, threading, time
 from pathlib import Path
 from datetime import datetime
 
@@ -36,9 +36,15 @@ _CAT_NAME = {
     "meditation": "冥想引导", "reading": "散文朗读",
 }
 _CACHED_LOGIN = False
-# 手动上传运行态：item_id -> {status: running|done, ok, song_id, err}。
+# 手动上传运行态：item_id -> {status: running|done, ok, song_id, err, ts}。
 # 自动上传（合成完）不记这里，只有手动按钮触发的进内存，供前端轮询。
 _manual: dict[str, dict] = {}
+# done 状态留 5 分钟供前端读到结果，之后清掉（防内存单调增长 + 陈旧 err 误显示）
+_MANUAL_TTL = 300
+
+# 台账读写锁：自动上传（executor 线程）和手动上传（to_thread）并发时
+# 防 read-modify-write 互相覆盖丢去重条目（上次「已传过」判定失败会重复传云盘）。
+_ledger_lock = threading.Lock()
 
 
 def _log_event(item_id: str, status: str, detail: str = "") -> None:
@@ -75,17 +81,43 @@ def setup_sleep_upload(music_u: str = "") -> None:
 
 
 def _load_ledger() -> dict:
-    try:
-        return json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    with _ledger_lock:
+        try:
+            return json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
 
 
 def _save_ledger(led: dict) -> None:
+    """合并式写台账：并发线程可能刚写了别的条目，先读最新再合并，避免后写覆盖先写。
+
+    写临时文件再 os.replace 原子替换，中途崩溃不会留下残缺 JSON（残缺会被读成
+    空 dict → 全判未传 → 批量重传云盘）。
+    """
     try:
-        LEDGER_PATH.write_text(json.dumps(led, ensure_ascii=False, indent=1), encoding="utf-8")
+        with _ledger_lock:
+            try:
+                merged = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                merged = {}
+            merged.update(led)
+            tmp = LEDGER_PATH.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, LEDGER_PATH)
     except Exception as e:
         log.warning("写上传台账失败: %s", e)
+
+
+def _purge_manual(now: float | None = None) -> None:
+    """清掉超过 TTL 的 done 记录。"""
+    if not _manual:
+        return
+    if now is None:
+        now = time.time()
+    stale = [k for k, v in _manual.items()
+             if v.get("status") == "done" and now - (v.get("ts") or 0) > _MANUAL_TTL]
+    for k in stale:
+        _manual.pop(k, None)
 
 
 def _clean_book_title(t: str) -> str:
@@ -270,6 +302,7 @@ def get_netease_status(item_id: str, category: str = "") -> dict:
     已传：ledger 有 song_id + 反算歌单名；未传看手动运行态（running/err）。
     不抛异常，找不到也返回 uploaded=False。
     """
+    _purge_manual()
     led = _load_ledger()
     song_id = str(led.get(item_id) or "")
     uploaded = bool(song_id)
@@ -289,18 +322,20 @@ def start_manual_upload(item_id: str, title: str = "", category: str = "") -> di
     已传直接返回，不重复传；上传中返回 uploading。失败写 _manual done（含 err），
     不写台账，下次可重试。
     """
+    _purge_manual()
     led = _load_ledger()
     if item_id in led:
         _log_event(item_id, "skip-duplicate", f"手动触发但已传 songId={led.get(item_id)}")
         return {"ok": False, "song_id": led.get(item_id), "err": "already_uploaded"}
     if (_manual.get(item_id) or {}).get("status") == "running":
         return {"ok": False, "song_id": "", "err": "uploading"}
-    _manual[item_id] = {"status": "running"}
+    _manual[item_id] = {"status": "running", "ts": time.time()}
     res = upload_finished_item(item_id, title, category)
     _manual[item_id] = {
         "status": "done",
         "ok": bool(res.get("ok")),
         "song_id": res.get("song_id", ""),
         "err": res.get("err", ""),
+        "ts": time.time(),
     }
     return res
