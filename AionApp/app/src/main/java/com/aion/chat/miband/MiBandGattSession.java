@@ -209,7 +209,8 @@ public final class MiBandGattSession {
                 true);
         if ("call".equals(pattern)) {
             Thread.sleep(350L);
-            vibratePulses(2, 250L, 180L);
+            // 紧急呼叫固定 3 次（250ms 震 / 180ms 间隔），与 vibrate("call") 保持一致。
+            vibratePulses(3, 250L, 180L);
         }
     }
 
