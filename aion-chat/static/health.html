@@ -396,6 +396,13 @@
           <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">日均心率</div><div class="mi-band-summary-value" id="miBandDailyAvgHeart">-- bpm</div></div>
           <div class="mi-band-summary-item"><div class="vital-label">今日步数</div><div class="mi-band-summary-value" id="miBandTodaySteps">--</div></div>
           <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">云端更新</div><div class="mi-band-summary-value" id="miBandCloudUpdated">--</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">血氧</div><div class="mi-band-summary-value" id="miBandCloudSpo2">-- %</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">血压</div><div class="mi-band-summary-value" id="miBandCloudBP">--</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">体重</div><div class="mi-band-summary-value" id="miBandCloudWeight">-- kg</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">消耗</div><div class="mi-band-summary-value" id="miBandCloudCalories">-- cal</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">活动强度</div><div class="mi-band-summary-value" id="miBandCloudIntensity">-- min</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">站立</div><div class="mi-band-summary-value" id="miBandCloudStand">-- 次</div></div>
+          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">目标完成</div><div class="mi-band-summary-value" id="miBandCloudGoal">--</div></div>
           <div class="mi-band-summary-item ble-only"><div class="vital-label">下次同步</div><div class="mi-band-summary-value" id="miBandNextSync">--</div></div>
           <div class="mi-band-summary-item ble-only"><div class="vital-label">活动分钟</div><div class="mi-band-summary-value" id="miBandActivityMinutes">--</div></div>
           <div class="mi-band-summary-item ble-only"><div class="vital-label">最近30分钟</div><div class="mi-band-summary-value" id="miBandRecent30">--</div></div>
@@ -947,6 +954,31 @@ function renderMiBandSummary(summary) {
     if (cloudDot) cloudDot.classList.toggle('on', cloudFresh);
     const cloudStatus = $('miBandCloudStatus');
     if (cloudStatus) cloudStatus.textContent = cloudFresh ? '云同步正常' : (hasSync ? '云端数据较旧' : '等待云端同步');
+    // 云端快照补全字段：血氧/血压/体重/卡路里/活动强度/站立/目标
+    $('miBandCloudSpo2').textContent = Number(value.spo2) > 0 ? `${value.spo2} %` : '-- %';
+    const bp = value.bloodPressure;
+    $('miBandCloudBP').textContent = (bp && bp !== '0/0') ? `${bp} mmHg` : '待测';
+    const wt = value.weight;
+    $('miBandCloudWeight').textContent = (wt && Number(wt.kg) > 0) ? `${wt.kg} kg` : '-- kg';
+    $('miBandCloudCalories').textContent = Number(value.todayCalories) > 0 ? `${value.todayCalories} cal` : '-- cal';
+    $('miBandCloudIntensity').textContent = Number(value.todayIntensity) > 0 ? `${value.todayIntensity} min` : '-- min';
+    $('miBandCloudStand').textContent = Number(value.todayValidStand) > 0 ? `${value.todayValidStand} 次` : '-- 次';
+    // goal_raw 是后端透传的 JSON 串：[{field,label,target,achieved}, …]
+    let goalText = '--';
+    if (value.goal) {
+      try {
+        const items = typeof value.goal === 'string' ? JSON.parse(value.goal) : value.goal;
+        if (Array.isArray(items) && items.length) {
+          const bits = items.map(it => {
+            const label = it.label || it.field || '';
+            const t = Number(it.target) || 0, a = Number(it.achieved) || 0;
+            return label ? `${label} ${a}/${t}` : '';
+          }).filter(Boolean);
+          if (bits.length) goalText = bits.join(' · ');
+        }
+      } catch (e) {}
+    }
+    $('miBandCloudGoal').textContent = goalText;
   }
   const sleep = value.sleep;
   if (sleep) {
@@ -955,10 +987,19 @@ function renderMiBandSummary(summary) {
     if (cloudMode && sleep.precision === 'daily') {
       const parts = [];
       if (sleep.sleepDate) parts.push(`日期 ${sleep.sleepDate}`);
+      // 入睡-醒来时间（云端 segment_details 给的时间戳）
+      if (sleep.startAt && sleep.endAt) {
+        parts.push(`${fmtTime(sleep.startAt)} - ${fmtTime(sleep.endAt)}`);
+      }
+      if (sleep.score) parts.push(`评分 ${sleep.score}/100`);
       const segs = [];
       if (Number(sleep.deepMin) > 0) segs.push(`深睡 ${sleep.deepMin}m`);
       if (Number(sleep.lightMin) > 0) segs.push(`浅睡 ${sleep.lightMin}m`);
       if (Number(sleep.remMin) > 0) segs.push(`REM ${sleep.remMin}m`);
+      if (sleep.awakeMin) segs.push(`清醒 ${sleep.awakeMin}m`);
+      if (sleep.awakeCount) segs.push(`醒来 ${sleep.awakeCount}次`);
+      if (sleep.avgHr) segs.push(`均心率 ${sleep.avgHr}`);
+      if (sleep.maxHr) segs.push(`最高 ${sleep.maxHr}`);
       $('miBandSleepRange').textContent = parts.join(' · ') || '暂无睡眠';
       $('miBandSleepMeta').textContent = segs.length ? segs.join(' · ') : '云端仅提供睡眠总时长';
       $('miBandSleepSessions').innerHTML = '';

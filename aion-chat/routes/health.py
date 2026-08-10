@@ -225,9 +225,21 @@ async def _build_cloud_summary(db, current: float) -> dict:
     # 最近一条云日汇总（日均心率/步数/睡眠总时长，measured_at=当天 0 点）
     latest_day = await (await db.execute(
         "SELECT device_name, measured_at, heart_rate, steps, sleep_value, "
-        "deep_sleep_value, rem_sleep_value, synced_at "
+        "deep_sleep_value, rem_sleep_value, calories, valid_stand, intensity, "
+        "sleep_score, sleep_awake, awake_count, sleep_start, sleep_end, "
+        "sleep_avg_hr, sleep_max_hr, synced_at "
         "FROM health_miband_activity WHERE source='mi_cloud' "
         "ORDER BY measured_at DESC LIMIT 1"
+    )).fetchone()
+    # health_ring_latest id=1：mi_cloud 快照写的血氧/血压/目标（云模式用户没连戒指，
+    # 这一行由 mi_cloud 独占写入）。读出来镜像给前端，避免云模式卡片空白。
+    ring_snap = await (await db.execute(
+        "SELECT spo2, systolic_bp, diastolic_bp, goal_raw, synced_at "
+        "FROM health_ring_latest WHERE id=1"
+    )).fetchone()
+    # 最新体重（health_weight_entries 按 date 去重，前端日历也读这表）
+    weight_row = await (await db.execute(
+        "SELECT date, weight_kg FROM health_weight_entries ORDER BY date DESC LIMIT 1"
     )).fetchone()
     local_now = datetime.fromtimestamp(current)
     day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -236,9 +248,11 @@ async def _build_cloud_summary(db, current: float) -> dict:
         "WHERE source='mi_cloud' AND measured_at>=? AND measured_at<?",
         (day_start, day_start + 86400),
     )).fetchone()
-    # 最近一条有睡眠的云日汇总（睡眠只有总时长/深睡/浅睡/REM，无入睡醒来时间线）
+    # 最近一条有睡眠的云日汇总（含入睡/醒来时间/评分/清醒/夜间心率，无逐分钟时间线）
     sleep_day = await (await db.execute(
-        "SELECT measured_at, sleep_value, deep_sleep_value, rem_sleep_value "
+        "SELECT measured_at, sleep_value, deep_sleep_value, rem_sleep_value, "
+        "sleep_score, sleep_awake, awake_count, sleep_start, sleep_end, "
+        "sleep_avg_hr, sleep_max_hr "
         "FROM health_miband_activity WHERE source='mi_cloud' "
         "AND (sleep_value>0 OR deep_sleep_value>0 OR rem_sleep_value>0) "
         "ORDER BY measured_at DESC LIMIT 1"
@@ -249,18 +263,27 @@ async def _build_cloud_summary(db, current: float) -> dict:
         deep = int(sleep_day["deep_sleep_value"] or 0)
         rem = int(sleep_day["rem_sleep_value"] or 0)
         light = max(0, total - deep - rem) if total > 0 else 0
+        # 入睡/醒来时间戳（秒级，来自 segment_details）
+        sleep_start = float(sleep_day["sleep_start"] or 0)
+        sleep_end = float(sleep_day["sleep_end"] or 0)
         sleep_summary = {
             "precision": "daily",
             "sleepDate": datetime.fromtimestamp(
                 float(sleep_day["measured_at"])
             ).date().isoformat(),
-            "startAt": None,
-            "endAt": None,
+            "startAt": sleep_start if sleep_start > 0 else None,
+            "endAt": sleep_end if sleep_end > 0 else None,
             "kind": "main" if total >= 180 else ("nap" if total > 0 else None),
             "totalMin": total if total > 0 else None,
             "deepMin": deep if deep > 0 else None,
             "lightMin": light if light > 0 else None,
             "remMin": rem if rem > 0 else None,
+            # 睡眠扩展字段
+            "score": int(sleep_day["sleep_score"] or 0) or None,
+            "awakeMin": int(sleep_day["sleep_awake"] or 0) or None,
+            "awakeCount": int(sleep_day["awake_count"] or 0) or None,
+            "avgHr": int(sleep_day["sleep_avg_hr"] or 0) or None,
+            "maxHr": int(sleep_day["sleep_max_hr"] or 0) or None,
             "sessions": [],
         }
     return {
@@ -278,6 +301,28 @@ async def _build_cloud_summary(db, current: float) -> dict:
         "dailyAverageHeartRateAt": latest_day["measured_at"] if latest_day else 0,
         "todaySteps": int(today["steps"] if today else 0),
         "stepsKind": "daily_total",
+        "todayCalories": (
+            int(latest_day["calories"]) if latest_day and latest_day["calories"] else 0
+        ),
+        "todayValidStand": (
+            int(latest_day["valid_stand"]) if latest_day and latest_day["valid_stand"] else 0
+        ),
+        "todayIntensity": (
+            int(latest_day["intensity"]) if latest_day and latest_day["intensity"] else 0
+        ),
+        # 血氧/血压/目标：mi_cloud 快照写进 health_ring_latest(id=1)，云模式镜像一份
+        "spo2": int(ring_snap["spo2"]) if ring_snap and ring_snap["spo2"] else None,
+        "bloodPressure": (
+            f"{int(ring_snap['systolic_bp'])}/{int(ring_snap['diastolic_bp'])}"
+            if ring_snap and ring_snap["systolic_bp"] and ring_snap["systolic_bp"] > 0
+            else None
+        ),
+        "goal": ring_snap["goal_raw"] if ring_snap and ring_snap["goal_raw"] else None,
+        # 体重：health_weight_entries 最新一条
+        "weight": (
+            {"date": weight_row["date"], "kg": float(weight_row["weight_kg"])}
+            if weight_row else None
+        ),
         "activityMinutes": None,
         "recent30ActivityMinutes": None,
         "recent30Steps": None,

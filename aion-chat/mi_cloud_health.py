@@ -26,7 +26,7 @@ import json
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import aiosqlite
 
@@ -119,6 +119,16 @@ async def _persist_sample(
     sleep: Optional[int] = None,
     deep_sleep: Optional[int] = None,
     rem_sleep: Optional[int] = None,
+    calories: Optional[int] = None,
+    valid_stand: Optional[int] = None,
+    intensity_min: Optional[int] = None,
+    sleep_score: Optional[int] = None,
+    sleep_awake: Optional[int] = None,
+    awake_count: Optional[int] = None,
+    sleep_start: Optional[float] = None,
+    sleep_end: Optional[float] = None,
+    sleep_avg_hr: Optional[int] = None,
+    sleep_max_hr: Optional[int] = None,
     now: float,
 ) -> None:
     # 区分“本次接口没返回该字段”(None -> 保留旧值) 与“返回了 0”(有效测量 -> 覆盖)。
@@ -139,19 +149,46 @@ async def _persist_sample(
         sets.append("rem_sleep_value=excluded.rem_sleep_value")
     if sleep_stage:
         sets.append("sleep_stage=excluded.sleep_stage")
+    if calories is not None:
+        sets.append("calories=excluded.calories")
+    if valid_stand is not None:
+        sets.append("valid_stand=excluded.valid_stand")
+    if intensity_min is not None:
+        # intensity 列建表就有但一直写 0；这里复用它存中高强度活动分钟
+        sets.append("intensity=excluded.intensity")
+    if sleep_score is not None:
+        sets.append("sleep_score=excluded.sleep_score")
+    if sleep_awake is not None:
+        sets.append("sleep_awake=excluded.sleep_awake")
+    if awake_count is not None:
+        sets.append("awake_count=excluded.awake_count")
+    if sleep_start is not None:
+        sets.append("sleep_start=excluded.sleep_start")
+    if sleep_end is not None:
+        sets.append("sleep_end=excluded.sleep_end")
+    if sleep_avg_hr is not None:
+        sets.append("sleep_avg_hr=excluded.sleep_avg_hr")
+    if sleep_max_hr is not None:
+        sets.append("sleep_max_hr=excluded.sleep_max_hr")
     await db.execute(
         f"""
         INSERT INTO health_miband_activity (
             source, measured_at, device_name, raw_kind, intensity, steps,
             heart_rate, unknown_value, sleep_value, deep_sleep_value,
-            rem_sleep_value, sleep_stage, synced_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            rem_sleep_value, sleep_stage, calories, valid_stand,
+            sleep_score, sleep_awake, awake_count, sleep_start, sleep_end,
+            sleep_avg_hr, sleep_max_hr, synced_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(source, measured_at) DO UPDATE SET {', '.join(sets)}
         """,
         (
-            source, measured_at, device_name, 0, 0, _val(steps),
+            source, measured_at, device_name, 0, _val(intensity_min), _val(steps),
             _val(heart_rate), 0, _val(sleep), _val(deep_sleep), _val(rem_sleep),
-            sleep_stage or "", now,
+            sleep_stage or "", _val(calories), _val(valid_stand),
+            _val(sleep_score), _val(sleep_awake), _val(awake_count),
+            float(sleep_start) if sleep_start is not None else 0,
+            float(sleep_end) if sleep_end is not None else 0,
+            _val(sleep_avg_hr), _val(sleep_max_hr), now,
         ),
     )
 
@@ -192,19 +229,39 @@ async def _sync_day(
     except Exception as e:
         counts["steps_err"] = str(e)
 
-    # 睡眠（一天一条汇总：总时长 + 深睡/浅睡/REM 各分钟数）。
-    # 云端只有日粒度汇总，没有逐分钟时间线，不展开、不伪造 stage 行；
-    # 总时长存 sleep_value，深/REM 存对应列，前端按 precision=daily 展示。
+    # 睡眠（一天一条汇总：总时长 + 深睡/浅睡/REM + 评分/清醒/入睡醒来时间/夜间心率）。
+    # 云端只有日粒度汇总，segment_details 给入睡/醒来时间戳但不是逐分钟时间线。
     try:
         sleeps = await client.get_sleep(uid, day, days=1)
         for sl in sleeps:
             deep = max(0, int(sl.sleep_deep_duration))
             light = max(0, int(sl.sleep_light_duration))
             rem = max(0, int(sl.sleep_rem_duration))
-            total = deep + light + rem
+            total = int(sl.total_duration) or (deep + light + rem)
             if total <= 0:
                 continue
-            pending.append({"sleep": total, "deep_sleep": deep, "rem_sleep": rem})
+            # 入睡/醒来时间：取第一个 segment 的 bedtime/wake_up_time（秒级时间戳）
+            sleep_start = 0.0
+            sleep_end = 0.0
+            awake_cnt = 0
+            segs = sl.segment_details or []
+            if segs:
+                first = segs[0]
+                sleep_start = float(first.bedtime or 0)
+                sleep_end = float(first.wake_up_time or 0)
+                awake_cnt = int(first.awake_count or 0)
+            pending.append({
+                "sleep": total,
+                "deep_sleep": deep,
+                "rem_sleep": rem,
+                "sleep_score": int(sl.sleep_score or 0),
+                "sleep_awake": int(sl.sleep_awake_duration or 0),
+                "awake_count": awake_cnt,
+                "sleep_start": sleep_start,
+                "sleep_end": sleep_end,
+                "sleep_avg_hr": int(sl.avg_hr or 0),
+                "sleep_max_hr": int(sl.max_hr or 0),
+            })
             counts["sleep"] += 1
     except Exception as e:
         counts["sleep_err"] = str(e)
@@ -221,6 +278,13 @@ async def _sync_day(
                     sleep=item.get("sleep"),
                     deep_sleep=item.get("deep_sleep"),
                     rem_sleep=item.get("rem_sleep"),
+                    sleep_score=item.get("sleep_score"),
+                    sleep_awake=item.get("sleep_awake"),
+                    awake_count=item.get("awake_count"),
+                    sleep_start=item.get("sleep_start"),
+                    sleep_end=item.get("sleep_end"),
+                    sleep_avg_hr=item.get("sleep_avg_hr"),
+                    sleep_max_hr=item.get("sleep_max_hr"),
                     now=now,
                 )
             await db.commit()
@@ -234,10 +298,17 @@ async def _sync_latest_snapshot(
     device_name: str,
     now: float,
 ) -> dict[str, Any]:
-    """拉亲友最新实时快照心率 → health_ring_heart_rates（source=mi_cloud）。
+    """拉亲友最新快照全量 → 落库心率/血氧/血压/体重/目标/卡路里/活动强度/站立。
 
-    云端聚合接口有延迟，最新心率以 get_latest_data 的真实采样时间为准，
-    不与日均值混为一谈；raw_json 记录 kind 与账号数据时间，方便溯源。
+    原实现只取 snapshot.heart_rate 一个字段，把旁边 9 类全扔了——授权了却拿不到的
+    真因。这里一次把 LatestDataSnapshot 全字段按各自落点写入，单连接单 commit。
+
+    落点：
+      - 心率 → health_ring_heart_rates（真实采样时间，与日均值区分）
+      - 血氧/血压/目标 → health_ring_latest(id=1) 局部更新，不覆盖戒指写的睡眠等列
+      - 体重 → health_weight_entries（按日期去重，前端日历可见）
+      - 卡路里/活动强度/站立 → health_miband_activity 今天日汇总行（当日聚合值）
+    血压 value 为 {} 时（手环没手动测过）跳过不写，不拿默认 0 冒充。
     """
     try:
         snapshot = await client.get_latest_data(uid)
@@ -245,30 +316,134 @@ async def _sync_latest_snapshot(
         return {"error": str(e)}
     if not snapshot:
         return {"written": 0}
+
+    result: dict[str, Any] = {}
+    updated_ts = float(snapshot.updated_time or now)
     hr_item = snapshot.heart_rate
-    if not hr_item or not hr_item.bpm or not (20 <= int(hr_item.bpm) <= 240):
-        return {"written": 0}
-    ts = float(hr_item.time or snapshot.updated_time or now)
-    raw = {
-        "kind": "latest_snapshot",
-        "account_updated_at": ts,
-        "device_name": device_name,
-    }
+
     async with get_db() as db:
-        entry = await insert_heart_rate(
-            db, device_name=device_name, heart_rate=int(hr_item.bpm),
-            measured_at=ts, source=SOURCE, raw=raw,
+        # ── a) 心率 → health_ring_heart_rates ──
+        hr_entry = None
+        hr_written = 0
+        hr_events: list[Any] = []
+        if hr_item and hr_item.bpm and (20 <= int(hr_item.bpm) <= 240):
+            hr_ts = float(hr_item.time or updated_ts or now)
+            raw = {
+                "kind": "latest_snapshot",
+                "account_updated_at": hr_ts,
+                "device_name": device_name,
+            }
+            hr_entry = await insert_heart_rate(
+                db, device_name=device_name, heart_rate=int(hr_item.bpm),
+                measured_at=hr_ts, source=SOURCE, raw=raw,
+            )
+            hr_written = 1 if hr_entry else 0
+            hr_events = (
+                await analyze_heart_rate_entry(db, hr_entry)
+                if hr_entry and hr_entry.get("is_new") else []
+            )
+        result["heart_rate"] = int(hr_item.bpm) if (hr_item and hr_item.bpm and hr_entry) else 0
+        result["events"] = len(hr_events or [])
+
+        # ── b) 血氧/血压/目标 → health_ring_latest(id=1) 局部更新 ──
+        # 只动这几个列，不碰戒指写的 sleep/heart_rate 等。
+        # 先确保 id=1 行存在（INSERT OR IGNORE 空壳），再逐字段 UPDATE。
+        ring_raw: dict[str, Any] = {"kind": "latest_snapshot", "source": SOURCE}
+        await db.execute(
+            "INSERT OR IGNORE INTO health_ring_latest (id, device_name, synced_at) VALUES (1, ?, ?)",
+            (device_name, now),
         )
-        events = (
-            await analyze_heart_rate_entry(db, entry)
-            if entry and entry.get("is_new") else []
-        )
+        ring_updates: list[tuple[str, Any]] = []
+        spo2_item = snapshot.spo2
+        if spo2_item and spo2_item.spo2 and (50 <= int(spo2_item.spo2) <= 100):
+            ring_updates.append(("spo2", int(spo2_item.spo2)))
+            ring_raw["spo2"] = {"value": int(spo2_item.spo2), "time": spo2_item.time}
+            result["spo2"] = int(spo2_item.spo2)
+
+        # 血压：value={} 时模型解析成 systolic=0/diastolic=0，靠 systolic>0 判真数据
+        bp_item = snapshot.blood_pressure
+        if bp_item and bp_item.systolic > 0 and bp_item.diastolic > 0:
+            ring_updates.append(("systolic_bp", int(bp_item.systolic)))
+            ring_updates.append(("diastolic_bp", int(bp_item.diastolic)))
+            ring_raw["blood_pressure"] = {
+                "systolic": int(bp_item.systolic),
+                "diastolic": int(bp_item.diastolic),
+                "time": bp_item.time,
+            }
+            result["blood_pressure"] = f"{int(bp_item.systolic)}/{int(bp_item.diastolic)}"
+
+        # 目标完成度 → goal_raw JSON
+        goal_item = snapshot.goal
+        if goal_item and goal_item.goal_items:
+            goal_json = json.dumps(
+                [
+                    {"field": it.field, "metric": it.metric_key,
+                     "label": it.metric_label, "target": it.target_value,
+                     "achieved": it.achieved_value}
+                    for it in goal_item.goal_items
+                ],
+                ensure_ascii=False,
+            )
+            ring_updates.append(("goal_raw", goal_json))
+            ring_raw["goal"] = goal_json
+            result["goal_items"] = len(goal_item.goal_items)
+
+        if ring_updates:
+            set_clause = ", ".join(f"{col}=?" for col, _ in ring_updates)
+            set_vals = [v for _, v in ring_updates]
+            await db.execute(
+                f"UPDATE health_ring_latest SET {set_clause}, "
+                f"raw_json=?, synced_at=? WHERE id=1",
+                (*set_vals, json.dumps(ring_raw, ensure_ascii=False), now),
+            )
+
+        # ── c) 卡路里/活动强度/站立 → health_miband_activity 今天日汇总行 ──
+        today = date.today()
+        day_start = _day_start_ts(today)
+        cal_val = None
+        stand_val = None
+        intensity_val = None
+        cal_item = snapshot.calories
+        if cal_item and cal_item.calories >= 0:
+            cal_val = int(cal_item.calories)
+            result["calories"] = cal_val
+        stand_item = snapshot.valid_stand
+        if stand_item and stand_item.count >= 0:
+            stand_val = int(stand_item.count)
+            result["valid_stand"] = stand_val
+        inten_item = snapshot.intensity
+        if inten_item and inten_item.duration >= 0:
+            intensity_val = int(inten_item.duration)
+            result["intensity"] = intensity_val
+        if any(v is not None for v in (cal_val, stand_val, intensity_val)):
+            await _persist_sample(
+                db, measured_at=day_start, device_name=device_name,
+                source=SOURCE,
+                calories=cal_val, valid_stand=stand_val, intensity_min=intensity_val,
+                now=now,
+            )
+
+        # ── d) 体重 → health_weight_entries（按日期去重，前端日历可见）──
+        weight_item = snapshot.weight
+        if weight_item and weight_item.weight and 20 <= float(weight_item.weight) <= 300:
+            w_ts = float(weight_item.time or updated_ts or now)
+            w_date = datetime.fromtimestamp(w_ts).date().isoformat()
+            await db.execute(
+                """
+                INSERT INTO health_weight_entries (date, weight_kg, note, created_at, updated_at)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(date) DO UPDATE SET
+                    weight_kg=excluded.weight_kg,
+                    updated_at=excluded.updated_at
+                """,
+                (w_date, float(weight_item.weight), "☁ 小米云同步", now, now),
+            )
+            result["weight"] = {"date": w_date, "kg": float(weight_item.weight)}
+
         await db.commit()
-    return {
-        "written": 1 if entry else 0,
-        "heart_rate": int(hr_item.bpm) if entry else 0,
-        "events": len(events or []),
-    }
+
+    result["written"] = hr_written
+    return result
 
 
 async def _do_sync_once() -> dict[str, Any]:

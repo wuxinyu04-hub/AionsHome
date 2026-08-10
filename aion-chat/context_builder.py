@@ -123,8 +123,9 @@ async def build_health_summary() -> str:
             )
             period_row = await cur.fetchone()
             # 戒指/快照里的血压、血氧、HRV 一直存了却没进 AI，这里补上。
+            # goal_raw 是 mi_cloud 写的目标完成度 JSON，一并读出解析。
             cur = await db.execute(
-                "SELECT systolic_bp, diastolic_bp, spo2, hrv, measured_at "
+                "SELECT systolic_bp, diastolic_bp, spo2, hrv, goal_raw, measured_at "
                 "FROM health_ring_latest WHERE id=1"
             )
             ring_row = await cur.fetchone()
@@ -144,27 +145,48 @@ async def build_health_summary() -> str:
             except Exception:
                 parts.append(f"心率:{hr}")
 
-        parts.append(
-            f"今日步数:{int(mi_band.get('todaySteps') or 0)} | "
-            f"活动:{int(mi_band.get('activityMinutes') or 0)}分钟"
-        )
-        parts.append(
-            f"最近30分钟：活动{int(mi_band.get('recent30ActivityMinutes') or 0)}分钟，"
-            f"{int(mi_band.get('recent30Steps') or 0)}步"
-        )
-        parts.append(
-            f"最近60分钟：活动{int(mi_band.get('recent60ActivityMinutes') or 0)}分钟，"
-            f"{int(mi_band.get('recent60Steps') or 0)}步"
-        )
+        # 云模式（mi_cloud）只有日汇总，没有分钟级活动采样；30/60 分钟细分全是 None，
+        # 硬打会刷一屏"0分钟0步"。云模式改用卡路里/站立/活动强度口径，BLE 模式保持原样。
+        if mi_band.get("mode") == "mi_cloud":
+            cloud_bits = [f"今日步数:{int(mi_band.get('todaySteps') or 0)}"]
+            cal = int(mi_band.get("todayCalories") or 0)
+            stand = int(mi_band.get("todayValidStand") or 0)
+            inten = int(mi_band.get("todayIntensity") or 0)
+            if cal:
+                cloud_bits.append(f"消耗{cal}cal")
+            if stand:
+                cloud_bits.append(f"站立{stand}次")
+            if inten:
+                cloud_bits.append(f"中高强度{inten}min")
+            parts.append(" | ".join(cloud_bits))
+        else:
+            parts.append(
+                f"今日步数:{int(mi_band.get('todaySteps') or 0)} | "
+                f"活动:{int(mi_band.get('activityMinutes') or 0)}分钟"
+            )
+            parts.append(
+                f"最近30分钟：活动{int(mi_band.get('recent30ActivityMinutes') or 0)}分钟，"
+                f"{int(mi_band.get('recent30Steps') or 0)}步"
+            )
+            parts.append(
+                f"最近60分钟：活动{int(mi_band.get('recent60ActivityMinutes') or 0)}分钟，"
+                f"{int(mi_band.get('recent60Steps') or 0)}步"
+            )
 
         sleep = mi_band.get("sleep") or {}
         total = int(sleep.get("totalMin") or 0)
         deep = int(sleep.get("deepMin") or 0)
         light = int(sleep.get("lightMin") or 0)
         rem = int(sleep.get("remMin") or 0)
-        if deep or light or rem:
+        if deep or light or rem or total:
             if total:
                 parts.append(f"睡眠:总计{total}m")
+            # 云端日汇总：startAt/endAt 在顶层（非 sessions），评分/清醒/夜间心率也在顶层
+            cloud_sleep = mi_band.get("mode") == "mi_cloud"
+            if cloud_sleep and sleep.get("startAt") and sleep.get("endAt"):
+                s_text = datetime.fromtimestamp(float(sleep["startAt"])).strftime("%H:%M")
+                e_text = datetime.fromtimestamp(float(sleep["endAt"])).strftime("%H:%M")
+                parts.append(f"入睡{s_text}-醒来{e_text}")
             sessions = sleep.get("sessions") or []
             for session in sessions:
                 start_at = session.get("startAt")
@@ -182,6 +204,24 @@ async def build_health_summary() -> str:
             if rem: sleep_stage_parts.append(f"REM:{rem}m")
             if sleep_stage_parts:
                 parts.append(" | ".join(sleep_stage_parts))
+            # 睡眠扩展（云端）：评分/清醒/醒来次数/夜间心率
+            if cloud_sleep:
+                if sleep.get("score"):
+                    parts.append(f"睡眠评分:{sleep['score']}/100")
+                ext_bits = []
+                if sleep.get("awakeMin"):
+                    ext_bits.append(f"清醒{sleep['awakeMin']}m")
+                if sleep.get("awakeCount"):
+                    ext_bits.append(f"醒来{sleep['awakeCount']}次")
+                if ext_bits:
+                    parts.append(" | ".join(ext_bits))
+                hr_bits = []
+                if sleep.get("avgHr"):
+                    hr_bits.append(f"均{sleep['avgHr']}")
+                if sleep.get("maxHr"):
+                    hr_bits.append(f"最高{sleep['maxHr']}")
+                if hr_bits:
+                    parts.append(f"夜间心率:{'/'.join(hr_bits)}")
 
         if weight_row:
             parts.append(f"体重:{weight_row['weight_kg']}kg")
@@ -214,6 +254,23 @@ async def build_health_summary() -> str:
             hrv = ring_row["hrv"]
             if hrv:
                 parts.append(f"HRV:{int(hrv)}ms{ring_tag}")
+            # 目标完成度（mi_cloud 快照 goal_raw JSON：步数/卡路里等目标 vs 达成）
+            goal_raw = ring_row["goal_raw"]
+            if goal_raw:
+                try:
+                    goal_items = json.loads(goal_raw)
+                    if isinstance(goal_items, list) and goal_items:
+                        goal_bits = []
+                        for it in goal_items:
+                            label = it.get("label") or it.get("field") or ""
+                            target = it.get("target") or 0
+                            achieved = it.get("achieved") or 0
+                            if label and (target or achieved):
+                                goal_bits.append(f"{label}:{achieved}/{target}")
+                        if goal_bits:
+                            parts.append("目标:" + " · ".join(goal_bits))
+                except Exception:
+                    pass
 
         if not parts:
             return ""

@@ -904,6 +904,17 @@ async def init_db():
                 synced_at REAL NOT NULL
             )
         """)
+        # mi_cloud 快照扩展：目标完成度 JSON、活动卡路里、有效站立次数
+        # spo2/systolic_bp/diastolic_bp 建表已有，mi_cloud 直接写入即可被 AI 读取
+        for col, defn in [
+            ("goal_raw", "TEXT DEFAULT ''"),
+            ("calories", "INTEGER"),
+            ("valid_stand", "INTEGER"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE health_ring_latest ADD COLUMN {col} {defn}")
+            except Exception:
+                pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS health_ring_heart_rates (
                 id TEXT PRIMARY KEY,
@@ -935,6 +946,24 @@ async def init_db():
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_health_miband_activity_measured ON health_miband_activity(measured_at DESC)")
+        # mi_cloud 云端日汇总扩展：活动卡路里、有效站立次数、中高强度活动分钟
+        # （intensity 列建表已有但一直没写，这里复用它存中高强度分钟，不另加列）
+        for col, defn in [
+            ("calories", "INTEGER NOT NULL DEFAULT 0"),
+            ("valid_stand", "INTEGER NOT NULL DEFAULT 0"),
+            # 睡眠扩展：评分/清醒时长/醒来次数/入睡醒来时间戳/夜间心率
+            ("sleep_score", "INTEGER NOT NULL DEFAULT 0"),
+            ("sleep_awake", "INTEGER NOT NULL DEFAULT 0"),
+            ("awake_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("sleep_start", "REAL NOT NULL DEFAULT 0"),
+            ("sleep_end", "REAL NOT NULL DEFAULT 0"),
+            ("sleep_avg_hr", "INTEGER NOT NULL DEFAULT 0"),
+            ("sleep_max_hr", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE health_miband_activity ADD COLUMN {col} {defn}")
+            except Exception:
+                pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS health_miband_commands (
                 id TEXT PRIMARY KEY,
