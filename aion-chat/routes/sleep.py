@@ -267,7 +267,9 @@ async def regenerate(item_id: str, body: RegenerateIn):
 
     if not await bedtime.claim_synthesizing(item_id, voice):
         return {"ok": True, "status": "generating"}
-    bedtime.trigger_generate(item_id, category, prompt, voice, title, book)
+    # actor 已落库：重生成时恢复原人设（林叙=connor 剧本走 _LINXU_PERSONA，不会退化成默认温叙远）
+    actor = str(item.get("actor") or "aion")
+    bedtime.trigger_generate(item_id, category, prompt, voice, title, book, actor=actor)
     return {"ok": True, "status": "generating", "title": title}
 
 

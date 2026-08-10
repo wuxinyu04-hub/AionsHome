@@ -24,6 +24,7 @@ from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prom
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from routes.files import export_conversation
 from routes.music import MUSIC_CMD_PATTERN, _handle_music_mgmt_cmds
+from bedtime import handle_leave_audio_cmd
 import playback
 from song_gen import SONG_CMD_PATTERN, clean_song_visible_reply
 from stream_reply import resolve_stream_failure
@@ -224,11 +225,12 @@ async def _emit_chat_visible_chunk(
     visible_text: str,
     visible_chunk: str,
     tts_streamer: TTSStreamer | None = None,
+    skip_tts: bool = False,
 ):
     if not visible_chunk:
         return
     await _q.put(_chat_stream_event(model_key, visible_text, visible_chunk))
-    if tts_streamer:
+    if tts_streamer and not skip_tts:
         await tts_streamer.feed_async(visible_chunk)
 
 
@@ -241,30 +243,37 @@ async def _consume_chat_stream(
 ) -> tuple[StreamSafetyResult, str]:
     visible_text = ""
     stream_filter = WebCommandStreamFilter()
+    skip_tts = False
 
     async def on_commit(chunk: str) -> None:
-        nonlocal visible_text
+        nonlocal visible_text, skip_tts
         visible_chunk = stream_filter.feed(chunk)
         if visible_chunk:
             visible_text += visible_chunk
+            if not skip_tts and _is_ai_error_text(visible_text):
+                skip_tts = True
             await _emit_chat_visible_chunk(
                 queue,
                 model_key,
                 visible_text,
                 visible_chunk,
                 tts_streamer,
+                skip_tts=skip_tts,
             )
 
     result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
     visible_tail = stream_filter.flush()
     if visible_tail:
         visible_text += visible_tail
+        if not skip_tts and _is_ai_error_text(visible_text):
+            skip_tts = True
         await _emit_chat_visible_chunk(
             queue,
             model_key,
             visible_text,
             visible_tail,
             tts_streamer,
+            skip_tts=skip_tts,
         )
     if result.notice:
         notice = f"\n\n[{result.notice}]"
@@ -1340,6 +1349,14 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
 
+            full_text, _leave_audio_cards = await handle_leave_audio_cmd(full_text, actor="aion")
+            if _leave_audio_cards:
+                from ws import manager as _ws_mgr
+                for _lac in _leave_audio_cards:
+                    await _ws_mgr.broadcast({"type": "sleep_item_updated", "data": {
+                        "id": _lac["item_id"], "status": "generating", "title": _lac["title"],
+                        "voice": _lac["voice"], "source": "leave_audio_chat"}})
+
             full_text = await process_band_vibration(
                 full_text,
                 source_type="private",
@@ -1972,6 +1989,14 @@ async def send_message(conv_id: str, body: MsgCreate):
                         log.warning("点歌搜索失败: %s", e)
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
+
+            full_text, _leave_audio_cards = await handle_leave_audio_cmd(full_text, actor="aion")
+            if _leave_audio_cards:
+                from ws import manager as _ws_mgr
+                for _lac in _leave_audio_cards:
+                    await _ws_mgr.broadcast({"type": "sleep_item_updated", "data": {
+                        "id": _lac["item_id"], "status": "generating", "title": _lac["title"],
+                        "voice": _lac["voice"], "source": "leave_audio_chat"}})
 
             full_text = await process_band_vibration(
                 full_text,
@@ -3176,6 +3201,14 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                         log.warning("点歌搜索失败: %s", e)
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
             full_text, mgmt_cards = _handle_music_mgmt_cmds(full_text)
+
+            full_text, _leave_audio_cards = await handle_leave_audio_cmd(full_text, actor="aion")
+            if _leave_audio_cards:
+                from ws import manager as _ws_mgr
+                for _lac in _leave_audio_cards:
+                    await _ws_mgr.broadcast({"type": "sleep_item_updated", "data": {
+                        "id": _lac["item_id"], "status": "generating", "title": _lac["title"],
+                        "voice": _lac["voice"], "source": "leave_audio_chat"}})
 
             full_text = await process_band_vibration(
                 full_text,

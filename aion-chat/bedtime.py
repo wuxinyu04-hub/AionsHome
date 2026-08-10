@@ -207,6 +207,52 @@ def remember_sleep_voice(voice: str) -> None:
         log.exception("保存哄睡默认音色失败")
 
 
+# ── 对话触发留哄睡语音：[LEAVE_AUDIO] / [LEAVE_AUDIO:主题] ──
+# 与自主留语音（autonomy._run_leave_sleep_audio）区别：这条由用户在聊天里主动触发，
+# 不经过 idle 循环，不写 idle_event、不在群聊再发一条通知（AI 的主文本就是回话）。
+# actor 决定音色（aion=磁性男声 / connor=温柔公子）和剧情 instruction（见 _sleep_tts_instruction）。
+LEAVE_AUDIO_PATTERN = re.compile(r"\[LEAVE_AUDIO(?::([^\]]+))?\]")
+
+
+def _leave_audio_voice(actor: str) -> str:
+    """对话触发留语音的音色：复用 chatroom_config 的 tts_aion/connor_voice 口径，避免循环依赖
+    （不 import autonomy，否则 autonomy 又 import bedtime 会成环）。兜底 aion=cixingnansheng / connor=wenrougongzi。"""
+    try:
+        from chatroom import load_chatroom_config
+        cfg = load_chatroom_config()
+        if actor == "connor":
+            return cfg.get("tts_connor_voice") or "wenrougongzi"
+        return cfg.get("tts_aion_voice") or "cixingnansheng"
+    except Exception:
+        return "wenrougongzi" if actor == "connor" else default_sleep_voice()
+
+
+async def _create_leave_audio(topic: str, actor: str) -> dict:
+    """建 asmr 条目 + fire-and-forget 触发生成。返回 {item_id, title, voice} 给调用方广播 WS。
+    create_generated_item 是 async，所以这版也是 async——路由层直接 await。"""
+    voice = _leave_audio_voice(actor)
+    topic = (topic or "").strip()
+    title = (topic[:36] if topic else "你的哄睡语音")
+    item_id = await create_generated_item("asmr", title, voice, actor=actor)
+    trigger_generate(item_id, "asmr", topic, voice, title, actor=actor)
+    return {"item_id": item_id, "title": title, "voice": voice}
+
+
+async def handle_leave_audio_cmd(full_text: str, actor: str = "aion") -> tuple[str, list[dict]]:
+    """检测并执行 [LEAVE_AUDIO] / [LEAVE_AUDIO:主题]，返回 (剥离后文本, 结果卡片列表)。
+    async：create_generated_item 落库要 await，且路由层已在事件循环内没法 asyncio.run。
+    卡片含 item_id/title/voice，供调用方广播 WS sleep_item_updated 让前端刷新故事库。"""
+    cards: list[dict] = []
+    for m in LEAVE_AUDIO_PATTERN.finditer(full_text):
+        topic = (m.group(1) or "").strip()
+        try:
+            cards.append(await _create_leave_audio(topic, actor))
+        except Exception as e:
+            log.exception("对话触发留语音失败 actor=%s topic=%s: %s", actor, topic, e)
+    full_text = LEAVE_AUDIO_PATTERN.sub("", full_text).strip()
+    return full_text, cards
+
+
 def _load_library_meta() -> dict:
     """从 sleep_library.json 读 id -> {tags, summary}，给 preset 条目补氛围标签和摘要。"""
     if not SLEEP_LIBRARY_PATH.exists():
@@ -543,15 +589,19 @@ def _sfx_bytes(name: str, ref: dict | None) -> bytes:
 async def _synthesize_bg(item_id: str, script_text: str, voice: str) -> None:
     """后台合成：按 [SFX:名] 切块 -> 文本块切段（补省略号）-> TTS 并发合成
     -> 从真实语音抄帧参数造静音/校验 SFX -> 字节拼接。
-    哄睡类慢语速 0.8 + 段尾省略号；ASMR 剧情（category=asmr）speed 1.0 + 剧情 instruction + 不补省略号。"""
+    哄睡类慢语速 0.8 + 段尾省略号；ASMR 剧情（category=asmr）speed 1.0 + 剧情 instruction + 不补省略号。
+    actor 从库里读（create_generated_item 落库），重录/重生成也能恢复原人设，不会退化成 aion。"""
     try:
         await _set_status(item_id, "synthesizing", voice=voice, fail_reason="")
         # ASMR 剧情演绎：真情绪 + 正常语速（speed 1.0）、传剧情 instruction、不补段尾省略号；
         # 其余分类保持哄睡慢速（prosody 缺省 0.8 + 段尾省略号）。
+        # 剧情 instruction 分人：aion=_DRAMA_INSTRUCTION（真实起伏）；connor 不传，落到 tts.py 构造
+        # 日常聊天那条（_STEP_DAILY_INSTRUCTION，松弛不刻意）。actor 落库后重录不会丢。
         row0 = await get_item_raw(item_id) or {}
         is_drama = row0.get("category") == "asmr"
+        db_actor = str(row0.get("actor") or "aion")
         tts_prosody = {"speed": 1.0} if is_drama else None
-        tts_instruction = _DRAMA_INSTRUCTION if is_drama else ""
+        tts_instruction = _sleep_tts_instruction(row0.get("category") or "", db_actor)
         tts_tail = not is_drama
         sem = asyncio.Semaphore(3)
         parts = _parse_sfx_parts(script_text)
@@ -676,7 +726,8 @@ async def claim_synthesizing(item_id: str, voice: str) -> bool:
 
 
 def trigger_synthesize(item_id: str, script_text: str, voice: str) -> None:
-    """fire-and-forget 触发合成，完成/失败通过 WS sleep_item_updated 通知前端。"""
+    """fire-and-forget 触发合成，完成/失败通过 WS sleep_item_updated 通知前端。
+    合成时 _synthesize_bg 从库里读 actor 决定 ASMR 剧情 instruction（aion=剧情 / connor=日常聊天）。"""
     task = asyncio.create_task(_synthesize_bg(item_id, script_text, voice))
 
     def _on_done(t: asyncio.Task) -> None:
@@ -736,6 +787,16 @@ _DRAMA_SCENE_RULES = {
 # stepaudio 剧情演绎的 instruction 基线：真情绪、正常语速，逐句语气交给正文 （） 指令。
 # 与 _COMMON_RULES 的哄睡 instruction（年上温润·松弛不刻意）不同，剧情自然有起伏、不刻意放慢。
 _DRAMA_INSTRUCTION = "自然说话，年上温润的男性嗓音，语气有真实的生活起伏，像在跟很亲近的人面对面说话，情绪跟着内容自然流动，不要播音腔，不要刻意放慢。"
+
+
+def _sleep_tts_instruction(category: str, actor: str) -> str:
+    """ASMR 剧情（category=asmr）的 TTS instruction 按 actor 分：
+    温叙远(aion)走 _DRAMA_INSTRUCTION（真实起伏）；林叙(connor)不传，落到 tts.py 构造
+    日常聊天那条（_STEP_DAILY_INSTRUCTION，松弛不刻意）。非 ASMR 返回 ""（走普通哄睡慢速）。
+    actor 空串按 aion 兜底。"""
+    if category != "asmr" or actor == "connor":
+        return ""
+    return _DRAMA_INSTRUCTION
 
 
 async def load_book_chapter(book_id: str, chapter_index: int) -> dict | None:
@@ -959,15 +1020,16 @@ async def generate_script(category: str, prompt: str, book: dict | None = None,
     return last
 
 
-async def create_generated_item(category: str, title: str, voice: str, book_ref: str = "") -> str:
-    """先建条目（script_text 空，status=generating），剧本后台生成。讲书条目带 book_ref 做续听。"""
+async def create_generated_item(category: str, title: str, voice: str, book_ref: str = "", actor: str = "aion") -> str:
+    """先建条目（script_text 空，status=generating），剧本后台生成。讲书条目带 book_ref 做续听。
+    actor 落库（默认温叙远）：合成/重录时从库里恢复 actor，重生成才不会退化成 aion 的剧本人设和 instruction。"""
     item_id = f"sl_gen_{int(time.time() * 1000)}"
     now = time.time()
     async with get_db() as db:
         await db.execute(
-            """INSERT INTO sleep_items (id, category, title, script_text, source, voice, status, created_at, book_ref)
-               VALUES (?,?,?,?, 'ai_generated', ?, 'generating', ?, ?)""",
-            (item_id, category, title, "", voice, now, book_ref),
+            """INSERT INTO sleep_items (id, category, title, script_text, source, voice, status, created_at, book_ref, actor)
+               VALUES (?,?,?,?, 'ai_generated', ?, 'generating', ?, ?, ?)""",
+            (item_id, category, title, "", voice, now, book_ref, actor),
         )
         await db.commit()
     return item_id

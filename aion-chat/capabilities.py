@@ -82,6 +82,11 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
         default_enabled=False,
     ),
     CapabilityDef("cli_file_storage", "CLI 文件保存提示", "context", "对 Gemini CLI / Antigravity CLI / Codex CLI 模型注入文件保存目录提示。"),
+    CapabilityDef(
+        "leave_audio", "留哄睡语音", "media",
+        "注入 [LEAVE_AUDIO] / [LEAVE_AUDIO:主题]，让 AI 可以在用户主动要求时生成一条哄睡语音（不依赖自主循环）。",
+        default_enabled=True, setting_key="leave_audio_enabled",
+    ),
 ]
 
 
@@ -408,6 +413,15 @@ async def build_capability_prompt_items(
         abilities.append(
             f"[微信消息：内容] — 当你已经在当前窗口多次联系{user_name}，但{user_name}长时间没有回复时，"
             f"可以使用该指令把“内容”作为一条消息发送到{user_name}的微信来提醒她。"
+        )
+
+    if is_capability_enabled("leave_audio"):
+        abilities.append(
+            f"[LEAVE_AUDIO] — 当{user_name}主动想让你留语音哄她睡，或你判断她希望你留一条哄睡音频"
+            f"（但当前又没法自主留）时使用。立即可在哄睡故事库生成一条哄睡音频，合成完后她会去故事库收听。"
+            f"也可以指定主题：[LEAVE_AUDIO:主题一句话]，如「海边夜晚」「今天辛苦了的轻柔安抚」；"
+            f"不带主题则由你根据当下氛围和最近记忆自己决定主题。"
+            f"正常聊天里不要主动用，除非她明确希望或需要你留声音陪睡。"
         )
 
     if include_image_gen and is_capability_enabled("image_gen"):

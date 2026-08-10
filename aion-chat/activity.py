@@ -35,8 +35,12 @@ _CLEANUP_INTERVAL = 300  # 每 5 分钟清理一次
 ACTIVITY_LOGS_DIR = DATA_DIR / "activity_logs"
 ACTIVITY_LOGS_DIR.mkdir(exist_ok=True)
 
-# 保留最近 N 小时的活动日志和摘要
+# 注入 AI 上下文时回看的时长（摘要窗口，别调太大，会喂给 prompt）
 KEEP_HOURS = 3
+# 日志文件在盘上的保留时长。原来直接复用 KEEP_HOURS=3，导致上午的手机记录
+# 到中午就被 cleanup 物理删掉，活动日志页看上去像是"没采到手机数据"。
+# 保留和 AI 回看是两件事，拆开：盘上留一天，喂给 AI 的仍然只有最近 3 小时。
+RETENTION_HOURS = 24
 
 # ── 手机 App 包名 → 中文名映射（服务端兜底） ───────────
 # Android getApplicationLabel() 在部分 ROM 上会失败，这里做 fallback
@@ -221,7 +225,7 @@ def get_available_dates() -> list[str]:
 
 
 def cleanup_old_activity_logs():
-    """清理过期条目：只保留最近 KEEP_HOURS 小时的数据（每 5 分钟最多执行一次）"""
+    """清理过期条目：只保留最近 RETENTION_HOURS 小时的数据（每 5 分钟最多执行一次）"""
     global _last_cleanup_ts
     now = time.time()
     if now - _last_cleanup_ts < _CLEANUP_INTERVAL:
@@ -229,7 +233,7 @@ def cleanup_old_activity_logs():
     _last_cleanup_ts = now
 
     import datetime as _dt
-    cutoff_ts = now - KEEP_HOURS * 3600
+    cutoff_ts = now - RETENTION_HOURS * 3600
     cutoff_date = _dt.date.fromtimestamp(cutoff_ts)
     today = _dt.date.today()
 

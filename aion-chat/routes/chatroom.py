@@ -48,6 +48,7 @@ from schedule import (
 from todos import process_todo_commands
 from music import search_songs, get_audio_url
 from routes.music import _handle_music_mgmt_cmds
+from bedtime import handle_leave_audio_cmd
 from camera import cam, CAM_CHECK_CMD
 from luckin import handle_luckin_commands, luckin_payment_attachments
 from link_preview import build_link_preview_attachments
@@ -594,6 +595,14 @@ async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg
     if mgmt_cards:
         for _mc in mgmt_cards:
             await ws_manager.broadcast({"type": "music_mgmt", "data": {**_mc, "msg_id": msg_id, "source": "chatroom"}})
+
+    # ── 留哄睡语音（[LEAVE_AUDIO]/[LEAVE_AUDIO:主题]，对话触发，actor=who_identity 区分人设+音色） ──
+    full_text, _leave_audio_cards = await handle_leave_audio_cmd(full_text, actor=who_identity)
+    if _leave_audio_cards:
+        for _lac in _leave_audio_cards:
+            await ws_manager.broadcast({"type": "sleep_item_updated", "data": {
+                "id": _lac["item_id"], "status": "generating", "title": _lac["title"],
+                "voice": _lac["voice"], "source": "leave_audio_chatroom"}})
 
     # ── 日程/闹钟（先检测指令生成系统消息，再交给 schedule 模块处理） ──
     for match in ALARM_CMD.finditer(full_text):

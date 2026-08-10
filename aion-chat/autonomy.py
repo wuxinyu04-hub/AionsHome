@@ -735,7 +735,7 @@ async def _run_leave_sleep_audio(actor: str) -> dict:
     # 标题加 MM-DD 日期前缀，库里好区分每天留的语音（自主留会越积越多）
     date_prefix = datetime.now().strftime("%m-%d ")
     title = (date_prefix + topic)[:40]
-    item_id = await bedtime.create_generated_item("asmr", title, voice)
+    item_id = await bedtime.create_generated_item("asmr", title, voice, actor=actor)
     bedtime.trigger_generate(
         item_id, "asmr", topic, voice, title,
         actor=actor, memory_context=memory_context,

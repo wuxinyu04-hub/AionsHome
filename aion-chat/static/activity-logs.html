@@ -291,7 +291,12 @@
 <script>
 let allEntries = [];
 let deviceFilter = 'all';
-let currentActivityTab = 'timeline';
+// 记住上次看的标签页。原来写死 'timeline'，手机日志在「日志」标签里，
+// 每次进来都得手点一下才看得到，看着就像手机数据没采上来。
+let currentActivityTab = (function () {
+  try { return localStorage.getItem('activityTab') === 'timeline' ? 'timeline' : 'logs'; }
+  catch (e) { return 'logs'; }
+})();
 let timelineLoaded = false;
 let timelineItems = [];
 let timelinePressTimer = null;
@@ -300,6 +305,7 @@ let idleConfig = null;
 function switchActivityTab(tab) {
   hideTimelinePopover();
   currentActivityTab = tab;
+  try { localStorage.setItem('activityTab', tab); } catch (e) {}
   $('tabLogs').classList.toggle('active', tab === 'logs');
   $('tabTimeline').classList.toggle('active', tab === 'timeline');
   $('logsPane').classList.toggle('active', tab === 'logs');
@@ -717,7 +723,9 @@ async function toggleActivityTracking(enabled) {
 }
 
 /* ── 初始化 ── */
-loadTimeline();
+// HTML 里 active 写死在 timeline 上，这里按记住的标签校正一次（顺带懒加载：
+// 停在日志页时不去拉 timeline）
+switchActivityTab(currentActivityTab);
 loadRecent();
 loadActivityConfig();
 loadIdleConfig();

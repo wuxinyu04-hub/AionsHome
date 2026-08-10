@@ -1085,6 +1085,7 @@ async def init_db():
             ("play_count", "INTEGER DEFAULT 0"),
             ("cover_path", "TEXT DEFAULT ''"),
             ("fail_reason", "TEXT DEFAULT ''"),
+            ("actor", "TEXT DEFAULT 'aion'"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE sleep_items ADD COLUMN {col} {defn}")

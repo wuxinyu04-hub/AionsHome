@@ -14,7 +14,8 @@
   --health2: #41a67a;
   --health3: #4f7dd9;
 }
-.top-bar { background: rgba(255,246,247,.9); }
+/* 顶栏底色跟随主题：浅色下保留原来的粉白，深色交给 theme.css 的 .top-bar 规则 */
+body[data-theme="light"] .top-bar { background: rgba(255,246,247,.9); }
 .health-top-bar { padding-right: 12px; }
 .health-share-inline { display: flex; align-items: center; gap: 6px; color: var(--text3); font-size: 11px; flex-shrink: 0; }
 .health-share-inline .toggle-switch { width: 36px; height: 20px; }
@@ -85,15 +86,56 @@
 .vital-label { color: var(--text2); font-size: 12px; margin-bottom: 6px; }
 .vital-value { color: var(--text); font-size: 24px; line-height: 1.1; font-weight: 800; overflow-wrap: anywhere; }
 .vital-unit { color: var(--text3); font-size: 11px; margin-left: 2px; }
-.sleep-box { margin-top: 8px; background: #f6f8ff; border: 1px solid #e3e8fb; border-radius: 8px; padding: 10px; }
-.sleep-main { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+/* 原来硬编码 #f6f8ff/#e3e8fb，深色主题下是一块刺眼白框；改用主题变量 +
+   左侧蓝色条保留睡眠的视觉标识 */
+.sleep-box { margin-top: 8px; background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--health3); border-radius: 8px; padding: 10px; }
+.sleep-main { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.sleep-total { font-size: 22px; font-weight: 800; color: var(--health3); }
+/* legacy 戒指区的睡眠同步按钮仍在用 */
 .sleep-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .sleep-actions .action-btn { padding: 7px 10px; font-size: 12px; }
-.sleep-total { font-size: 22px; font-weight: 800; color: var(--health3); }
-.sleep-meta { margin-top: 7px; color: var(--text2); font-size: 12px; line-height: 1.6; }
+.sleep-when { margin-top: 4px; font-size: 12px; }
+/* 睡眠评分徽章：右上角，替代原来挤在文本串里的「评分 85/100」 */
+.sleep-score { display: flex; flex-direction: column; align-items: center; gap: 1px; flex-shrink: 0; padding: 6px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.sleep-score strong { color: var(--health3); font-size: 20px; line-height: 1.1; font-weight: 800; }
+.sleep-score span { color: var(--text3); font-size: 10px; }
+/* 睡眠结构条：各分期按时长比例占宽 */
+.sleep-bar { display: flex; height: 8px; margin-top: 10px; border-radius: 4px; overflow: hidden; background: var(--surface2); }
+.sleep-seg { display: block; min-width: 2px; }
+.sleep-seg.deep { background: #3a5bbf; }
+.sleep-seg.light { background: #6f97e8; }
+.sleep-seg.rem { background: #9b7ce0; }
+.sleep-seg.awake { background: #d8a05a; }
+.sleep-stage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 9px; }
+.sleep-stage { padding: 7px 8px; border-radius: 7px; background: var(--surface); }
+.sleep-stage-label { display: flex; align-items: center; gap: 4px; color: var(--text2); font-size: 11px; }
+.sleep-stage-label i { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.sleep-stage-label i.deep { background: #3a5bbf; }
+.sleep-stage-label i.light { background: #6f97e8; }
+.sleep-stage-label i.rem { background: #9b7ce0; }
+.sleep-stage-label i.awake { background: #d8a05a; }
+.sleep-stage-value { color: var(--text); font-size: 14px; font-weight: 800; margin-top: 3px; }
+.sleep-stage-pct { color: var(--text3); font-size: 10px; margin-top: 1px; }
+.sleep-meta { margin-top: 9px; color: var(--text2); font-size: 12px; line-height: 1.6; }
+.sleep-meta:empty { display: none; }
 .sleep-session-list { display: grid; gap: 5px; margin-top: 8px; }
 .sleep-session-item { display: flex; justify-content: space-between; gap: 10px; padding: 6px 8px; border-radius: 7px; background: var(--surface); color: var(--text2); font-size: 12px; }
 .sleep-session-item strong { color: var(--text); }
+/* 目标完成：和睡眠卡一样是「一块独立卡片」而不是挤在方格里的长文本串。
+   左边绿色条对应 --health2，跟睡眠的蓝色条区分开。 */
+.goal-box { margin-top: 8px; background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--health2); border-radius: 8px; padding: 10px; }
+.goal-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.goal-done { color: var(--health2); font-size: 12px; font-weight: 700; }
+.goal-list { display: grid; gap: 9px; margin-top: 9px; }
+.goal-item-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.goal-name { color: var(--text2); font-size: 12px; }
+.goal-num { color: var(--text); font-size: 13px; font-weight: 800; white-space: nowrap; }
+.goal-num b { color: var(--health2); font-weight: 800; }
+.goal-num span { color: var(--text3); font-size: 11px; font-weight: 600; }
+.goal-track { height: 6px; margin-top: 5px; border-radius: 3px; overflow: hidden; background: var(--surface2); }
+.goal-fill { display: block; height: 100%; border-radius: 3px; background: var(--health2); }
+/* 达标了给个满色 + 勾，扫一眼就知道哪几项完成了 */
+.goal-fill.done { background: linear-gradient(90deg, var(--health2), #5cc796); }
 .heart-auto-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 9px 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; }
 .heart-auto-row .action-btn { flex-shrink: 0; min-width: 86px; }
 .heart-history { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -151,8 +193,9 @@
 @media (max-width: 460px) {
   .ring-actions, .inline-form, .body-summary-grid, .mi-band-actions { grid-template-columns: 1fr; }
   .heart-auto-row { align-items: stretch; flex-direction: column; }
-  .sleep-main { align-items: stretch; }
+  .legacy-ring-section .sleep-main { align-items: stretch; }
   .sleep-actions { align-items: flex-start; }
+  .sleep-stage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .vital-value { font-size: 21px; }
   .day-cell { min-height: 48px; padding: 4px; }
 }
@@ -389,6 +432,7 @@
             <div class="section-title">同步数据</div>
             <div class="muted" id="miBandSyncResult">还没有同步</div>
           </div>
+          <button class="card-icon-btn" type="button" aria-label="心率判断设置" title="心率判断设置" onclick="openHeartConfigModal()">⚙</button>
         </div>
         <div class="mi-band-summary">
           <div class="mi-band-summary-item"><div class="vital-label">最新心率</div><div class="mi-band-summary-value" id="miBandLatestHeart">-- bpm</div></div>
@@ -402,7 +446,6 @@
           <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">消耗</div><div class="mi-band-summary-value" id="miBandCloudCalories">-- cal</div></div>
           <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">活动强度</div><div class="mi-band-summary-value" id="miBandCloudIntensity">-- min</div></div>
           <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">站立</div><div class="mi-band-summary-value" id="miBandCloudStand">-- 次</div></div>
-          <div class="mi-band-summary-item cloud-only" style="display:none"><div class="vital-label">目标完成</div><div class="mi-band-summary-value" id="miBandCloudGoal">--</div></div>
           <div class="mi-band-summary-item ble-only"><div class="vital-label">下次同步</div><div class="mi-band-summary-value" id="miBandNextSync">--</div></div>
           <div class="mi-band-summary-item ble-only"><div class="vital-label">活动分钟</div><div class="mi-band-summary-value" id="miBandActivityMinutes">--</div></div>
           <div class="mi-band-summary-item ble-only"><div class="vital-label">最近30分钟</div><div class="mi-band-summary-value" id="miBandRecent30">--</div></div>
@@ -413,11 +456,26 @@
           <button class="save-btn" type="button" onclick="aionNotifyBand()">发送到手环</button>
         </div>
         <div class="muted" style="margin:0 0 12px;font-size:12px">链路：系统通知 → 小米运动健康 App 转发 → 手环</div>
+        <div class="goal-box cloud-only" id="miBandCloudGoalBox" style="display:none">
+          <div class="goal-head">
+            <div class="vital-label" style="margin-bottom:0">今日目标</div>
+            <div class="goal-done" id="miBandCloudGoalDone"></div>
+          </div>
+          <div class="goal-list" id="miBandCloudGoal"></div>
+        </div>
         <div class="sleep-box">
           <div class="sleep-main">
-            <div><div class="vital-label">最近睡眠</div><div class="sleep-total" id="miBandSleepTotal">--</div></div>
-            <div class="muted" id="miBandSleepRange">暂无手环睡眠</div>
+            <div>
+              <div class="vital-label">最近睡眠</div>
+              <div class="sleep-total" id="miBandSleepTotal">--</div>
+              <div class="muted sleep-when" id="miBandSleepRange">暂无手环睡眠</div>
+            </div>
+            <div class="sleep-score" id="miBandSleepScore" style="display:none">
+              <strong id="miBandSleepScoreValue">--</strong><span>睡眠评分</span>
+            </div>
           </div>
+          <div class="sleep-bar" id="miBandSleepBar" style="display:none"></div>
+          <div class="sleep-stage-grid" id="miBandSleepStages" style="display:none"></div>
           <div class="sleep-meta" id="miBandSleepMeta">深睡 -- · 浅睡 -- · REM --</div>
           <div class="sleep-session-list" id="miBandSleepSessions"></div>
         </div>
@@ -719,8 +777,10 @@ function renderMiBandStatus(status) {
     error: '连接异常', unavailable: '模块不可用', vibrating: '正在呼唤…'
   };
   $('miBandStatus').textContent = labels[status.state] || status.state || '未连接';
-  const savedDevice = [status.saved_device_name || status.device_name, status.saved_device_address].filter(Boolean).join(' · ');
-  $('miBandConnectionMeta').textContent = status.error || savedDevice || '等待手机连接';
+  // 标题跟随实际连接/已保存的设备名，别再写死「小米手环 7」；地址仍留在下面的 meta 行
+  const deviceName = status.device_name || status.saved_device_name || '';
+  $('miBandTitle').textContent = deviceName || '小米手环';
+  $('miBandConnectionMeta').textContent = status.error || status.saved_device_address || '等待手机连接';
   $('miBandBattery').textContent = Number(status.battery) >= 0 ? `电量 ${status.battery}%` : '电量 --';
   $('miBandReconnectButton').disabled = status.state === 'connecting';
   $('miBandSyncButton').disabled = !connected || !!status.syncing || !!status.realtime;
@@ -963,50 +1023,33 @@ function renderMiBandSummary(summary) {
     $('miBandCloudCalories').textContent = Number(value.todayCalories) > 0 ? `${value.todayCalories} cal` : '-- cal';
     $('miBandCloudIntensity').textContent = Number(value.todayIntensity) > 0 ? `${value.todayIntensity} min` : '-- min';
     $('miBandCloudStand').textContent = Number(value.todayValidStand) > 0 ? `${value.todayValidStand} 次` : '-- 次';
-    // goal_raw 是后端透传的 JSON 串：[{field,label,target,achieved}, …]
-    let goalText = '--';
-    if (value.goal) {
-      try {
-        const items = typeof value.goal === 'string' ? JSON.parse(value.goal) : value.goal;
-        if (Array.isArray(items) && items.length) {
-          const bits = items.map(it => {
-            const label = it.label || it.field || '';
-            const t = Number(it.target) || 0, a = Number(it.achieved) || 0;
-            return label ? `${label} ${a}/${t}` : '';
-          }).filter(Boolean);
-          if (bits.length) goalText = bits.join(' · ');
-        }
-      } catch (e) {}
-    }
-    $('miBandCloudGoal').textContent = goalText;
+    renderCloudGoals(value.goal);
   }
   const sleep = value.sleep;
   if (sleep) {
     const total = Number(sleep.totalMin || 0);
     $('miBandSleepTotal').textContent = total > 0 ? fmtMin(total) : '--';
     if (cloudMode && sleep.precision === 'daily') {
-      const parts = [];
-      if (sleep.sleepDate) parts.push(`日期 ${sleep.sleepDate}`);
-      // 入睡-醒来时间（云端 segment_details 给的时间戳）
-      if (sleep.startAt && sleep.endAt) {
-        parts.push(`${fmtTime(sleep.startAt)} - ${fmtTime(sleep.endAt)}`);
-      }
-      if (sleep.score) parts.push(`评分 ${sleep.score}/100`);
-      const segs = [];
-      if (Number(sleep.deepMin) > 0) segs.push(`深睡 ${sleep.deepMin}m`);
-      if (Number(sleep.lightMin) > 0) segs.push(`浅睡 ${sleep.lightMin}m`);
-      if (Number(sleep.remMin) > 0) segs.push(`REM ${sleep.remMin}m`);
-      if (sleep.awakeMin) segs.push(`清醒 ${sleep.awakeMin}m`);
-      if (sleep.awakeCount) segs.push(`醒来 ${sleep.awakeCount}次`);
-      if (sleep.avgHr) segs.push(`均心率 ${sleep.avgHr}`);
-      if (sleep.maxHr) segs.push(`最高 ${sleep.maxHr}`);
-      $('miBandSleepRange').textContent = parts.join(' · ') || '暂无睡眠';
-      $('miBandSleepMeta').textContent = segs.length ? segs.join(' · ') : '云端仅提供睡眠总时长';
+      // 时段/日期放主行，评分进右上徽章，分期走结构条，剩下的杂项才留在 meta
+      const when = [];
+      if (sleep.startAt && sleep.endAt) when.push(`${fmtTime(sleep.startAt)} - ${fmtTime(sleep.endAt)}`);
+      else if (sleep.sleepDate) when.push(sleep.sleepDate);
+      $('miBandSleepRange').textContent = when.join(' · ') || '暂无睡眠';
+      renderSleepScore(sleep.score);
+      renderSleepStages(sleep);
+      const extra = [];
+      if (sleep.awakeCount) extra.push(`醒来 ${sleep.awakeCount} 次`);
+      if (sleep.avgHr) extra.push(`均心率 ${sleep.avgHr} bpm`);
+      if (sleep.maxHr) extra.push(`最高 ${sleep.maxHr} bpm`);
+      const hasStages = SLEEP_STAGES.some(s => Number(sleep[s.key]) > 0);
+      $('miBandSleepMeta').textContent = extra.join(' · ') || (hasStages ? '' : '云端仅提供睡眠总时长');
       $('miBandSleepSessions').innerHTML = '';
     } else {
       const primaryLabel = sleep.kind === 'nap' ? '小睡' : '主睡眠';
       $('miBandSleepRange').textContent = `${primaryLabel} ${fmtTime(sleep.startAt)} - ${fmtTime(sleep.endAt)}`;
-      $('miBandSleepMeta').textContent = `深睡 ${sleep.deepMin || 0}m · 浅睡 ${sleep.lightMin || 0}m · REM ${sleep.remMin || 0}m`;
+      renderSleepScore(0);
+      renderSleepStages(sleep);
+      $('miBandSleepMeta').textContent = '';
       $('miBandSleepSessions').innerHTML = (sleep.sessions || []).map(session => {
         const label = session.kind === 'nap' ? '小睡' : '主睡眠';
         return `<div class="sleep-session-item"><strong>${label}</strong><span>${fmtTime(session.startAt)} - ${fmtTime(session.endAt)} · ${fmtMin(Number(session.totalMin || 0))}</span></div>`;
@@ -1015,6 +1058,8 @@ function renderMiBandSummary(summary) {
   } else {
     $('miBandSleepTotal').textContent = '--';
     $('miBandSleepRange').textContent = '暂无手环睡眠';
+    renderSleepScore(0);
+    renderSleepStages(null);
     $('miBandSleepMeta').textContent = '深睡 -- · 浅睡 -- · REM --';
     $('miBandSleepSessions').innerHTML = '';
   }
@@ -1024,6 +1069,87 @@ function renderMiBandSummary(summary) {
     return { ...raw, heart_rate: item.heart_rate, measured_at: item.measured_at, source: item.source };
   });
   renderMiBandSamples(recent);
+}
+
+// 目标完成：goal_raw 是后端透传的 JSON 串 [{field,label,target,achieved}, …]。
+// 原来拼成「步数 3000/8000 · 卡路里 …」一行文本，看不出离达标还差多少。
+function renderCloudGoals(goal) {
+  const box = $('miBandCloudGoalBox');
+  const list = $('miBandCloudGoal');
+  if (!box || !list) return;
+  let items = [];
+  try {
+    const parsed = typeof goal === 'string' ? JSON.parse(goal) : goal;
+    if (Array.isArray(parsed)) items = parsed;
+  } catch (e) {}
+  items = items.filter(it => it && (Number(it.target) > 0 || Number(it.achieved) > 0));
+  if (!items.length) {
+    // 没目标数据时整卡收起，别留一张写着「暂无」的空卡片占位
+    box.style.display = 'none';
+    list.innerHTML = '';
+    $('miBandCloudGoalDone').textContent = '';
+    return;
+  }
+  box.style.display = '';
+  let doneCount = 0;
+  list.innerHTML = items.map(it => {
+    const label = it.label || it.field || '目标';
+    const target = Math.max(0, Number(it.target) || 0);
+    const achieved = Math.max(0, Number(it.achieved) || 0);
+    const pct = target > 0 ? Math.min(100, Math.round(achieved / target * 100)) : (achieved > 0 ? 100 : 0);
+    const done = target > 0 && achieved >= target;
+    if (done) doneCount += 1;
+    const num = target > 0
+      ? `<b>${achieved.toLocaleString('zh-CN')}</b><span> / ${target.toLocaleString('zh-CN')}</span>`
+      : `<b>${achieved.toLocaleString('zh-CN')}</b>`;
+    return `<div class="goal-item">
+      <div class="goal-item-top">
+        <div class="goal-name">${escHtml(label)}${done ? ' ✓' : ''}</div>
+        <div class="goal-num">${num}</div>
+      </div>
+      <div class="goal-track"><i class="goal-fill${done ? ' done' : ''}" style="width:${pct}%"></i></div>
+    </div>`;
+  }).join('');
+  $('miBandCloudGoalDone').textContent = `${doneCount}/${items.length} 达标`;
+}
+
+// 睡眠分期：结构条按时长比例占宽 + 四格分期卡。原来七个字段全串在一行 muted
+// 小字里，新加的清醒/醒来/心率把它撑得没法读。
+const SLEEP_STAGES = [
+  { key: 'deepMin', cls: 'deep', label: '深睡' },
+  { key: 'lightMin', cls: 'light', label: '浅睡' },
+  { key: 'remMin', cls: 'rem', label: 'REM' },
+  { key: 'awakeMin', cls: 'awake', label: '清醒' }
+];
+
+function renderSleepStages(sleep) {
+  const bar = $('miBandSleepBar');
+  const grid = $('miBandSleepStages');
+  if (!bar || !grid) return;
+  const stages = SLEEP_STAGES.map(s => ({ ...s, min: Math.max(0, Number(sleep && sleep[s.key]) || 0) }));
+  const sum = stages.reduce((acc, s) => acc + s.min, 0);
+  if (!sum) {
+    bar.style.display = 'none';
+    grid.style.display = 'none';
+    return;
+  }
+  bar.style.display = '';
+  grid.style.display = '';
+  bar.innerHTML = stages.filter(s => s.min > 0)
+    .map(s => `<i class="sleep-seg ${s.cls}" style="flex:${s.min}" title="${s.label} ${fmtMin(s.min)}"></i>`).join('');
+  grid.innerHTML = stages.map(s => `<div class="sleep-stage">
+    <div class="sleep-stage-label"><i class="${s.cls}"></i>${s.label}</div>
+    <div class="sleep-stage-value">${s.min > 0 ? fmtMin(s.min) : '--'}</div>
+    <div class="sleep-stage-pct">${s.min > 0 ? Math.round(s.min / sum * 100) + '%' : ''}</div>
+  </div>`).join('');
+}
+
+function renderSleepScore(score) {
+  const box = $('miBandSleepScore');
+  if (!box) return;
+  const value = Number(score) || 0;
+  box.style.display = value > 0 ? '' : 'none';
+  if (value > 0) $('miBandSleepScoreValue').textContent = value;
 }
 
 async function miBandCloudSyncNow() {
