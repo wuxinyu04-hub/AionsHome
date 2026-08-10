@@ -26,10 +26,10 @@ body[data-theme="dark"] { background: #06091f; }
   display: flex;
   flex-direction: column;
   position: relative;
-  background: url('/public/BackGround.jpg') center/cover no-repeat;
+  background: url('/public/BackGround.jpg?v=icons-20260810') center/cover no-repeat;
 }
 body[data-theme="dark"] .phone-screen {
-  background-image: url('/public/BackGroundN.jpg');
+  background-image: url('/public/BackGroundN.jpg?v=icons-20260810');
 }
 body[data-theme="dark"] .phone-screen::after {
   content: "";
@@ -899,7 +899,7 @@ function appHTML(app, options = {}) {
        data-grid-app="${options.grid ? '1' : '0'}"
        ${options.grid ? `data-cell="${options.cell}"` : ''}
        aria-label="${escapeAttr(app.name)}">
-      <div class="icon-img"><img src="${app.icon}" alt="${app.name}" draggable="false"><div class="badge-dot" ${badgeId}></div></div>
+      <div class="icon-img"><img src="${app.icon}?v=icons-20260810" alt="${app.name}" draggable="false" loading="lazy" decoding="async"><div class="badge-dot" ${badgeId}></div></div>
       <span class="icon-label">${app.name}</span>
     </button>`;
 }

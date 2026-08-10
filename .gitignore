@@ -68,6 +68,9 @@ Thumbs.db
 public/UserIcon.default.png
 public/AIIcon.default.png
 
+# ── 资源压缩备份（一次性压缩前的原始大图，本地安全网，不入库） ──
+public/_orig_backup/
+
 # ── 本地安装包 / 安装器不入库 ──
 *.exe
 tailscale-setup.exe
