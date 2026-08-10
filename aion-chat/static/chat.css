@@ -346,7 +346,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .typing-bubble .typing-dots span:nth-child(3) { animation-delay:0.32s; }
 
 /* ── 音乐播放卡片 ── */
-.music-card { display:flex; align-items:center; gap:12px; margin-top:8px; padding:10px 14px; background:linear-gradient(135deg, rgba(220,38,38,0.06), rgba(239,68,68,0.03)); border:1px solid rgba(220,38,38,0.15); border-radius:12px; max-width:360px; }
+.music-card { position:relative; z-index:10; display:flex; align-items:center; gap:12px; margin-top:8px; padding:10px 14px; background:linear-gradient(135deg, rgba(220,38,38,0.06), rgba(239,68,68,0.03)); border:1px solid rgba(220,38,38,0.15); border-radius:12px; max-width:min(360px, 84vw); box-sizing:border-box; }
 .music-card .music-cover { width:56px; height:56px; border-radius:8px; object-fit:cover; flex-shrink:0; background:#f0f0f0; }
 .music-card .music-info { flex:1; min-width:0; }
 .music-card .music-name { font-size:14px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -1859,7 +1859,7 @@ body[data-theme="light"] .plus-menu-item { text-shadow: none; }
   .tts-toggle .toggle-slider:before { width: 14px; height: 14px; top: 2px; left: 2px; }
   .tts-toggle .toggle-switch input:checked + .toggle-slider:before { transform: translateX(14px); }
   .messages {
-    padding: calc(max(12px, env(safe-area-inset-top, 0px)) + 60px) 6px 88px;
+    padding: calc(max(12px, env(safe-area-inset-top, 0px)) + 60px) 6px calc(88px + var(--kbd, 0px));
     gap: 4px;
   }
   .msg-row,
@@ -1895,7 +1895,7 @@ body[data-theme="light"] .plus-menu-item { text-shadow: none; }
     width: auto;
     max-width: none;
     box-sizing: border-box;
-    bottom: max(6px, env(safe-area-inset-bottom, 0px));
+    bottom: calc(max(6px, env(safe-area-inset-bottom, 0px)) + var(--kbd, 0px));
     margin: 0;
     padding: 5px 6px;
     border-radius: 15px;

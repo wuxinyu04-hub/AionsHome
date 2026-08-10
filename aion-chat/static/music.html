@@ -48,7 +48,7 @@ body.music-page[data-theme="dark"] .icon-btn { background:none; color:var(--t1);
 body.music-page[data-theme="dark"] .toast { background:var(--toast-bg); color:#fff; border:1px solid var(--card-border); }
 body.music-page[data-theme="dark"] { background:var(--bg); color:var(--t1); }
 * { -webkit-tap-highlight-color:transparent; }
-.music-app { display:flex; flex-direction:column; height:100%; background:var(--bg); color:var(--t1); overflow:hidden; position:relative; }
+.music-app { --tab-h:58px; --mini-gap:10px; display:flex; flex-direction:column; height:100%; background:var(--bg); color:var(--t1); overflow:hidden; position:relative; }
 .music-app > * { position:relative; z-index:1; }
 .hidden { display:none !important; }
 .empty-hint { color:var(--t3); font-size:13px; text-align:center; padding:30px 16px; line-height:1.6; }
@@ -201,7 +201,7 @@ body.music-page[data-theme="dark"] { background:var(--bg); color:var(--t1); }
 .q-clear:active { color:var(--accent); }
 .q-list { flex:1; min-height:0; overflow-y:auto; }
 /* ── 迷你播放条（奶油白卡 + 粉色进度线） ── */
-.mini-player { position:absolute; left:12px; right:12px; bottom:calc(88px + env(safe-area-inset-bottom,0px)); height:62px; display:flex; align-items:center; gap:10px; padding:0 12px; background:var(--white); border:1px solid var(--card-border); border-radius:18px; box-shadow:0 10px 26px rgba(143,125,123,.14); cursor:pointer; z-index:5; overflow:hidden; }
+.mini-player { position:absolute; left:12px; right:12px; bottom:calc(10px + var(--tab-h) + var(--mini-gap) + env(safe-area-inset-bottom,0px)); height:62px; display:flex; align-items:center; gap:10px; padding:0 12px; background:var(--white); border:1px solid var(--card-border); border-radius:18px; box-shadow:0 10px 26px rgba(143,125,123,.14); cursor:pointer; z-index:5; overflow:hidden; }
 .mini-player .mc { width:44px; height:44px; border-radius:11px; object-fit:cover; flex-shrink:0; background:var(--nav-bg); overflow:hidden; }
 .mini-player .mc.spin { animation:mcGlow 2.4s ease-in-out infinite; }
 @keyframes mcGlow { 0%,100%{ box-shadow:0 0 0 0 rgba(255,155,152,0);} 50%{ box-shadow:0 0 0 5px rgba(255,155,152,.2);} }
@@ -265,7 +265,7 @@ body.music-page[data-theme="dark"] { background:var(--bg); color:var(--t1); }
 .fp-lyrics .ll { color:var(--t3); transition:color .25s, transform .25s; padding:3px 0; cursor:pointer; }
 .fp-lyrics .ll.active { color:var(--accent); font-weight:700; transform:scale(1.08); }
 /* ── 他的驻场：浮动头像 + 气泡 ── */
-.companion { position:absolute; right:14px; bottom:calc(158px + env(safe-area-inset-bottom,0px)); z-index:6; display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
+.companion { position:absolute; right:14px; bottom:calc(10px + var(--tab-h) + var(--mini-gap) + 62px + 12px + env(safe-area-inset-bottom,0px)); z-index:6; display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
 .cp-avatar { width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid var(--ring); outline:2px solid rgba(255,155,152,.55); box-shadow:0 4px 14px rgba(143,125,123,.18); cursor:pointer; pointer-events:auto; background:var(--nav-bg); transition:transform .2s; }
 .cp-avatar:active { transform:scale(.92); }
 .cp-avatar.listening { animation:cpBob 2.4s ease-in-out infinite; }
@@ -283,7 +283,7 @@ body.music-page[data-theme="dark"] { background:var(--bg); color:var(--t1); }
   <div class="top-bar">
     <button class="back-btn">‹</button>
     <span class="title">音乐</span>
-    <button class="icon-btn" id="topQueue" title="播放队列">🎧</button>
+    <button class="icon-btn" id="topQueue" title="播放队列">≡</button>
   </div>
   <div class="tabs" id="tabs">
     <button class="tab active" data-tab="home">
@@ -313,7 +313,7 @@ body.music-page[data-theme="dark"] { background:var(--bg); color:var(--t1); }
     <img class="cp-avatar" id="cpAvatar" src="/public/AIIcon.png" alt="" onerror="this.style.display='none'">
   </div>
   <div class="mini-player hidden" id="miniPlayer">
-    <div class="mc empty" id="mcCover">🎵</div>
+    <div class="mc empty" id="mcCover">♪</div>
     <div class="mi"><div class="mt" id="mcTitle">未在播放</div><div class="ma" id="mcArtist"></div></div>
     <button class="mb" id="mcPlay">▶</button>
     <button class="mb" id="mcChevron">›</button>
@@ -345,15 +345,15 @@ body.music-page[data-theme="dark"] { background:var(--bg); color:var(--t1); }
         <div class="fp-time"><span id="fpCur">0:00</span><span id="fpDur">0:00</span></div>
       </div>
       <div class="fp-controls">
-        <button class="nb" id="fpShuffle" title="随机">🔀</button>
-        <button class="nb" id="fpPrev" title="上一首">⏮</button>
+        <button class="nb" id="fpShuffle" title="随机">⇄</button>
+        <button class="nb" id="fpPrev" title="上一首">«</button>
         <button class="fp-play" id="fpPlay">▶</button>
-        <button class="nb" id="fpNext" title="下一首">⏭</button>
-        <button class="nb" id="fpLyricBtn" title="歌词">💬</button>
+        <button class="nb" id="fpNext" title="下一首">»</button>
+        <button class="nb" id="fpLyricBtn" title="歌词">♪</button>
       </div>
       <div class="fp-foot">
-        <span class="ff-sfx">🎧 恋人环绕音</span>
-        <button class="nb sm" id="fpRepeat" title="循环">🔁</button>
+        <span class="ff-sfx">恋人环绕音</span>
+        <button class="nb sm" id="fpRepeat" title="循环">↻</button>
         <span class="ff-count" id="fpTodayCount">今日共听 0 次</span>
       </div>
     </div>
@@ -656,7 +656,7 @@ function renderNowPlaying(cur) {
   if (!has) return;
   const mc = $('mcCover');
   if (cur.cover) { mc.innerHTML = ''; mc.className = 'mc'; const img = new Image(); img.src = cur.cover; img.style.cssText = 'width:100%;height:100%;border-radius:11px;object-fit:cover;'; mc.appendChild(img); }
-  else { mc.innerHTML = '🎵'; mc.className = 'mc empty'; }
+  else { mc.innerHTML = '♪'; mc.className = 'mc empty'; }
   $('mcTitle').textContent = cur.name || '未知';
   $('mcArtist').textContent = cur.artist || '';
   $('fpCover').src = cur.cover || '';
@@ -665,7 +665,7 @@ function renderNowPlaying(cur) {
   $('fpHeadTitle').textContent = '正在与' + aiName + '共听';
   $('fpShuffle').classList.toggle('active', shuffle);
   $('fpRepeat').classList.toggle('active', repeat !== 'off');
-  $('fpRepeat').textContent = repeat === 'one' ? '🔂' : '🔁';
+  $('fpRepeat').textContent = repeat === 'one' ? '↻¹' : '↻';
   setCoverBg(cur.cover);
 }
 function updatePlayBtns() {
@@ -1017,9 +1017,9 @@ async function updateTodayCount() {
 function songRowHtml(s, i, curIdx) { const liked = likedIds.has(s.id); if (s && s.id != null) songIdx[s.id] = s;
   return `<div class="song-row ${i != null && i === curIdx ? 'cur' : ''}" data-id="${s.id}">
     <img class="cover" src="${escHtml(s.cover||'')}" alt="" onerror="this.style.visibility='hidden'">
-    <div class="info"><div class="name">${escHtml(s.name||'未知')}</div><div class="artist">${escHtml(s.artist||'')}</div>${s.note?`<div class="note">💬 ${escHtml(s.note)}</div>`:''}</div>
+    <div class="info"><div class="name">${escHtml(s.name||'未知')}</div><div class="artist">${escHtml(s.artist||'')}</div>${s.note?`<div class="note">「${escHtml(s.note)}」</div>`:''}</div>
     <button class="btn like ${liked?'liked':''}" data-act="like">${liked?'♥':'♡'}</button>
-    <button class="btn" data-act="add" title="加入队列">➕</button>
+    <button class="btn" data-act="add" title="加入队列">+</button>
     <button class="btn" data-act="play" title="立即播放">▶</button></div>`; }
 function bindSongRows(container) { container.querySelectorAll('.song-row').forEach(el => { el.querySelectorAll('button').forEach(b => { b.onclick = e => { e.stopPropagation(); const id = parseInt(el.dataset.id); const song = songIdx[id] || { id, name: '', artist: '', cover: '' };
     if (b.dataset.act === 'like') toggleLike(id, b); else if (b.dataset.act === 'add') enqueue([song], { play: false }); else if (b.dataset.act === 'play') playNow(song); }; }); }); }

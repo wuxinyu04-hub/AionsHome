@@ -643,11 +643,11 @@ function crBuildMusicCardHtml(song) {
   const cover = song.cover ? esc(song.cover) : '';
   const coverImg = cover
     ? `<img class="music-cover" src="${cover}" alt="">`
-    : `<div class="music-cover" style="display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text3)">🎵</div>`;
+    : `<div class="music-cover" style="display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text3)">♪</div>`;
   const name = esc(song.name || '未知歌曲');
   const artist = esc(song.artist || '未知歌手');
   const songId = song.id;
-  const onlineBtn = `<button class="music-btn secondary" onclick="crPlayMusicOnline(${songId})">▶ 立即播放</button>`;
+  const onlineBtn = `<button class="music-btn secondary" onclick="event.stopPropagation();crPlayMusicOnline(${songId})">[播放] 立即播放</button>`;
   return `
     <div class="music-card">
       ${coverImg}
@@ -655,7 +655,7 @@ function crBuildMusicCardHtml(song) {
         <div class="music-name">${name}</div>
         <div class="music-artist">${artist}</div>
         <div class="music-btns">
-          <button class="music-btn primary" onclick="crOpenInNetease(${songId})">🎶 网易云</button>
+          <button class="music-btn primary" onclick="event.stopPropagation();crOpenInNetease(${songId})">[网] 网易云播放</button>
           ${onlineBtn}
         </div>
       </div>
@@ -689,7 +689,7 @@ function crBuildMgmtCardHtml(card, msgId) {
   const hasPl = (isAdd || isPlay || isRemove);
   const pid = hasPl ? card.playlist_id : card.id;
   const listName = hasPl ? (card.playlist || '') : (card.name || '');
-  const icon = isAdd ? '🎶' : (isPlay ? '▶' : (isRemove ? '🗑' : (isDaily ? '📅' : '📑')));
+  const icon = isAdd ? '+' : (isPlay ? '▶' : (isRemove ? '×' : (isDaily ? '★' : '♪')));
   let title, sub;
   if (isDaily) {
     title = `今日推荐${card.date ? ' · ' + esc(card.date) : ''}`;
@@ -708,11 +708,11 @@ function crBuildMgmtCardHtml(card, msgId) {
     sub = '他为你新建的歌单';
   }
   const btn = isDaily
-    ? (msgId != null ? `<button class="music-btn primary" onclick='crPlayDailySongs(${JSON.stringify(msgId)})'>▶ 播放全部</button>` : '')
+    ? (msgId != null ? `<button class="music-btn primary" onclick='event.stopPropagation();crPlayDailySongs(${JSON.stringify(msgId)})'>▶ 播放全部</button>` : '')
     : (pid != null
         ? (isRemove
-            ? `<button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
-            : `<button class="music-btn primary" onclick='crPlayPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`)
+            ? `<button class="music-btn secondary" onclick='event.stopPropagation();crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>查看歌单</button>`
+            : `<button class="music-btn primary" onclick='event.stopPropagation();crPlayPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='event.stopPropagation();crViewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>查看歌单</button>`)
         : '');
   return `
     <div class="music-card">
@@ -773,6 +773,13 @@ function crHandleMgmtCards(raw) {
 }
 
 function crOpenInNetease(songId) {
+  // 委托父页打开（带"已打开网易云"提示，且 iframe 内 window.open 常被弹窗拦截）
+  try {
+    if (window.parent !== window && typeof window.parent.openInNetease === 'function') {
+      window.parent.openInNetease(songId);
+      return;
+    }
+  } catch (e) {}
   window.open('https://music.163.com/song?id=' + songId, '_blank');
 }
 
@@ -7416,4 +7423,29 @@ function crToyCloseEditor() { document.getElementById('crToyEditorOverlay').clas
   crAmbientSyncRunning();
   connectWS();
   resizeInput();
+})();
+
+/* ── 软键盘避让 ──
+   移动端 .composer / .voice-mode-row 是 position:fixed + bottom
+   (chatroom.css:3464)，钉在 layout viewport 底部；Android edge-to-edge 下
+   layout viewport 不随键盘缩小，输入框会被盖住。把键盘高度写进 --kbd。 */
+(function () {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const root = document.documentElement;
+  let pending = false;
+  function applyKbd() {
+    pending = false;
+    const kbd = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    root.style.setProperty('--kbd', (kbd > 80 ? kbd : 0) + 'px');
+  }
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(applyKbd);
+  }
+  vv.addEventListener('resize', schedule);
+  vv.addEventListener('scroll', schedule);
+  window.addEventListener('orientationchange', () => setTimeout(schedule, 200));
+  applyKbd();
 })();

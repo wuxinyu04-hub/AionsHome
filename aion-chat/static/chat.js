@@ -2797,21 +2797,21 @@ function renderMusicCards(msgId) {
 
 function buildMusicCardHtml(song) {
   const cover = song.cover ? escHtml(song.cover) : '';
-  const coverImg = cover ? `<img class="music-cover" src="${cover}" alt="">` : `<div class="music-cover" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text3)">🎵</div>`;
+  const coverImg = cover ? `<img class="music-cover" src="${cover}" alt="">` : `<div class="music-cover" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text3)">♪</div>`;
   const name = escHtml(song.name || '未知歌曲');
   const artist = escHtml(song.artist || '未知歌手');
-  const album = song.album ? `<div class="music-album">💿 ${escHtml(song.album)}</div>` : '';
+  const album = song.album ? `<div class="music-album">[碟] ${escHtml(song.album)}</div>` : '';
   const songId = song.id;
   if (song && song.id != null) musicSongIndex[song.id] = song;
 
   // 立即播放（跳到该曲）+ 加入队列 + 红心
-  const onlineBtn = `<button class="music-btn secondary" onclick="playMusicOnline(${songId})">▶ 立即播放</button><button class="music-btn secondary" onclick="enqueueMusicById(${songId})">➕ 加入队列</button><button class="music-btn secondary" onclick="likeSongFromCard(${songId}, this)">${musicLikedIds.has(songId) ? '♥ 已红心' : '♡ 红心'}</button>`;
+  const onlineBtn = `<button class="music-btn secondary" onclick="event.stopPropagation();playMusicOnline(${songId})">[播放] 立即播放</button><button class="music-btn secondary" onclick="event.stopPropagation();enqueueMusicById(${songId})">[+] 加入队列</button><button class="music-btn secondary" onclick="event.stopPropagation();likeSongFromCard(${songId}, this)">${musicLikedIds.has(songId) ? '[红心] 已红心' : '[心] 红心'}</button>`;
 
   // 备选歌曲
   let candidatesHtml = '';
   if (song.candidates && song.candidates.length) {
     const items = song.candidates.map(c =>
-      `<div class="cand-item" onclick="openInNetease(${c.id})">🎵 ${escHtml(c.name)} - ${escHtml(c.artist)}</div>`
+      `<div class="cand-item" onclick="event.stopPropagation();openInNetease(${c.id})">[乐] ${escHtml(c.name)} - ${escHtml(c.artist)}</div>`
     ).join('');
     candidatesHtml = `<details class="music-candidates"><summary>不是这首？看看其他结果</summary>${items}</details>`;
   }
@@ -2824,7 +2824,7 @@ function buildMusicCardHtml(song) {
         <div class="music-artist">${artist}</div>
         ${album}
         <div class="music-btns">
-          <button class="music-btn primary" onclick="openInNetease(${songId})">🎶 网易云播放</button>
+          <button class="music-btn primary" onclick="event.stopPropagation();openInNetease(${songId})">[网] 网易云播放</button>
           ${onlineBtn}
         </div>
         ${candidatesHtml}
@@ -2859,7 +2859,7 @@ function buildMgmtCardHtml(card, msgId) {
   const hasPl = (isAdd || isPlay || isRemove);
   const pid = hasPl ? card.playlist_id : card.id;
   const listName = hasPl ? (card.playlist || '') : (card.name || '');
-  const icon = isAdd ? '🎶' : (isPlay ? '▶' : (isRemove ? '🗑' : (isDaily ? '📅' : '📑')));
+  const icon = isAdd ? '+' : (isPlay ? '▶' : (isRemove ? '×' : (isDaily ? '★' : '♪')));
   let title, sub;
   if (isDaily) {
     title = `今日推荐${card.date ? ' · ' + escHtml(card.date) : ''}`;
@@ -2878,11 +2878,11 @@ function buildMgmtCardHtml(card, msgId) {
     sub = '他为你新建的歌单';
   }
   const btn = isDaily
-    ? (msgId != null ? `<button class="music-btn primary" onclick='playDailySongs(${JSON.stringify(msgId)})'>▶ 播放全部</button>` : '')
+    ? (msgId != null ? `<button class="music-btn primary" onclick='event.stopPropagation();playDailySongs(${JSON.stringify(msgId)})'>▶ 播放全部</button>` : '')
     : (pid != null
         ? (isRemove
-            ? `<button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`
-            : `<button class="music-btn primary" onclick='playPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>📖 查看歌单</button>`)
+            ? `<button class="music-btn secondary" onclick='event.stopPropagation();viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>查看歌单</button>`
+            : `<button class="music-btn primary" onclick='event.stopPropagation();playPlaylistAll(${pid}, ${JSON.stringify(listName)})'>▶ 播放全部</button><button class="music-btn secondary" onclick='event.stopPropagation();viewMusicPlaylist(${pid}, ${JSON.stringify(listName)})'>查看歌单</button>`)
         : '');
   return `
     <div class="music-card">
@@ -2905,7 +2905,7 @@ function playDailySongs(msgId) {
   musicRepeat = 'all';
   musicSaveState();
   musicRenderBar();
-  musicToast(`🎵 正在播放今日推荐 ${card.songs.length} 首 · 列表循环`);
+  musicToast(`正在播放今日推荐 ${card.songs.length} 首 · 列表循环`);
 }
 
 // 点歌单卡片 → 打开播放器歌单 tab 并定位到该歌单（可整单播放/加队列/单曲播放）
@@ -2929,6 +2929,7 @@ function playPlaylistAll(pid, name) {
 
 function openInNetease(songId) {
   window.open('https://music.163.com/song?id=' + songId, '_blank');
+  musicToast('已打开网易云，听歌累了就回来');
 }
 
 // ── 哄睡全局驻场条（sleep iframe 持久化，退出 sleep 页顶层条显示 + 互切让权）──
@@ -3156,6 +3157,7 @@ function musicOnBCMessage(msg) {
     return;
   }
   if (msg.type === 'queue_update') {
+    if (musicClosed) return;  // 已关闭播放器则不响应队列广播，避免静默复活
     musicQueue = Array.isArray(msg.queue) ? msg.queue : musicQueue;
     musicSaveQueue();
     if (typeof msg.index === 'number') musicIndex = msg.index;
@@ -7463,4 +7465,31 @@ function closeWalletPanel() {
       }
     }
   });
+})();
+
+/* ── 软键盘避让 ──
+   移动端 .input-area 是 position:fixed + bottom(chat.css:1891)，钉在 layout
+   viewport 底部；Android edge-to-edge 下 layout viewport 不随键盘缩小，
+   所以输入框会被键盘盖住。这里把键盘高度写进 --kbd，由 CSS 抬高输入框。 */
+(function () {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const root = document.documentElement;
+  let pending = false;
+  function applyKbd() {
+    pending = false;
+    // 键盘占掉的高度：布局视口 - 可见视口 - 可见视口顶部偏移
+    const kbd = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    // 阈值 80px：过滤掉地址栏收放等小幅抖动，只认真正的键盘
+    root.style.setProperty('--kbd', (kbd > 80 ? kbd : 0) + 'px');
+  }
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(applyKbd);
+  }
+  vv.addEventListener('resize', schedule);
+  vv.addEventListener('scroll', schedule);
+  window.addEventListener('orientationchange', () => setTimeout(schedule, 200));
+  applyKbd();
 })();
