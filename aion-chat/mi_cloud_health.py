@@ -49,6 +49,21 @@ HISTORY_BACKFILL_DAYS = 7
 # 进程内同步锁：后台轮询与手动 /api/health/mi-band/cloud-sync 不能同时写库。
 _sync_lock = asyncio.Lock()
 
+# 小米云 SDK 的 snapshot.heart_rate.time / updated_time 返回的是本地采集时间
+# 却按 UTC epoch 编码（实测每条 measured_at 恰好比 created_at 晚 8 小时，
+# 采集不可能晚于入库，且会落到「未来」让陈旧检测永远判 False）。
+# now 之后的戳一律减 8h 校准回真实采集时间。8h=东八区，硬编码即可--
+# 用户就在东八区，且这是兜底逻辑不是正常路径。
+_TZ_OFFSET_SECONDS = 8 * 3600
+
+
+def _cloud_ts(raw: Optional[float], now: float) -> float:
+    """校准小米云快照时间戳：落在 now 之后说明是 UTC 编码的本地时间，减 8h。"""
+    if not raw:
+        return now
+    ts = float(raw)
+    return ts - _TZ_OFFSET_SECONDS if ts > now + 60 else ts
+
 
 def _load_settings() -> dict[str, Any]:
     try:
@@ -318,7 +333,8 @@ async def _sync_latest_snapshot(
         return {"written": 0}
 
     result: dict[str, Any] = {}
-    updated_ts = float(snapshot.updated_time or now)
+    # SDK 的 updated_time 是按 UTC 编码的本地时间，校准回真实采集时间。
+    updated_ts = _cloud_ts(snapshot.updated_time, now)
     hr_item = snapshot.heart_rate
 
     async with get_db() as db:
@@ -327,7 +343,8 @@ async def _sync_latest_snapshot(
         hr_written = 0
         hr_events: list[Any] = []
         if hr_item and hr_item.bpm and (20 <= int(hr_item.bpm) <= 240):
-            hr_ts = float(hr_item.time or updated_ts or now)
+            # hr_item.time 同样是 UTC 编码的本地时间，校准后才不会落到未来。
+            hr_ts = _cloud_ts(hr_item.time, now) if hr_item.time else updated_ts
             raw = {
                 "kind": "latest_snapshot",
                 "account_updated_at": hr_ts,
@@ -426,7 +443,7 @@ async def _sync_latest_snapshot(
         # ── d) 体重 → health_weight_entries（按日期去重，前端日历可见）──
         weight_item = snapshot.weight
         if weight_item and weight_item.weight and 20 <= float(weight_item.weight) <= 300:
-            w_ts = float(weight_item.time or updated_ts or now)
+            w_ts = _cloud_ts(weight_item.time, now) if weight_item.time else updated_ts
             w_date = datetime.fromtimestamp(w_ts).date().isoformat()
             await db.execute(
                 """
