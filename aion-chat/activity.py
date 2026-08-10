@@ -121,6 +121,8 @@ KNOWN_APPS = {
     # 屏幕状态（Android BroadcastReceiver 上报）
     "screen_off": "锁屏",
     "screen_on": "亮屏",
+    "screen_off_alive": "持续锁屏",
+    "user_present": "解锁",
     # iQOO/vivo 系统
     "com.iqoo.powersaving": "省电管理",
 }
@@ -858,8 +860,10 @@ def _summarize_window(entries: list[dict], window_start_ts: float, window_end_ts
         dev_entries = sorted(by_device[device], key=lambda x: x["timestamp"])
         device_label = "手机" if device == "phone" else "PC"
 
-        # 过滤"亮屏"（仅是过渡事件，锁屏时长由 screen_off→下一条 自动涵盖）
-        dev_entries = [e for e in dev_entries if e["app"] != "screen_on"]
+        # 过滤屏幕过渡/存活事件（仅是状态标记，锁屏时长由 screen_off→下一条 自动涵盖）。
+        # 注意：入库前 resolve_app_name 已把 screen_on 翻成「亮屏」，只判原始名是失效的。
+        dev_entries = [e for e in dev_entries
+                       if e["app"] not in ("screen_on", "亮屏", "持续锁屏", "解锁")]
         if not dev_entries:
             continue
 

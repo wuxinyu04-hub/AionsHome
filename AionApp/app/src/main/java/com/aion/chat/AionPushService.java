@@ -233,10 +233,13 @@ public class AionPushService extends Service {
     // ── 活动上报 ──
     private static final long ACTIVITY_INTERVAL = 60_000;  // 60秒检测一次前台应用
     private static final long ACTIVITY_RE_REPORT_MS = 5 * 60_000;  // 同一App超过5分钟重新上报
+    private static final long SCREEN_OFF_ALIVE_INTERVAL_MS = 10 * 60_000;  // 熄屏存活心跳间隔
     private Thread activityThread;
     private volatile String lastReportedApp = "";
     private volatile long lastReportedTime = 0;
     private volatile boolean screenOn = true;
+    private final ScreenActivityPolicy screenPolicy = new ScreenActivityPolicy();
+    private final ExecutorService activityReporter = Executors.newSingleThreadExecutor();
     private BroadcastReceiver screenReceiver;
 
     // ── 无障碍服务自动恢复（需 WRITE_SECURE_SETTINGS 权限，通过 ADB 授予）──
@@ -570,6 +573,7 @@ public class AionPushService extends Service {
         cancelActivePhoneCameraCapture();
         if (phoneCameraController != null) phoneCameraController.close();
         phoneCameraStateSync.shutdownNow();
+        activityReporter.shutdownNow();
         unregisterScreenReceiver();
         if (sensorManager != null) sensorManager.unregisterListener(stepListener);
         if (webSocket != null) try { webSocket.cancel(); } catch (Exception ignored) {}
@@ -3761,8 +3765,13 @@ public class AionPushService extends Service {
                 try {
                     if (screenOn && hasUsageStatsPermission()) {
                         reportForegroundApp();
-                    } else {
+                    } else if (screenOn) {
                         Log.d(TAG, "📱 Usage access permission not granted");
+                    } else if (screenPolicy.shouldEmitAliveHeartbeat(
+                            SystemClock.elapsedRealtime(), SCREEN_OFF_ALIVE_INTERVAL_MS)) {
+                        // 熄屏期间每 10 分钟一条存活心跳，和「服务被杀/没电」区分开
+                        activityReporter.execute(() -> postActivityToServer("screen_off_alive"));
+                        screenPolicy.resetHeartbeatDeadline(SystemClock.elapsedRealtime());
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "📱 activity error: " + e.getMessage());
@@ -3840,8 +3849,10 @@ public class AionPushService extends Service {
         lastReportedApp = pkgName;
         lastReportedTime = now;
 
-        // 直接发送包名，服务端做名称翻译（避免 vivo ROM 中文编码乱码）
-        postActivityToServer(pkgName);
+        // 直接发送包名，服务端做名称翻译（避免 vivo ROM 中文编码乱码）。
+        // 走同一单线程 executor，和锁屏/亮屏事件保持提交顺序，避免乱序落日志
+        final String reportPkg = pkgName;
+        activityReporter.execute(() -> postActivityToServer(reportPkg));
     }
 
     private void postActivityToServer(String pkgName) {
@@ -3952,34 +3963,42 @@ public class AionPushService extends Service {
             public void onReceive(Context context, Intent intent) {
                 if (intent == null || intent.getAction() == null) return;
                 switch (intent.getAction()) {
-                    case Intent.ACTION_SCREEN_OFF:
-                        Log.i(TAG, "📱 Screen OFF");
+                    case Intent.ACTION_SCREEN_OFF: {
+                        long nowElapsed = SystemClock.elapsedRealtime();
+                        ScreenActivityPolicy.Transition t = screenPolicy.onObserved(false, nowElapsed);
                         screenOn = false;
+                        if (t == ScreenActivityPolicy.Transition.NONE) return;  // 重复广播去抖
+                        Log.i(TAG, "📱 Screen OFF");
                         com.aion.chat.supervision.AppSupervisionRuntime runtime =
                                 com.aion.chat.supervision.AppSupervisionRuntime.get();
                         if (runtime != null) runtime.onScreenOff();
                         lastReportedApp = "__screen_off__";
-                        // 在后台线程发送，避免阻塞广播
-                        new Thread(() -> {
+                        // 单线程上报，避免 off/on 快速切换时乱序
+                        activityReporter.execute(() -> {
                             postActivityToServer("screen_off");
                             postPhoneScreenSkip("screen_off", true);
-                        }, "ScreenOff").start();
+                        });
                         break;
-                    case Intent.ACTION_SCREEN_ON:
-                        Log.i(TAG, "📱 Screen ON");
+                    }
+                    case Intent.ACTION_SCREEN_ON: {
+                        long nowElapsed = SystemClock.elapsedRealtime();
+                        ScreenActivityPolicy.Transition t = screenPolicy.onObserved(true, nowElapsed);
                         screenOn = true;
+                        if (t == ScreenActivityPolicy.Transition.NONE) return;  // 重复广播去抖
+                        Log.i(TAG, "📱 Screen ON");
                         com.aion.chat.supervision.AppSupervisionRuntime screenOnRuntime =
                                 com.aion.chat.supervision.AppSupervisionRuntime.get();
                         if (screenOnRuntime != null) screenOnRuntime.onScreenOn();
                         lastReportedApp = "__screen_on__";
-                        new Thread(() -> {
-                            postActivityToServer("screen_on");
-                        }, "ScreenOn").start();
+                        activityReporter.execute(() -> postActivityToServer("screen_on"));
                         break;
+                    }
                     case Intent.ACTION_USER_PRESENT:
                         com.aion.chat.supervision.AppSupervisionRuntime userPresentRuntime =
                                 com.aion.chat.supervision.AppSupervisionRuntime.get();
                         if (userPresentRuntime != null) userPresentRuntime.onUserPresent();
+                        // 真正解锁单独记一条，区分「亮屏但没解锁」（通知/看时间）和「解锁在用」
+                        activityReporter.execute(() -> postActivityToServer("user_present"));
                         break;
                 }
             }
@@ -3990,6 +4009,18 @@ public class AionPushService extends Service {
         filter.addAction(Intent.ACTION_USER_PRESENT);
         registerReceiver(screenReceiver, filter);
         Log.i(TAG, "📱 Screen receiver registered");
+        // 广播不可粘滞，服务可能恰好在熄屏时重启——用真实屏幕状态初始化，
+        // 否则 screenOn 默认 true 会一直误报 stale 前台 app 直到下一个屏幕广播到达
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            boolean interactive = pm == null
+                    || Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT_WATCH
+                    || pm.isInteractive();
+            screenPolicy.init(interactive, SystemClock.elapsedRealtime());
+            screenOn = screenPolicy.isScreenOn();
+        } catch (Exception e) {
+            Log.w(TAG, "📱 screen state init failed: " + e.getMessage());
+        }
     }
 
     private void unregisterScreenReceiver() {

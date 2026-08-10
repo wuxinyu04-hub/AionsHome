@@ -566,13 +566,15 @@ function renderEntries() {
     const titleHtml = showTitle
       ? `<div class="log-title">${escHtml(e.title)}</div>`
       : '';
-    // 动作描述
-    const action = e.device === 'phone' ? '打开了' : '正在使用';
+    // 动作描述：屏幕状态事件不是"打开应用"，直接用状态名，不套「打开了」
+    const isScreenState = ['锁屏', '亮屏', '持续锁屏', '解锁'].includes(e.app);
+    const action = e.device === 'phone' ? (isScreenState ? '' : '打开了') : '正在使用';
+    const actionHtml = action ? `<span class="log-action">${action} </span>` : '';
     return `<div class="log-entry">
       <span class="log-device ${deviceCls}">${deviceLabel}</span>
       <div class="log-body">
         <span class="log-time">${escHtml(e.time || '')}</span>
-        <span class="log-action">${action} </span><span class="log-app">${escHtml(e.app || '')}</span>
+        ${actionHtml}<span class="log-app">${escHtml(e.app || '')}</span>
         ${titleHtml}
       </div>
     </div>`;
