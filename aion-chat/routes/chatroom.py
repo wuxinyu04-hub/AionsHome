@@ -947,8 +947,10 @@ async def _chatroom_cam_check(
     system_msg_id: str = "",
 ):
     """聊天室版监控查看：播放提示音 → 延迟截图 → AI 追加回复到聊天室"""
-    from config import load_worldbook, SETTINGS, UPLOADS_DIR, SCREENSHOTS_DIR
+    from config import load_worldbook, SETTINGS, UPLOADS_DIR, SCREENSHOTS_DIR, MODELS
     from camera import cam, build_monitor_alert_data
+    _cam_cfg = MODELS.get(model_key) or {}
+    print(f"[CAM_CHECK] sender={sender} model_key={model_key} provider={_cam_cfg.get('provider')} vision={_cam_cfg.get('vision', True)} model={_cam_cfg.get('model')}")
 
     # 播放摄像头调起提示音，给用户反应时间
     await manager.broadcast({
@@ -1048,11 +1050,15 @@ async def _chatroom_cam_check(
                     continue
                 full_text += chunk
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[CAM_CHECK] 流式异常: {e}, full_text_len={len(full_text)}, had_partial={bool(full_text.strip())}")
         resolution = resolve_stream_failure(full_text, e, "监控查看失败")
         full_text = resolution.visible_text
         tts_from_model = resolution.had_partial_text
 
     if not full_text.strip():
+        print(f"[CAM_CHECK] 空返回: sender={sender} model_key={model_key} vision={_cam_cfg.get('vision', True)} provider={_cam_cfg.get('provider')} 有附件={bool(fname)}")
         await _save_msg(room_id, "system", "监控画面已获取，但模型没有返回分析结果。", auto_tts=False)
         return
 
