@@ -1633,6 +1633,10 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             active_generations.pop(conv_id, None)
             if tts_streamer:
                 try:
+                    # 报错时 cancel 掉 TTS：清 buffer/取消 worker/删已合成 mp3，
+                    # 避免"调用失败"这类报错文本被念出来；flush() 在 cancelled 下会短路。
+                    if has_error:
+                        tts_streamer.cancel()
                     await tts_streamer.flush()
                 except Exception as e:
                     log.warning("TTS 流收尾 flush 失败（末段语音可能丢失）: %s", e)
@@ -2338,6 +2342,8 @@ async def send_message(conv_id: str, body: MsgCreate):
             active_generations.pop(conv_id, None)
             if tts_streamer:
                 try:
+                    if has_error:
+                        tts_streamer.cancel()
                     await tts_streamer.flush()
                 except Exception as e:
                     log.warning("TTS 流收尾 flush 失败（末段语音可能丢失）: %s", e)
@@ -3496,6 +3502,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             active_generations.pop(conv_id, None)
             if regen_tts:
                 try:
+                    if has_error:
+                        regen_tts.cancel()
                     await regen_tts.flush()
                 except Exception as e:
                     log.warning("重新生成 TTS flush 失败（末段语音可能丢失）: %s", e)

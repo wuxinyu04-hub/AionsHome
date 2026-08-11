@@ -1410,6 +1410,28 @@ function finishTTSForMsg(msgId, createdAt, targetClientId) {
   _cleanupFinishedTTS();
 }
 
+// 报错时停掉某条消息的 TTS：抑制后续分段 + 移出队列；
+// 若正在播这条则立即停音频并切到下一条。已播到一半的报错也能立刻掐掉。
+function stopTTSForMsg(msgId) {
+  if (!msgId) return;
+  // ttsPlayOrder[0] 始终是正在播放的那条（播完才 shift）
+  const isPlaying = ttsPlayOrder.length > 0 && ttsPlayOrder[0] === msgId;
+  suppressTTSMsg(msgId);
+  ttsPlayOrder = ttsPlayOrder.filter(id => id !== msgId);
+  delete ttsChunkQueues[msgId];
+  if (isPlaying && ttsPlaying) {
+    clearTTSResumeTimer();
+    ttsAudio.pause();
+    ttsAudio.src = '';
+    ttsPlaying = false;
+    if (window.VoiceCall && window.VoiceCall.handleTTSChunkEnd) {
+      window.VoiceCall.handleTTSChunkEnd({ surface: "private", msgId });
+    }
+    // 切到队列里下一条（若队列为空，内部会收尾通知 ai-speaking=false）
+    playNextTTSChunk();
+  }
+}
+
 function _cleanupFinishedTTS() {
   let cleaned = false;
   while (ttsPlayOrder.length > 0) {
@@ -1846,6 +1868,7 @@ function handleSync(msg) {
     if (data.msg_id && !streamingAiId) {
       msgDebugData[data.msg_id] = data;
       renderDebugBar(data.msg_id);
+      if (data.has_error) stopTTSForMsg(data.msg_id);
     }
   } else if (type === "music") {
     // 通过 WebSocket 收到音乐卡片（语音发送 / 闹铃触发 / 定时监控）
@@ -4559,6 +4582,7 @@ async function _processSSEStream(res) {
           } else if (data.type === "debug" && aiMsgId) {
             msgDebugData[aiMsgId] = data;
             renderDebugBar(aiMsgId);
+            if (data.has_error) stopTTSForMsg(aiMsgId);
           } else if (data.type === "cam_check") {
             handleCamCheck(data.conv_id, data.model_key, aiMsgId);
           } else if (data.type === "cam_offline") {
@@ -4729,6 +4753,7 @@ async function saveEdit(id) {
           } else if (data.type === 'debug' && aiMsgId) {
             msgDebugData[aiMsgId] = data;
             renderDebugBar(aiMsgId);
+            if (data.has_error) stopTTSForMsg(aiMsgId);
           } else if (data.type === 'cam_check') {
             handleCamCheck(data.conv_id, data.model_key, aiMsgId);
           } else if (data.type === 'cam_offline') {
@@ -4841,6 +4866,7 @@ async function regenerateMsg(aiMsgId) {
           } else if (d.type === "debug" && newId) {
             msgDebugData[newId] = d;
             renderDebugBar(newId);
+            if (d.has_error) stopTTSForMsg(newId);
           } else if (d.type === "cam_check") {
             handleCamCheck(d.conv_id, d.model_key, newId);
           } else if (d.type === "cam_offline") {
@@ -7467,29 +7493,3 @@ function closeWalletPanel() {
   });
 })();
 
-/* ── 软键盘避让 ──
-   移动端 .input-area 是 position:fixed + bottom(chat.css:1891)，钉在 layout
-   viewport 底部；Android edge-to-edge 下 layout viewport 不随键盘缩小，
-   所以输入框会被键盘盖住。这里把键盘高度写进 --kbd，由 CSS 抬高输入框。 */
-(function () {
-  const vv = window.visualViewport;
-  if (!vv) return;
-  const root = document.documentElement;
-  let pending = false;
-  function applyKbd() {
-    pending = false;
-    // 键盘占掉的高度：布局视口 - 可见视口 - 可见视口顶部偏移
-    const kbd = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-    // 阈值 80px：过滤掉地址栏收放等小幅抖动，只认真正的键盘
-    root.style.setProperty('--kbd', (kbd > 80 ? kbd : 0) + 'px');
-  }
-  function schedule() {
-    if (pending) return;
-    pending = true;
-    requestAnimationFrame(applyKbd);
-  }
-  vv.addEventListener('resize', schedule);
-  vv.addEventListener('scroll', schedule);
-  window.addEventListener('orientationchange', () => setTimeout(schedule, 200));
-  applyKbd();
-})();
