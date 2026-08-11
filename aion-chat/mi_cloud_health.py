@@ -106,6 +106,20 @@ def _day_start_ts(day: date) -> float:
     return datetime(day.year, day.month, day.day).timestamp()
 
 
+def _snapshot_day_ts(item, now: float, updated_ts: float) -> float:
+    """快照子项 time 算所属当天 0 点戳；无 .time 或戳异常用 updated_ts 当天。
+
+    get_latest_data 的 calories/valid_stand/intensity 各自带 time（本地采集秒戳，
+    与 spo2.time 同源），不会主动翻日——手环没同步到云时仍停在昨天甚至更早。
+    落哪一天必须按数据自己的 time 算，否则跨天后会把昨天累积值写进今天行。
+    """
+    if item and getattr(item, "time", 0):
+        ts = _cloud_ts(float(item.time), now)
+        if ts > 0:
+            return _day_start_ts(datetime.fromtimestamp(ts).date())
+    return _day_start_ts(datetime.fromtimestamp(updated_ts).date())
+
+
 async def _fetch_relative_uid(client) -> tuple[int | None, str | None]:
     """从 settings 读 relative_uid；未配置则返回 (None, reason) 而不是静默取亲友列表第一个。
 
@@ -414,31 +428,47 @@ async def _sync_latest_snapshot(
                 (*set_vals, json.dumps(ring_raw, ensure_ascii=False), now),
             )
 
-        # ── c) 卡路里/活动强度/站立 → health_miband_activity 今天日汇总行 ──
-        today = date.today()
-        day_start = _day_start_ts(today)
-        cal_val = None
-        stand_val = None
-        intensity_val = None
+        # ── c) 卡路里/活动强度/站立 → health_miband_activity 日汇总行 ──
+        # 关键：落哪一天按该数据自己的 time 戳算，不能用 date.today()。
+        # get_latest_data 的快照不会主动翻日——手环没同步到云时，calories.time
+        # 仍指上一份采集（常停在昨天甚至更早）。若用 date.today() 落库，跨天后
+        # 会把昨天累积的 cal/stand 写进今天行，今天卡片一上来就显示昨天的值
+        # （8/11 00:07 同步把 cal=86 写进 8/11 行的真因）。凭各 item.time
+        # （本地采集秒戳，与 spo2.time 同源）算所属当天；.time 无效时退回
+        # updated_ts 当天。逻辑见模块级 _snapshot_day_ts。
         cal_item = snapshot.calories
         if cal_item and cal_item.calories >= 0:
-            cal_val = int(cal_item.calories)
-            result["calories"] = cal_val
-        stand_item = snapshot.valid_stand
-        if stand_item and stand_item.count >= 0:
-            stand_val = int(stand_item.count)
-            result["valid_stand"] = stand_val
-        inten_item = snapshot.intensity
-        if inten_item and inten_item.duration >= 0:
-            intensity_val = int(inten_item.duration)
-            result["intensity"] = intensity_val
-        if any(v is not None for v in (cal_val, stand_val, intensity_val)):
+            cal_ts = _snapshot_day_ts(cal_item, now, updated_ts)
             await _persist_sample(
-                db, measured_at=day_start, device_name=device_name,
+                db, measured_at=cal_ts, device_name=device_name,
                 source=SOURCE,
-                calories=cal_val, valid_stand=stand_val, intensity_min=intensity_val,
+                calories=int(cal_item.calories),
                 now=now,
             )
+            result["calories"] = int(cal_item.calories)
+            result["calories_day"] = datetime.fromtimestamp(cal_ts).date().isoformat()
+        stand_item = snapshot.valid_stand
+        if stand_item and stand_item.count >= 0:
+            stand_ts = _snapshot_day_ts(stand_item, now, updated_ts)
+            await _persist_sample(
+                db, measured_at=stand_ts, device_name=device_name,
+                source=SOURCE,
+                valid_stand=int(stand_item.count),
+                now=now,
+            )
+            result["valid_stand"] = int(stand_item.count)
+            result["valid_stand_day"] = datetime.fromtimestamp(stand_ts).date().isoformat()
+        inten_item = snapshot.intensity
+        if inten_item and inten_item.duration >= 0:
+            inten_ts = _snapshot_day_ts(inten_item, now, updated_ts)
+            await _persist_sample(
+                db, measured_at=inten_ts, device_name=device_name,
+                source=SOURCE,
+                intensity_min=int(inten_item.duration),
+                now=now,
+            )
+            result["intensity"] = int(inten_item.duration)
+            result["intensity_day"] = datetime.fromtimestamp(inten_ts).date().isoformat()
 
         # ── d) 体重 → health_weight_entries（按日期去重，前端日历可见）──
         weight_item = snapshot.weight

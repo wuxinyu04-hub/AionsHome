@@ -243,10 +243,14 @@ async def _build_cloud_summary(db, current: float) -> dict:
     )).fetchone()
     local_now = datetime.fromtimestamp(current)
     day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-    today = await (await db.execute(
-        "SELECT COALESCE(SUM(steps),0) AS steps FROM health_miband_activity "
-        "WHERE source='mi_cloud' AND measured_at>=? AND measured_at<?",
-        (day_start, day_start + 86400),
+    # 当日当前累计值：取今天(day_start 及之后) measured_at 最大那条日汇总，不 SUM。
+    # SUM 会在小米云一日多条(快照随活动增长多次入库)时翻倍累加；取最新一条才是
+    # "到目前为止"的当日累计，也避免跨天后取到 latest_day 是昨晚快照的脏行。
+    today_row = await (await db.execute(
+        "SELECT steps, calories, valid_stand, intensity, measured_at "
+        "FROM health_miband_activity WHERE source='mi_cloud' "
+        "AND measured_at>=? ORDER BY measured_at DESC LIMIT 1",
+        (day_start,),
     )).fetchone()
     # 最近一条有睡眠的云日汇总（含入睡/醒来时间/评分/清醒/夜间心率，无逐分钟时间线）
     sleep_day = await (await db.execute(
@@ -299,16 +303,16 @@ async def _build_cloud_summary(db, current: float) -> dict:
             int(latest_day["heart_rate"]) if latest_day and latest_day["heart_rate"] else None
         ),
         "dailyAverageHeartRateAt": latest_day["measured_at"] if latest_day else 0,
-        "todaySteps": int(today["steps"] if today else 0),
+        "todaySteps": int(today_row["steps"] or 0) if today_row else 0,
         "stepsKind": "daily_total",
         "todayCalories": (
-            int(latest_day["calories"]) if latest_day and latest_day["calories"] else 0
+            int(today_row["calories"]) if today_row and today_row["calories"] else 0
         ),
         "todayValidStand": (
-            int(latest_day["valid_stand"]) if latest_day and latest_day["valid_stand"] else 0
+            int(today_row["valid_stand"]) if today_row and today_row["valid_stand"] else 0
         ),
         "todayIntensity": (
-            int(latest_day["intensity"]) if latest_day and latest_day["intensity"] else 0
+            int(today_row["intensity"]) if today_row and today_row["intensity"] else 0
         ),
         # 血氧/血压/目标：mi_cloud 快照写进 health_ring_latest(id=1)，云模式镜像一份
         "spo2": int(ring_snap["spo2"]) if ring_snap and ring_snap["spo2"] else None,
