@@ -91,6 +91,7 @@ from web_search import (
     format_web_system_message,
     run_web_commands,
 )
+from lounge_visit_commands import LoungeVisitCommandStreamFilter, handle_lounge_visit_commands
 
 import logging
 log = logging.getLogger("chat")
@@ -244,10 +245,11 @@ async def _consume_chat_stream(
     visible_text = ""
     stream_filter = WebCommandStreamFilter()
     skip_tts = False
+    lounge_filter = LoungeVisitCommandStreamFilter()
 
     async def on_commit(chunk: str) -> None:
         nonlocal visible_text, skip_tts
-        visible_chunk = stream_filter.feed(chunk)
+        visible_chunk = lounge_filter.feed(stream_filter.feed(chunk))
         if visible_chunk:
             visible_text += visible_chunk
             if not skip_tts and _is_ai_error_text(visible_text):
@@ -262,7 +264,7 @@ async def _consume_chat_stream(
             )
 
     result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
-    visible_tail = stream_filter.flush()
+    visible_tail = lounge_filter.feed(stream_filter.flush()) + lounge_filter.flush()
     if visible_tail:
         visible_text += visible_tail
         if not skip_tts and _is_ai_error_text(visible_text):
@@ -793,6 +795,58 @@ async def _process_private_wechat_commands(full_text: str, conv_id: str, ai_msg_
         record_route=record_wechat_route,
     )
     return cleaned
+
+
+async def _start_private_lounge_visit(
+    actor_id: str,
+    friend_id: str,
+    topic: str,
+    *,
+    conv_id: str,
+    ai_msg_id: str,
+) -> str:
+    """Validate an explicit command, then publish its background homecoming report."""
+    from lounge_visit import LoungeVisitCoordinator
+    from lounge_visit_reporting import publish_outbound_report
+    from routes.lounge_friends import (
+        compose_lounge_message,
+        configured_actors,
+        friend_store,
+        lounge_repository_provider,
+    )
+
+    try:
+        friend = friend_store.get_owned(actor_id, friend_id)
+    except KeyError:
+        return ""
+    if not friend.enabled or not topic:
+        return ""
+
+    def actor_name(known_actor_id: str) -> str:
+        return next(
+            (
+                actor["display_name"]
+                for actor in configured_actors()
+                if actor["id"] == known_actor_id
+            ),
+            "",
+        )
+
+    async def run() -> None:
+        async with lounge_repository_provider() as repository:
+            result = await LoungeVisitCoordinator(
+                friend_store,
+                repository,
+                mcp_manager,
+                actor_name_resolver=actor_name,
+            ).run_visit(actor_id, friend_id, "chat", topic, compose_lounge_message)
+            await publish_outbound_report(
+                actor_id, friend.display_name, result, repository
+            )
+
+    asyncio.create_task(run())
+    return friend.id
+
 # ── Pydantic 模型 ─────────────────────────────────
 class ConvCreate(BaseModel):
     title: str = "新对话"
@@ -1462,6 +1516,13 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             full_text = await _process_home_commands(full_text)
             full_text, luckin_results = await handle_luckin_commands(full_text)
             full_text = await _process_private_wechat_commands(full_text, conv_id, ai_msg_id)
+            full_text, _lounge_visits = await handle_lounge_visit_commands(
+                full_text,
+                actor_id="aion",
+                start_visit=lambda actor_id, friend_id, topic: _start_private_lounge_visit(
+                    actor_id, friend_id, topic, conv_id=conv_id, ai_msg_id=ai_msg_id
+                ),
+            )
 
             moment_matches = MOMENT_CMD_PATTERN.findall(full_text)
             if moment_matches:
@@ -2187,6 +2248,13 @@ async def send_message(conv_id: str, body: MsgCreate):
             full_text = await _process_home_commands(full_text)
             full_text, luckin_results = await handle_luckin_commands(full_text)
             full_text = await _process_private_wechat_commands(full_text, conv_id, ai_msg_id)
+            full_text, _lounge_visits = await handle_lounge_visit_commands(
+                full_text,
+                actor_id="aion",
+                start_visit=lambda actor_id, friend_id, topic: _start_private_lounge_visit(
+                    actor_id, friend_id, topic, conv_id=conv_id, ai_msg_id=ai_msg_id
+                ),
+            )
 
             # 检测 [MOMENT:...] 朋友圈指令
             moment_matches = MOMENT_CMD_PATTERN.findall(full_text)
@@ -3401,6 +3469,13 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             full_text = await _process_home_commands(full_text)
             full_text, luckin_results = await handle_luckin_commands(full_text)
             full_text = await _process_private_wechat_commands(full_text, conv_id, ai_msg_id)
+            full_text, _lounge_visits = await handle_lounge_visit_commands(
+                full_text,
+                actor_id="aion",
+                start_visit=lambda actor_id, friend_id, topic: _start_private_lounge_visit(
+                    actor_id, friend_id, topic, conv_id=conv_id, ai_msg_id=ai_msg_id
+                ),
+            )
 
             # 检测 [MOMENT:...] 朋友圈指令
             moment_matches = MOMENT_CMD_PATTERN.findall(full_text)
