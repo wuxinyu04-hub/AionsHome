@@ -16,7 +16,7 @@ from config import DEFAULT_MODEL, DATA_DIR, CODEX_UPLOADS_DIR, MODELS, SETTINGS,
 from database import get_db
 from ws import manager
 from active_window_state import record_chatroom_active
-from ai_providers import stream_ai, CLI_STATUS_PREFIX
+from ai_providers import stream_ai, CLI_STATUS_PREFIX, looks_like_provider_error
 from tts import TTSStreamer, synthesize_message_tts_later
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from sync_events import append_sync_event, attach_sync_seq, broadcast_synced
@@ -2691,7 +2691,11 @@ async def _save_msg(
            "created_at": now, "attachments": att_list, "reasoning_content": reasoning_content}
     await broadcast_synced(manager, {"type": "chatroom_msg_created", "data": msg})
 
-    if auto_tts and content.strip():
+    # auto_tts 统一守门：上游把 provider 错误当正文吐出时，content 是错误体但
+    # 调用方仍可能传 auto_tts=True。用权威 looks_like_provider_error 在落库文本上
+    # 兜一次，命中即不事后合成——覆盖 cam_check/activity/luckin 等无实时 tts.feed
+    # 拦截的次要链路，也为主链 double-check。
+    if auto_tts and content.strip() and not looks_like_provider_error(content):
         voice = _chatroom_auto_tts_voice(sender)
         if voice:
             synthesize_message_tts_later(msg_id, content, voice, manager)
@@ -3262,7 +3266,12 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
     clean_text = _normalize_cli_bubble_breaks(clean_text, connor_model_key)
 
     # TTS 用干净文本
-    if tts_enabled and tts_connor_voice and clean_text and tts_from_model:
+    # 群聊整段喂 TTS 无 per-chunk 拦截：上游把错误当正文吐出（stop_reason None）时
+    # has_error 仍是 False，整段错误体会被念。喂 TTS 前用权威 looks_like_provider_error
+    # 在命令剥离前的 full_text 上判一次，命中即不喂、不存 auto_tts，并标 has_error。
+    if looks_like_provider_error(full_text):
+        has_error = True
+    if tts_enabled and tts_connor_voice and clean_text and tts_from_model and not has_error:
         tts = TTSStreamer(connor_msg_id, tts_connor_voice, manager, sse_queue=_q)
         tts.feed(clean_text)
         await tts.flush()
@@ -3274,7 +3283,7 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
     msg = await _save_msg(
         room_id, "connor", reply, connor_msg_id,
         attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered),
-        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_connor_voice and clean_text),
+        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_connor_voice and clean_text) and not has_error,
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "connor_done", "message": msg})
@@ -3413,7 +3422,13 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     clean_text = _normalize_cli_bubble_breaks(clean_text, model_key)
 
     # TTS 用干净文本
-    if tts_enabled and tts_voice and clean_text and tts_from_model:
+    # 群聊整段喂 TTS，没有私聊那种 per-chunk skip_tts 拦截——上游把错误当正常文本
+    # 吐出来（stop_reason 为 None）时 has_error 仍是 False，整段错误 JSON 会被念出。
+    # 喂 TTS 前用权威 looks_like_provider_error 在 full_text（命令剥离前、更全）上判一次，
+    # 命中即不喂 TTS 并标 has_error，落库/debug 也能感知。
+    if looks_like_provider_error(full_text):
+        has_error = True
+    if tts_enabled and tts_voice and clean_text and tts_from_model and not has_error:
         tts = TTSStreamer(aion_msg_id, tts_voice, manager, sse_queue=_q)
         tts.feed(clean_text)
         await tts.flush()
@@ -3425,7 +3440,7 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     aion_msg = await _save_msg(
         room_id, "aion", clean_text, aion_msg_id,
         attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered),
-        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
+        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text) and not has_error,
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "aion_done", "message": aion_msg})
@@ -3501,7 +3516,12 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     clean_text = _normalize_cli_bubble_breaks(clean_text, connor_model_key)
 
     # TTS 用干净文本
-    if tts_enabled and tts_voice and clean_text and tts_from_model:
+    # 群聊整段喂 TTS 无 per-chunk 拦截：上游把错误当正文吐出（stop_reason None）时
+    # has_error 仍是 False，整段错误体会被念。喂 TTS 前用权威 looks_like_provider_error
+    # 在命令剥离前的 full_text 上判一次，命中即不喂、不存 auto_tts，并标 has_error。
+    if looks_like_provider_error(full_text):
+        has_error = True
+    if tts_enabled and tts_voice and clean_text and tts_from_model and not has_error:
         tts = TTSStreamer(connor_msg_id, tts_voice, manager, sse_queue=_q)
         tts.feed(clean_text)
         await tts.flush()
@@ -3513,7 +3533,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     connor_msg = await _save_msg(
         room_id, "connor", clean_text, connor_msg_id,
         attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered),
-        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
+        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text) and not has_error,
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "connor_done", "message": connor_msg})

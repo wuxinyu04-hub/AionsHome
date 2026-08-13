@@ -84,6 +84,19 @@ _PROVIDER_ERROR_SUBSTRINGS = (
     "authentication required",
     "authentication timed out",
     "tls handshake timeout",
+    # 上游错误体里常出现的英文技术串（发生在 AI 正文流里基本就是兜底吐错）。
+    # 集中维护在权威源：bedtime/chat/chatroom/moments 各路 TTS/落库前都靠
+    # looks_like_provider_error 走这一份，别再各自抄不全的清单。
+    "oauth2.googleapis.com",
+    "cloudcode-pa.googleapis.com",
+    "proxyconnect tcp",
+    "net/http: eof",
+    "net/http: tls handshake timeout",
+    "connection refused",
+    "connectex: no connection could be made",
+    "deadline exceeded",
+    "insufficient_quota",
+    "permission_denied",
 )
 
 
