@@ -122,6 +122,11 @@ async def build_health_summary() -> str:
                 "SELECT start_date, end_date FROM health_period_entries ORDER BY start_date DESC LIMIT 1"
             )
             period_row = await cur.fetchone()
+            cur = await db.execute(
+                "SELECT id, start_date, end_date, flow, symptoms, note, created_at, updated_at "
+                "FROM health_period_entries ORDER BY start_date DESC LIMIT 24"
+            )
+            period_rows = [dict(r) for r in await cur.fetchall()]
             # 戒指/快照里的血压、血氧、HRV 一直存了却没进 AI，这里补上。
             # goal_raw 是 mi_cloud 写的目标完成度 JSON，一并读出解析。
             cur = await db.execute(
@@ -238,6 +243,16 @@ async def build_health_summary() -> str:
                     parts.append(f"上次例假:{start}")
             else:
                 parts.append(f"上次例假:{start}")
+
+        # 生理期预测：让 AI 每轮都自然知道下次快来了，不用 idle 也会主动提
+        try:
+            from cycle_predict import predict_next as _predict_cycle, format_prediction_for_prompt
+            pred = _predict_cycle(period_rows)
+            pred_str = format_prediction_for_prompt(pred)
+            if pred_str:
+                parts.append(pred_str)
+        except Exception:
+            pass
 
         if ring_row:
             ring_measured = ring_row["measured_at"]

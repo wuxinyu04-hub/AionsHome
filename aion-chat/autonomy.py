@@ -27,6 +27,7 @@ ACTION_DEFS = {
     "wish_pool": "查看许愿池并尝试实现用户的愿望",
     "xhs_roam": "去小红书查看指定账号最新帖子并按人设评论或回复",
     "leave_sleep_audio": "给用户留一条晚安哄睡语音（带今天聊的记忆，让她晚上听）",
+    "cycle_reminder": "查看生理期预测，快到日子或逾期了主动问问用户/该记的记一下",
 }
 
 SEEKY_ACTIONS = {
@@ -753,6 +754,66 @@ async def _run_leave_sleep_audio(actor: str) -> dict:
         metadata={"sleep_item_id": item_id, "topic": topic},
     )
     return {"event": event, "item_id": item_id, "title": title}
+
+
+async def _run_cycle_reminder(actor: str) -> dict:
+    """actor 自主：看生理期预测，快到了/逾期就在群里主动问问，不自动记。"""
+    from routes.chatroom import _save_msg
+    from cycle_predict import predict_next as _predict_cycle, format_prediction_for_prompt
+
+    room_id = await _latest_group_room_id()
+
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, start_date, end_date, flow, symptoms, note, created_at, updated_at "
+            "FROM health_period_entries ORDER BY start_date DESC LIMIT 24"
+        )
+        periods = [dict(r) for r in await cur.fetchall()]
+        # 最近一条是不是今天刚记的——今天刚记就不催
+        cur = await db.execute(
+            "SELECT start_date FROM health_period_entries ORDER BY start_date DESC LIMIT 1"
+        )
+        latest = await cur.fetchone()
+    pred = _predict_cycle(periods)
+    pred_hint = format_prediction_for_prompt(pred) or "暂无预测（记录不足）"
+
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    just_logged = bool(latest and latest["start_date"] == today_iso)
+    actor_name = _actor_label(actor)
+
+    plan = await _ask_actor_json(actor, (
+        "[自主行动：生理期主动关心]\n"
+        "你看一下她的生理期预测数据，判断现在该不该主动在群里问问她。\n"
+        f"预测：{pred_hint}\n"
+        f"今天她是否刚记过：{'是' if just_logged else '否'}\n"
+        "- 快到了（距今≤3天）或已逾期还没记 → 应该问：用你的人设自然地在群里提一嘴，"
+        "一句两句话，别像提醒药该吃了那样生硬，可以带点关心/调侃。\n"
+        "- 今天刚记过 → 别重复催，should_act=false。\n"
+        "- 还早（>7天）→ should_act=false，闷声。\n"
+        'Return JSON: {"should_act": true/false, "message": "群里说的话", "reason": "理由"}'
+    ))
+
+    should = bool(plan.get("should_act"))
+    message = _clip(str(plan.get("message") or ""), 300)
+    reason = str(plan.get("reason") or "")
+
+    if should and message and room_id:
+        await _save_msg(room_id, actor, message)
+        event = await append_idle_event(
+            actor, "cycle_reminder", f"{actor_name}主动提了生理期",
+            message, target_type="chatroom", target_id=room_id,
+            metadata={"reason": reason, "prediction": pred},
+        )
+        return {"event": event, "message": message, "prediction": pred}
+
+    event = await append_idle_event(
+        actor, "cycle_reminder", f"{actor_name}看了生理期预测，没打扰",
+        reason or ("今天刚记过" if just_logged else "还没到时候"),
+        target_type="chatroom", target_id=room_id or "",
+        metadata={"skipped": True, "reason": reason, "prediction": pred},
+    )
+    return {"event": event, "skipped": True, "prediction": pred}
 
 
 def _memory_basis_ts(mem: dict) -> float:
@@ -1688,6 +1749,8 @@ async def _run_actor_once(actor: str, *, manual: bool = False) -> dict:
         result = await _run_xhs_roam(actor)
     elif action == "leave_sleep_audio":
         result = await _run_leave_sleep_audio(actor)
+    elif action == "cycle_reminder":
+        result = await _run_cycle_reminder(actor)
     else:
         result = {}
     return {"ok": True, "actor": actor, "action": action, "result": result}

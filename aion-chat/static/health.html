@@ -181,6 +181,8 @@ body[data-theme="light"] .top-bar { background: rgba(255,246,247,.9); }
 .day-num { color: var(--text2); font-size: 11px; }
 .day-weight { margin-top: 4px; color: var(--health2); font-weight: 700; white-space: nowrap; }
 .day-period { position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--health); box-shadow: 0 0 0 3px rgba(255,111,125,.12); }
+.day-period-predicted { background: rgba(255,111,125,.5); box-shadow: 0 0 0 3px rgba(255,111,125,.08); border: 1px dashed rgba(255,111,125,.7); }
+.period-overdue { color: #ff5252 !important; }
 .log-box { max-height: 110px; overflow: auto; background: #2d2530; color: #f6eef8; border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 11px; line-height: 1.5; }
 .health-modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(43, 31, 35, .34); }
 .health-modal.show { display: flex; }
@@ -245,6 +247,13 @@ body[data-theme="light"] .top-bar { background: rgba(255,246,247,.9); }
             </div>
             <div class="body-summary-value" id="latestPeriodValue">--</div>
             <div class="body-summary-meta" id="latestPeriodMeta">暂无记录</div>
+          </div>
+          <div class="body-summary-card">
+            <div class="body-card-head">
+              <div class="body-summary-label">下次预计</div>
+            </div>
+            <div class="body-summary-value" id="nextPeriodValue">--</div>
+            <div class="body-summary-meta" id="nextPeriodMeta">等待预测</div>
           </div>
           <div class="body-summary-card">
             <div class="body-card-head">
@@ -2282,6 +2291,32 @@ function renderBodySummary() {
     $('latestPeriodValue').textContent = '--';
     $('latestPeriodMeta').textContent = '暂无记录';
   }
+
+  renderPrediction();
+}
+
+function renderPrediction() {
+  const el = $('nextPeriodValue');
+  const meta = $('nextPeriodMeta');
+  if (!el || !meta) return;
+  const p = healthState.prediction;
+  if (!p || !p.ok) {
+    el.textContent = '--';
+    meta.textContent = (p && p.reason) || '记录不足，记两次以上可预测';
+    el.classList.remove('period-overdue');
+    return;
+  }
+  el.textContent = fmtShortDate(p.next_start);
+  if (p.overdue) {
+    meta.textContent = `晚了${-p.days_until}天还没记`;
+    el.classList.add('period-overdue');
+  } else if (p.soon) {
+    meta.textContent = `快到了 · 仅剩${p.days_until}天`;
+    el.classList.remove('period-overdue');
+  } else {
+    meta.textContent = `距今${p.days_until}天 · 排卵${fmtShortDate(p.ovulation_window[0])}-${fmtShortDate(p.ovulation_window[1])}`;
+    el.classList.remove('period-overdue');
+  }
 }
 
 function renderStepStatus(status) {
@@ -2388,6 +2423,9 @@ function handleHealthWs(msg) {
     healthState.periods.unshift(msg.data);
     renderBodySummary();
     renderCalendar();
+    // 预测随记录变化，debounce 重拉 summary 刷新 prediction
+    if (healthState._periodRefreshTimer) clearTimeout(healthState._periodRefreshTimer);
+    healthState._periodRefreshTimer = setTimeout(loadHealth, 600);
   }
 }
 
@@ -2401,6 +2439,7 @@ async function loadHealth() {
     heartEvents: data.heartEvents || [],
     weights: data.weights || [],
     periods: data.periods || [],
+    prediction: data.prediction || null,
     location: healthState.location
   };
   renderRing(healthState.ring);
@@ -2456,10 +2495,11 @@ function renderCalendar() {
     const w = weightMap.get(ds);
     const out = d.getMonth() !== m;
     const period = isPeriodDate(ds);
+    const predicted = isPredictedDate(ds);
     html += `<div class="day-cell ${out ? 'out' : ''}">
       <div class="day-num">${d.getDate()}</div>
       ${w ? `<div class="day-weight">${Number(w.weight_kg).toFixed(1)}kg</div>` : ''}
-      ${period ? '<div class="day-period"></div>' : ''}
+      ${period ? '<div class="day-period"></div>' : (predicted ? '<div class="day-period day-period-predicted"></div>' : '')}
     </div>`;
   }
   grid.innerHTML = html;
@@ -2494,6 +2534,12 @@ async function deletePeriod(id) {
 
 function isPeriodDate(ds) {
   return healthState.periods.some(p => ds >= p.start_date && ds <= (p.end_date || p.start_date));
+}
+
+function isPredictedDate(ds) {
+  const p = healthState.prediction;
+  if (!p || !p.ok || !p.next_start) return false;
+  return ds === p.next_start;
 }
 
 async function sendPacket(dataType, payload) {

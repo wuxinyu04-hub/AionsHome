@@ -14,6 +14,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from database import get_db
+from cycle_predict import predict_next as _predict_next_cycle
 from health_context import (
     analyze_heart_rate_entry,
     get_heart_config,
@@ -475,6 +476,7 @@ async def get_health_summary():
         )
         periods = [dict(r) for r in await cur.fetchall()]
         mi_band = await build_mi_band_summary(db)
+        prediction = _predict_next_cycle(periods)
     return {
         "ring": ring,
         "heartRates": heart_rates,
@@ -482,6 +484,7 @@ async def get_health_summary():
         "heartEvents": heart_events,
         "weights": weights,
         "periods": periods,
+        "prediction": prediction,
         "miBand": mi_band,
     }
 
@@ -851,10 +854,36 @@ async def upsert_period(body: PeriodEntry):
         return {"error": "结束日期格式不正确"}
     if body.end_date and body.end_date < body.start_date:
         return {"error": "结束日期不能早于开始日期"}
+    entry_id = body.id.strip() or f"hp_{int(time.time() * 1000)}"
+    row = await _upsert_period_row(None, body, entry_id=entry_id)
+    if row.get("error"):
+        return row
+    await manager.broadcast({"type": "health_period_updated", "data": row})
+    return row
+
+
+async def _upsert_period_row(
+    db,
+    entry: PeriodEntry,
+    *,
+    entry_id: str | None = None,
+) -> dict:
+    """生理期入库核心（INSERT...ON CONFLICT + 取行），不广播。
+
+    可由 HTTP 端点、autonomy、chat 共用。传 db=None 时内部自开连接。
+    返回入库后的行 dict；若日期不合法返回 {"error": ...}。
+    """
+    if not _valid_date(entry.start_date):
+        return {"error": "开始日期格式不正确"}
+    if entry.end_date and not _valid_date(entry.end_date):
+        return {"error": "结束日期格式不正确"}
+    if entry.end_date and entry.end_date < entry.start_date:
+        return {"error": "结束日期不能早于开始日期"}
     now = time.time()
-    entry_id = body.id.strip() or f"hp_{int(now * 1000)}"
-    async with get_db() as db:
-        await db.execute(
+    eid = (entry_id or entry.id.strip() or f"hp_{int(now * 1000)}")
+
+    async def _do(conn):
+        await conn.execute(
             """
             INSERT INTO health_period_entries
                 (id, start_date, end_date, flow, symptoms, note, created_at, updated_at)
@@ -868,26 +897,42 @@ async def upsert_period(body: PeriodEntry):
                 updated_at=excluded.updated_at
             """,
             (
-                entry_id,
-                body.start_date,
-                body.end_date,
-                body.flow.strip(),
-                body.symptoms.strip(),
-                body.note.strip(),
+                eid,
+                entry.start_date,
+                entry.end_date,
+                entry.flow.strip(),
+                entry.symptoms.strip(),
+                entry.note.strip(),
                 now,
                 now,
             ),
         )
-        await db.commit()
+        await conn.commit()
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            "SELECT id, start_date, end_date, flow, symptoms, note, created_at, updated_at "
+            "FROM health_period_entries WHERE id=?",
+            (eid,),
+        )
+        return dict(await cur.fetchone())
+
+    if db is None:
+        async with get_db() as conn:
+            return await _do(conn)
+    return await _do(db)
+
+
+@router.get("/periods/prediction")
+async def get_period_prediction():
+    """实时预测下次生理期 + 排卵窗口。不入库，记录一改立即跟着变。"""
+    async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT id, start_date, end_date, flow, symptoms, note, created_at, updated_at "
-            "FROM health_period_entries WHERE id=?",
-            (entry_id,),
+            "FROM health_period_entries ORDER BY start_date DESC LIMIT 24"
         )
-        row = dict(await cur.fetchone())
-    await manager.broadcast({"type": "health_period_updated", "data": row})
-    return row
+        periods = [dict(r) for r in await cur.fetchall()]
+    return _predict_next_cycle(periods)
 
 
 @router.delete("/periods/{entry_id}")
