@@ -144,10 +144,47 @@ def _extract_emotion(text: str) -> tuple[str, str]:
     # 标签写了但内容是乱码——仍走推断
     return _infer_emotion_from_text(cleaned), cleaned
 
+# Markdown 行内/块级符号清洗——前端用 marked 渲染成 HTML 显示，
+# 但 TTS 拿到的是带星号/井号/反引号的原始文本，不剥就会念出"星号星号"。
+# 这里按常见 markdown 语法把"人眼看到的内容"剥出来，纯文本兜底渲染。
+# 注：必须放在 _strip_tags 末尾（标签剥完再处理 markdown），且只剥符号不破坏内容。
+_MD_PATTERNS = [
+    re.compile(r'```[\s\S]*?```'),                # 代码块 ```...``` → 整块去掉（念代码没意义）
+    re.compile(r'`([^`]+)`'),                     # 行内代码 `x` → x
+    re.compile(r'!\[[^\]]*\]\([^)]+\)'),         # 图片 ![alt](url) → 空
+    re.compile(r'\[([^\]]+)\]\([^)]+\)'),         # 链接 [text](url) → text
+    re.compile(r'^#{1,6}\s+', re.MULTILINE),      # 标题 # / ## → 前缀去掉
+    re.compile(r'^\s*[-*+]\s+', re.MULTILINE),   # 无序列表 - / * / + → 符号去掉
+    re.compile(r'^\s*\d+\.\s+', re.MULTILINE),   # 有序列表 1. → 符号去掉
+    re.compile(r'^\s*>\s+', re.MULTILINE),       # 引用 > → 符号去掉
+    re.compile(r'\*\*([^*]+)\*\*'),              # 加粗 **x** → x
+    re.compile(r'__([^_]+)__'),                  # 加粗下划线 __x__ → x
+    re.compile(r'\*([^*]+)\*'),                  # 斜体 *x* → x
+    re.compile(r'_([^_]+)_'),                    # 斜体下划线 _x_ → x
+    re.compile(r'~~([^~]+)~~'),                  # 删除线 ~~x~~ → x
+    re.compile(r'^\s*[-*]{3,}\s*$', re.MULTILINE),  # 分割线 --- / *** → 整行去掉
+]
+
+_MD_TRAILING_PUNCT = re.compile(r'[ \t]{2,}')   # 单行内多余空格收敛（不触碰换行，避免把行间空格变成假换行）
+
+
+def _strip_markdown(text: str) -> str:
+    """剥离 markdown 符号，保留纯文本内容（供 TTS 朗读）。"""
+    for p in _MD_PATTERNS:
+        text = p.sub(lambda m: m.group(1) if m.lastindex else '', text)
+    # 删完图片/代码块后可能留下只含空白的行，收敛成单个换行
+    text = re.sub(r'\n[ \t]*\n', '\n', text)
+    return text.strip()
+
+
 def _strip_tags(text: str) -> str:
-    """去除所有特殊标签，只保留纯文本"""
+    """去除所有特殊标签与 markdown 符号，只保留纯文本。
+    先剥自定义 [TAG]/<meta> 标签，再剥 markdown 符号——顺序固定，markdown 清洗
+    在标签干净后做以免误伤 [MOMENT:...] 这类被当成链接语法。"""
     for p in _STRIP_PATTERNS:
         text = p.sub('', text)
+    text = _strip_markdown(text)
+    text = _MD_TRAILING_PUNCT.sub(' ', text)
     return text.strip()
 
 
