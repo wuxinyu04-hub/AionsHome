@@ -290,6 +290,18 @@ _AI_ERROR_PREFIXES = (
     "[错误]",
 )
 
+# 全截 JSON 错误体 {"error":{...}} 的稳定头部特征。
+# 流式分块到达时 visible_text 往往是半截 JSON，json.loads 必然失败；
+# 用这些前缀在 buffer 还没攒到 TTSStreamer 的 min_chars(100) 切分阈值前
+# 就判定为报错、翻 skip_tts，避免第一段被合成推送出去念出来。
+_AI_ERROR_JSON_HINTS = (
+    '{"error"',
+    '"type":"server_error"',
+    '"type": "server_error"',
+    '"code":"internal_server_error"',
+    '"code": "internal_server_error"',
+)
+
 
 def _is_ai_error_text(text: str) -> bool:
     stripped = (text or "").strip()
@@ -298,6 +310,12 @@ def _is_ai_error_text(text: str) -> bool:
     if stripped.startswith(_AI_ERROR_PREFIXES):
         return True
     if stripped.startswith("{"):
+        # 先按半截特征判定：上游整段一次性吐回的 {"error":{...}} 在流里可能
+        # 分多个 chunk 拼接，完整前 json.loads 会失败、之前这里会返回 False，
+        # 导致第一段(>=100字符)已被 TTSStreamer 合成并推给前端播放。
+        head = stripped[:256]
+        if any(hint in head for hint in _AI_ERROR_JSON_HINTS):
+            return True
         try:
             payload = json.loads(stripped)
         except Exception:
@@ -1635,8 +1653,11 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 try:
                     # 报错时 cancel 掉 TTS：清 buffer/取消 worker/删已合成 mp3，
                     # 避免"调用失败"这类报错文本被念出来；flush() 在 cancelled 下会短路。
+                    # has_error 时先广播 tts_cancel 让前端即时清已到达分段，再 cancel
+                    # ——补 e19b6c2 的漏网：JSON 错误体第一段可能在检测翻 skip_tts
+                    # 前就已被合成推送，单靠 cancel() 拦不住已发到前端的分段。
                     if has_error:
-                        tts_streamer.cancel()
+                        await tts_streamer.cancel_and_notify()
                     await tts_streamer.flush()
                 except Exception as e:
                     log.warning("TTS 流收尾 flush 失败（末段语音可能丢失）: %s", e)
@@ -2343,7 +2364,7 @@ async def send_message(conv_id: str, body: MsgCreate):
             if tts_streamer:
                 try:
                     if has_error:
-                        tts_streamer.cancel()
+                        await tts_streamer.cancel_and_notify()
                     await tts_streamer.flush()
                 except Exception as e:
                     log.warning("TTS 流收尾 flush 失败（末段语音可能丢失）: %s", e)
@@ -3503,7 +3524,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             if regen_tts:
                 try:
                     if has_error:
-                        regen_tts.cancel()
+                        await regen_tts.cancel_and_notify()
                     await regen_tts.flush()
                 except Exception as e:
                     log.warning("重新生成 TTS flush 失败（末段语音可能丢失）: %s", e)

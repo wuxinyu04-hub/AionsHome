@@ -1931,6 +1931,11 @@ function handleSync(msg) {
   } else if (type === "tts_done") {
     // 服务端通知该消息的所有 TTS 分段已推送完毕
     finishTTSForMsg(data.msg_id, data.created_at, data.target_client_id);
+  } else if (type === "tts_cancel") {
+    // 报错时后端即时通知：丢掉这条消息已到达/已入队的分段并停播。
+    // 比 has_error(debug 事件)更早且更稳——debug 在流末尾发，可能晚于
+    // JSON 错误体第一段被合成推送；tts_cancel 在 cancel 前广播，能掐住已在播的分段。
+    if (data.msg_id) stopTTSForMsg(data.msg_id);
   } else if (type === "video_call_ring") {
     // AI 发起视频通话 — 定向推送到本客户端
     if (typeof videoCall !== 'undefined') videoCall.aiInitiate(data);

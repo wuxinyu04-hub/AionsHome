@@ -773,6 +773,27 @@ class TTSStreamer:
                 task.cancel()
         self._cleanup_owned_files()
 
+    async def cancel_and_notify(self):
+        """Cancel + tell clients to drop already-delivered chunks.
+
+        Must broadcast BEFORE the synchronous cancel() sets _cancelled=True,
+        because _notify short-circuits on _cancelled. Returns the msg_id so the
+        caller can reuse it. Surfaced as WS event ``tts_cancel``; the frontend
+        maps it to stopTTSForMsg(), suppressing/queue-clearing any segment that
+        was synthesized before the error prefix surfaced upstream.
+        """
+        msg_id = self.msg_id
+        # 先广播 tts_cancel，再置 _cancelled（否则 _notify 会短路掉这条通知）
+        await self._notify({
+            "type": "tts_cancel",
+            "data": self._with_event_data({
+                "msg_id": msg_id,
+                "created_at": time.time(),
+            }),
+        })
+        self.cancel()
+        return msg_id
+
     def _cleanup_owned_files(self):
         safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '', self.msg_id)
         if not safe_id:
