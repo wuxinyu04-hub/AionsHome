@@ -290,17 +290,37 @@ _AI_ERROR_PREFIXES = (
     "[错误]",
 )
 
-# 全截 JSON 错误体 {"error":{...}} 的稳定头部特征。
-# 流式分块到达时 visible_text 往往是半截 JSON，json.loads 必然失败；
-# 用这些前缀在 buffer 还没攒到 TTSStreamer 的 min_chars(100) 切分阈值前
-# 就判定为报错、翻 skip_tts，避免第一段被合成推送出去念出来。
+# 错误 JSON 体里稳定的"出现即报错"特征串。
+# 设计要点：**不依赖 startswith、不全靠 json.loads**——上游报错体可能：
+#  (a) 跨 chunk 被劈开（{"er + rror" → 第一个 chunk 不含完整 hint）；
+#  (b) 前面带一句正文再吐 JSON（`嗯。{"error":...}`）；
+#  (c) 整段一次性吐但 json.loads 在半截态必然失败。
+# 所以在 visible_text 里**任意位置**扫这些串：第一 chunk 没扫到时，第二 chunk
+# 累积后必能扫到并翻 skip_tts；TTSStreamer 的 min_chars=100 切分阈值给了一小段
+# 缓冲余量，小 chunk 不会立即合成，翻牌后这段 buffer 边界的内容不会再被推出去。
+# 翻牌前万一已合成了第一段，cancel_and_notify 的 tts_cancel 会在前端清掉它。
 _AI_ERROR_JSON_HINTS = (
     '{"error"',
+    '"error":{',
+    '"error": {',
     '"type":"server_error"',
     '"type": "server_error"',
+    '"type":"permission_error"',
+    '"type": "permission_error"',
+    '"type":"insufficient_quota"',
+    '"type": "insufficient_quota"',
     '"code":"internal_server_error"',
     '"code": "internal_server_error"',
+    # 上游错误里常出现的英文提示（TLS/EOF/proxy/timeout）——这些不是 JSON 结构，
+    # 但出现在 AI 正文流里基本就是上游兜底吐错了。放宽识别面，宁可多掐不该念的。
+    "oauth2.googleapis.com",
+    "TLS handshake timeout",
+    "proxyconnect tcp",
+    "net/http: EOF",
+    "connection refused",
+    "deadline exceeded",
 )
+# 误报防护：歌词/引用里的口语词不进 HINTS；真要判得靠下面的 json.loads 完整解析。
 
 
 def _is_ai_error_text(text: str) -> bool:
@@ -309,13 +329,12 @@ def _is_ai_error_text(text: str) -> bool:
         return True
     if stripped.startswith(_AI_ERROR_PREFIXES):
         return True
-    if stripped.startswith("{"):
-        # 先按半截特征判定：上游整段一次性吐回的 {"error":{...}} 在流里可能
-        # 分多个 chunk 拼接，完整前 json.loads 会失败、之前这里会返回 False，
-        # 导致第一段(>=100字符)已被 TTSStreamer 合成并推给前端播放。
-        head = stripped[:256]
-        if any(hint in head for hint in _AI_ERROR_JSON_HINTS):
+    # 不再要求 stripped 必须以 { 开头——上游报错体可能前面带一句正文，
+    # 或被 chunk 边界劈开。在整个累积文本里扫稳定特征串即可命中。
+    for hint in _AI_ERROR_JSON_HINTS:
+        if hint in stripped:
             return True
+    if stripped.startswith("{"):
         try:
             payload = json.loads(stripped)
         except Exception:
@@ -1674,6 +1693,70 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
+# ── 聊天随口记生理期：命中关键词+抽日期 → 自动建一条 period ──
+_PERIOD_START_RE = re.compile(
+    r"(来(了大姨妈|大姨妈|了例假|例假|了姨妈|姨妈|了生理期|生理期)|"
+    r"姨妈来了|例假来了|大姨妈来了|生理期来了|生理期报到|姨妈报到了|"
+    r"这次(.{0,4})?(开始|来了))"
+)
+_PERIOD_END_RE = re.compile(r"(姨妈|例假|大姨妈|生理期).{0,3}(没了|结束了|走了|走了)|完了|结束了")
+_PERIOD_DATE_RE = re.compile(
+    r"(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})"  # 2026-08-13 / 8月13 / 2026/8/13
+    r"|(\d{1,2})[-月/](\d{1,2})(?=号|日|\s|$)"  # 8-13 / 8月13
+    r"|(今天|昨天|前天)"
+)
+
+
+async def _maybe_log_period_from_chat(content: str):
+    """用户私聊随口说来例假了 → 自动记一条开始日。不阻断流式。"""
+    if not content:
+        return
+    if _PERIOD_END_RE.search(content) and not _PERIOD_START_RE.search(content):
+        return  # 说的是"结束了"，不是开始
+    if not _PERIOD_START_RE.search(content):
+        return
+
+    from routes.health import _upsert_period_row, PeriodEntry
+    from datetime import date as _date
+
+    today = _date.today()
+    start_date = today.isoformat()
+    m = _PERIOD_DATE_RE.search(content)
+    if m:
+        if m.group(1):  # YYYY-MM-DD
+            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            try:
+                start_date = _date(y, mo, d).isoformat()
+            except ValueError:
+                pass
+        elif m.group(4):  # M-D 或 M月D
+            mo, d = int(m.group(4)), int(m.group(5))
+            try:
+                cand = _date(today.year, mo, d)
+                if cand > today:
+                    cand = _date(today.year - 1, mo, d)
+                start_date = cand.isoformat()
+            except ValueError:
+                pass
+        elif m.group(6) in ("昨天", "前天"):
+            # 就近表述，保守记今天，避免误报历史日期
+            start_date = today.isoformat()
+    # 去重：库里今天已经记过就不重复插
+    async with get_db() as db:
+        db.row_factory = __import__('aiosqlite').Row
+        cur = await db.execute(
+            "SELECT id FROM health_period_entries WHERE start_date=? LIMIT 1", (start_date,)
+        )
+        if await cur.fetchone():
+            return
+
+    entry = PeriodEntry(start_date=start_date, flow="", symptoms="", note="聊天随口记")
+    row = await _upsert_period_row(None, entry)
+    if not row.get("error"):
+        await manager.broadcast({"type": "health_period_updated", "data": row})
+        print(f"[PERIOD] 聊天自动记录生理期: {start_date}")
+
+
 # ── 发送消息 + AI 回复（SSE 流式） ────────────────
 @router.post("/api/conversations/{conv_id}/send")
 async def send_message(conv_id: str, body: MsgCreate):
@@ -1759,6 +1842,12 @@ async def send_message(conv_id: str, body: MsgCreate):
             print(f"[WALLET] 用户转账: {t_val}元")
         except Exception as e:
             log.warning("用户转账入账失败: %s", e)
+
+    # 检测用户随口说"大姨妈来了/例假来了"等 → 自动记一条生理期开始日
+    try:
+        await _maybe_log_period_from_chat(body.content)
+    except Exception as e:
+        log.warning("聊天生理期识别失败: %s", e)
 
     # 连发批量：仅插入用户消息 + 广播 + 转账 + 哨兵重置，不触发生成。
     # 前端连发 N 条 = 前 N-1 条 defer_generation=True（只插不生成），最后一条 defer_generation=False（正常生成）。
