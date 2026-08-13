@@ -1,5 +1,7 @@
 (() => {
-  const SILENCE_MS = 2000;
+  // ASR 单段：说完停 1.2s 就送识别。原来 2s 保守，每句多等 0.8s；
+  // 配合中位数噪声底（见 onAudioFrame）调准阈值后短一点不会误切。
+  const SILENCE_MS = 1200;
   const MAX_RECORD_MS = 45000;
   const CALIBRATION_FRAMES = 20;
   // TTS caption pacing: increase these if text runs ahead of the voice.
@@ -464,7 +466,13 @@
     state.stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
-    state.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // 强制 16kHz：Step ASR 原生 16k，省得服务端重采样；WAV 体积砍到 1/3，上传快 3 倍。
+    // 个别旧浏览器不支持指定采样率，回落到默认（48000）。
+    try {
+      state.ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    } catch(e) {
+      state.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    }
     state.sampleRate = state.ctx.sampleRate;
     const source = state.ctx.createMediaStreamSource(state.stream);
     state.processor = state.ctx.createScriptProcessor(2048, 1, 1);
@@ -528,8 +536,16 @@
     if (state.calibration.length < CALIBRATION_FRAMES) {
       state.calibration.push(energy);
       if (state.calibration.length === CALIBRATION_FRAMES) {
-        const avg = state.calibration.reduce((sum, value) => sum + value, 0) / state.calibration.length;
-        state.noiseFloor = Math.max(0.004, avg * 2.6);
+        // 噪声底用中位数而不是均值：校准头 0.4s 如果撞上一声环境音/呼吸，
+        // 均值会被拉高，正常说话反而被当静音吞掉——这是"识别不到"的直接病因。
+        // 中位数抗突发值，×3.5 留足说话余量。
+        const sorted = [...state.calibration].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)];
+        state.noiseFloor = Math.max(0.006, median * 3.5);
+        if (location.search.includes('debug-vad')) {
+          console.log('[VAD] calibrated noiseFloor=', state.noiseFloor.toFixed(4),
+            'median=', median.toFixed(4), 'avg=', (state.calibration.reduce((s, v) => s + v, 0) / state.calibration.length).toFixed(4));
+        }
       }
       return;
     }

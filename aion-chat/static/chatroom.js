@@ -500,6 +500,30 @@ const _ttsEngine = (function() {
 })();
 let crTtsAudio = _ttsEngine.audio;
 
+// 子页被隐藏（退出到 home / 切去其它子页）时，把正在播的 TTS audio 元素整体搬去父页 body。
+// 同源 iframe 元素跨文档搬家不重置播放、已绑的事件回调（_next 的 advance 闭包等）原样保留，
+// _ttsEngine 照常推进分片队列。根因：1ce516c 起群聊 TTS 只在 chatroom iframe 内播、父页不再
+// 兜底，手机上 display:none 的 iframe 音频被 WebView 挂起，一退出就断；音乐不断是因为它的
+// audio 元素一直在父页（chat.js musicAudio）。
+function crHandoffTtsAudioToParent() {
+  if (!crIsEmbedded) return;
+  try {
+    const parentWin = window.parent;
+    if (!parentWin || !parentWin.document?.body) return;
+    const audio = _ttsEngine && _ttsEngine.audio;
+    if (!audio || audio.parentNode === parentWin.document.body) return; // 已搬过/无可搬
+    parentWin.document.body.appendChild(audio);
+    if (audio.src && !audio.paused) audio.play().catch(() => {});
+  } catch (e) {}
+}
+
+// 父页 chat.js 每次 hide 子页都会调 onAionSubPageVisibilityChanged(false)（openSubPage 切走 /
+// closeSubPage / 原生返回都经过它）；再补 pagehide 兜底 iframe 自身被导航的情况。
+window.onAionSubPageVisibilityChanged = function(visible) {
+  if (!visible) crHandoffTtsAudioToParent();
+};
+window.addEventListener('pagehide', () => crHandoffTtsAudioToParent());
+
 function crTtsPlaybackAllowed() {
   return true;
 }
