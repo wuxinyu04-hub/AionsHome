@@ -16,7 +16,7 @@ from config import DEFAULT_MODEL, MODELS, load_worldbook, SETTINGS, UPLOADS_DIR,
 from database import get_db
 from ws import manager
 from active_window_state import record_aion_private_active
-from ai_providers import stream_ai, CLI_STATUS_PREFIX
+from ai_providers import stream_ai, CLI_STATUS_PREFIX, looks_like_provider_error
 from xhs_chat_tool import stream_ai_with_xhs_tool, XHS_TOOL_PROMPT
 from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, _memory_line_with_evidence, format_recalled_memories_for_prompt
 from camera import cam, CAM_CHECK_CMD, perform_cam_check
@@ -282,24 +282,25 @@ async def _consume_chat_stream(
     return result, visible_text
 
 
-_AI_ERROR_PREFIXES = (
-    "[Gemini错误",
-    "[AntigravityCLI错误",
-    "[硅基流动错误",
-    "[中转站错误",
-    "[错误]",
-)
-
-# 错误 JSON 体里稳定的"出现即报错"特征串。
+# 私聊链 chunk 增量判错专用的 JSON 特征串。
 # 设计要点：**不依赖 startswith、不全靠 json.loads**——上游报错体可能：
 #  (a) 跨 chunk 被劈开（{"er + rror" → 第一个 chunk 不含完整 hint）；
 #  (b) 前面带一句正文再吐 JSON（`嗯。{"error":...}`）；
-#  (c) 整段一次性吐但 json.loads 在半截态必然失败。
+# (c) 整段一次性吐但 json.loads 在半截态必然失败。
 # 所以在 visible_text 里**任意位置**扫这些串：第一 chunk 没扫到时，第二 chunk
 # 累积后必能扫到并翻 skip_tts；TTSStreamer 的 min_chars=100 切分阈值给了一小段
 # 缓冲余量，小 chunk 不会立即合成，翻牌后这段 buffer 边界的内容不会再被推出去。
 # 翻牌前万一已合成了第一段，cancel_and_notify 的 tts_cancel 会在前端清掉它。
+#
+# 为什么留本地、不并进 ai_providers.looks_like_provider_error：
+# 上游权威函数的 JSON 分支强制 stripped.startswith("{") + json.loads 整段，
+# 适用于"整段输出已就绪"的落库/结尾判错；私聊流式 chunk 经常是半截或带正文前缀，
+# 那条分支会漏。这一小撮串只服务 chunk 增量场景，在 _is_ai_error_text 里先扫，
+# 其余判错仍委托上游权威清单。
 _AI_ERROR_JSON_HINTS = (
+    # JSON 结构特征串——上游 looks_like_provider_error 的 JSON 分支强制
+    # startswith("{") + json.loads 整段，对半截 chunk / 正文前缀的报错体会漏，
+    # 这里在累积文本任意位置扫兜底。
     '{"error"',
     '"error":{',
     '"error": {',
@@ -307,40 +308,34 @@ _AI_ERROR_JSON_HINTS = (
     '"type": "server_error"',
     '"type":"permission_error"',
     '"type": "permission_error"',
-    '"type":"insufficient_quota"',
-    '"type": "insufficient_quota"',
     '"code":"internal_server_error"',
     '"code": "internal_server_error"',
-    # 上游错误里常出现的英文提示（TLS/EOF/proxy/timeout）——这些不是 JSON 结构，
-    # 但出现在 AI 正文流里基本就是上游兜底吐错了。放宽识别面，宁可多掐不该念的。
-    "oauth2.googleapis.com",
-    "TLS handshake timeout",
-    "proxyconnect tcp",
-    "net/http: EOF",
-    "connection refused",
-    "deadline exceeded",
+    # 注：insufficient_quota / oauth2.googleapis.com / TLS / proxyconnect / net/http: EOF /
+    # connection refused / deadline exceeded 这些英文技术串已在上游
+    # _PROVIDER_ERROR_SUBSTRINGS 里，走 looks_like_provider_error 委托即可命中，
+    # 不在本地重复维护。
 )
 # 误报防护：歌词/引用里的口语词不进 HINTS；真要判得靠下面的 json.loads 完整解析。
 
 
 def _is_ai_error_text(text: str) -> bool:
+    """私聊链 chunk 增量判错：薄包装复用 ai_providers.looks_like_provider_error。
+
+    保留本地 JSON 特征串扫描这一件事——looks_like_provider_error 的 JSON 分支
+    要求 stripped.startswith("{") 并 json.loads 整段，对半截 chunk / 前面带正文
+    再吐 JSON 的上游报错体会漏。所以在累积 visible_text 里**任意位置**先扫
+    _AI_ERROR_JSON_HINTS 命中即翻 skip_tts；其余前缀/英文子串/干净 JSON 全部
+    委托上游权威清单，避免本地再抄一份抄不全的副本。
+    """
     stripped = (text or "").strip()
     if not stripped:
         return True
-    if stripped.startswith(_AI_ERROR_PREFIXES):
-        return True
-    # 不再要求 stripped 必须以 { 开头——上游报错体可能前面带一句正文，
-    # 或被 chunk 边界劈开。在整个累积文本里扫稳定特征串即可命中。
+    # JSON 结构的稳定特征串扫整段任意位置——跨 chunk / 正文前缀场景的兜底。
     for hint in _AI_ERROR_JSON_HINTS:
         if hint in stripped:
             return True
-    if stripped.startswith("{"):
-        try:
-            payload = json.loads(stripped)
-        except Exception:
-            return False
-        return isinstance(payload, dict) and bool(payload.get("error"))
-    return False
+    # 前缀 + 英文技术串 + 干净 JSON 体全部走权威源。
+    return looks_like_provider_error(stripped)
 
 
 def _conversation_dict(row) -> dict:
